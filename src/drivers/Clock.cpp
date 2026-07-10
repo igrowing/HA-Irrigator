@@ -4,12 +4,8 @@
 
 namespace irrigator::drivers {
 
-bool Clock::begin(const char* timezoneSpec) {
-    if (timezoneSpec != nullptr && timezoneSpec[0] != '\0') {
-        setenv("TZ", timezoneSpec, 1);
-        tzset();
-    }
-    configTime(0, 0, "pool.ntp.org");
+bool Clock::begin(int8_t utcOffsetHours) {
+    configTime(static_cast<long>(utcOffsetHours) * 3600L, 0, "pool.ntp.org");
     return true;
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifndef APP_VERSION
@@ -54,5 +55,18 @@ static constexpr uint8_t SCHEDULE_DURATION_MIN_MINUTES = 1;
 static constexpr uint8_t SCHEDULE_DURATION_MAX_MINUTES = 60;
 static constexpr uint8_t DEFAULT_MANUAL_DURATION_MINUTES = 5;
 static constexpr int16_t DEFAULT_WATERING_PERCENTAGE = 100;
+
+static constexpr uint8_t SCHEDULE_MAX_RECORDS = 32;
+static constexpr int8_t TIMEZONE_OFFSET_MIN_HOURS = -13;
+static constexpr int8_t TIMEZONE_OFFSET_MAX_HOURS = 13;
+static constexpr uint16_t DEFAULT_MQTT_PORT = 1883;
+
+static constexpr size_t CONFIG_JSON_MAX_BYTES = 768;
+static constexpr size_t SETTINGS_JSON_MAX_BYTES = 768;
+static constexpr size_t SCHEDULE_JSON_MAX_BYTES = 4096;
+
+static constexpr const char* CONFIG_FILE_PATH = "/config.json";
+static constexpr const char* SETTINGS_FILE_PATH = "/settings.json";
+static constexpr const char* SCHEDULE_FILE_PATH = "/schedule.json";
 
 }  // namespace irrigator::board

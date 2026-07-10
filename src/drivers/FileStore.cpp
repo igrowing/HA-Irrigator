@@ -55,6 +55,38 @@ bool FileStore::remove(const char* path) {
     return ok;
 }
 
+bool FileStore::rename(const char* fromPath, const char* toPath) {
+    const bool ok = SPIFFS.rename(fromPath, toPath);
+    if (!ok) {
+        Log.printf("[ERROR] Cannot rename %s to %s\n", fromPath, toPath);
+    }
+    return ok;
+}
+
+bool FileStore::writeTextWithBackup(const char* path, const String& content) {
+    const String bakPath = String(path) + ".bak";
+    const bool hadExisting = exists(path);
+
+    if (hadExisting && !rename(path, bakPath.c_str())) {
+        Log.printf("[ERROR] Could not back up %s before write; leaving original untouched\n", path);
+        return false;
+    }
+
+    if (writeText(path, content)) {
+        if (hadExisting) {
+            remove(bakPath.c_str());
+        }
+        return true;
+    }
+
+    Log.printf("[ERROR] Write to %s failed; restoring previous copy\n", path);
+    remove(path);
+    if (hadExisting) {
+        rename(bakPath.c_str(), path);
+    }
+    return false;
+}
+
 size_t FileStore::freeBytes() const {
     return SPIFFS.totalBytes() - SPIFFS.usedBytes();
 }

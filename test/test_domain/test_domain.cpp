@@ -1,14 +1,21 @@
 #include <unity.h>
 
+#include <string.h>
+
+#include "../../src/domain/ConfigStore.h"
 #include "../../src/domain/CurrentFaultMonitor.h"
 #include "../../src/domain/DurationAdjuster.h"
 #include "../../src/domain/IrrigationStateMachine.h"
 #include "../../src/domain/RainSkip.h"
 #include "../../src/domain/Schedule.h"
+#include "../../src/domain/Settings.h"
 #include "../../src/domain/WateringQueue.h"
 #include "board_config.h"
 
 using irrigator::domain::RotationDirection;
+
+void setUp() {}
+void tearDown() {}
 
 void test_manual_duration_adjusts_by_formula_and_clamps() {
     TEST_ASSERT_EQUAL_UINT16(2, irrigator::domain::adjustManualDuration(1, RotationDirection::Clockwise));
@@ -119,6 +126,93 @@ void test_pump_only_does_not_enter_grace_period() {
                             static_cast<uint8_t>(machine.state()));
 }
 
+void test_config_store_round_trips_valid_json() {
+    const char* json =
+        R"({"ssid":"home","password":"secret","mqtt_broker":"192.168.1.10","mqtt_port":1884,)"
+        R"("mqtt_user":"u","mqtt_password":"p","timezone":2})";
+    irrigator::domain::DeviceConfig config;
+    TEST_ASSERT_TRUE(irrigator::domain::parseConfig(json, strlen(json), config));
+    TEST_ASSERT_EQUAL_STRING("home", config.ssid);
+    TEST_ASSERT_EQUAL_UINT16(1884, config.mqttPort);
+    TEST_ASSERT_EQUAL_INT8(2, config.timezoneOffsetHours);
+
+    char buffer[256];
+    const size_t written = irrigator::domain::serializeConfig(config, buffer, sizeof(buffer));
+    TEST_ASSERT_TRUE(written > 0);
+
+    irrigator::domain::DeviceConfig roundTripped;
+    TEST_ASSERT_TRUE(irrigator::domain::parseConfig(buffer, written, roundTripped));
+    TEST_ASSERT_EQUAL_STRING(config.ssid, roundTripped.ssid);
+    TEST_ASSERT_EQUAL_UINT16(config.mqttPort, roundTripped.mqttPort);
+}
+
+void test_config_store_rejects_missing_required_fields() {
+    irrigator::domain::DeviceConfig config;
+    const char* missingSsid = R"({"mqtt_broker":"192.168.1.10"})";
+    TEST_ASSERT_FALSE(irrigator::domain::parseConfig(missingSsid, strlen(missingSsid), config));
+
+    const char* badTimezone = R"({"ssid":"home","mqtt_broker":"b","timezone":99})";
+    TEST_ASSERT_FALSE(irrigator::domain::parseConfig(badTimezone, strlen(badTimezone), config));
+
+    const char* malformed = "{not json";
+    TEST_ASSERT_FALSE(irrigator::domain::parseConfig(malformed, strlen(malformed), config));
+}
+
+void test_settings_store_defaults_missing_zone_names() {
+    const char* json = R"({"watering_percentage":80,"zone_names":{"1":"Grass"}})";
+    irrigator::domain::Settings settings;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(json, strlen(json), settings));
+    TEST_ASSERT_EQUAL_INT16(80, settings.wateringPercentage);
+    TEST_ASSERT_EQUAL_STRING("Grass", settings.zoneNames[0]);
+    TEST_ASSERT_EQUAL_STRING("Zone 2", settings.zoneNames[1]);
+}
+
+void test_settings_store_rejects_out_of_range_percentage() {
+    const char* json = R"({"watering_percentage":999})";
+    irrigator::domain::Settings settings;
+    TEST_ASSERT_FALSE(irrigator::domain::parseSettings(json, strlen(json), settings));
+}
+
+void test_settings_store_round_trips() {
+    irrigator::domain::Settings settings = irrigator::domain::makeDefaultSettings();
+    settings.wateringPercentage = 120;
+    settings.scheduleActive = false;
+
+    char buffer[512];
+    const size_t written = irrigator::domain::serializeSettings(settings, buffer, sizeof(buffer));
+    TEST_ASSERT_TRUE(written > 0);
+
+    irrigator::domain::Settings roundTripped;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(buffer, written, roundTripped));
+    TEST_ASSERT_EQUAL_INT16(120, roundTripped.wateringPercentage);
+    TEST_ASSERT_FALSE(roundTripped.scheduleActive);
+}
+
+void test_schedule_store_round_trips_valid_list() {
+    const char* json =
+        R"([{"zone":1,"day_of_week":1,"start_time":"06:30","duration_min":20,"active":true}])";
+    irrigator::domain::ScheduleList list;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSchedule(json, strlen(json), list));
+    TEST_ASSERT_EQUAL_UINT8(1, list.count);
+    TEST_ASSERT_EQUAL_UINT8(1, list.records[0].zone);
+
+    char buffer[512];
+    const size_t written = irrigator::domain::serializeSchedule(list, buffer, sizeof(buffer));
+    TEST_ASSERT_TRUE(written > 0);
+
+    irrigator::domain::ScheduleList roundTripped;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSchedule(buffer, written, roundTripped));
+    TEST_ASSERT_EQUAL_UINT8(1, roundTripped.count);
+}
+
+void test_schedule_store_rejects_whole_file_on_one_bad_record() {
+    const char* json =
+        R"([{"zone":1,"day_of_week":1,"start_time":"06:30","duration_min":20,"active":true},)"
+        R"({"zone":12,"day_of_week":1,"start_time":"06:30","duration_min":20,"active":true}])";
+    irrigator::domain::ScheduleList list;
+    TEST_ASSERT_FALSE(irrigator::domain::parseSchedule(json, strlen(json), list));
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -133,5 +227,12 @@ int main(int argc, char** argv) {
     RUN_TEST(test_current_fault_alert_only_once_per_cycle);
     RUN_TEST(test_zone_run_starts_pump_before_watering_then_gracefully_stops);
     RUN_TEST(test_pump_only_does_not_enter_grace_period);
+    RUN_TEST(test_config_store_round_trips_valid_json);
+    RUN_TEST(test_config_store_rejects_missing_required_fields);
+    RUN_TEST(test_settings_store_defaults_missing_zone_names);
+    RUN_TEST(test_settings_store_rejects_out_of_range_percentage);
+    RUN_TEST(test_settings_store_round_trips);
+    RUN_TEST(test_schedule_store_round_trips_valid_list);
+    RUN_TEST(test_schedule_store_rejects_whole_file_on_one_bad_record);
     return UNITY_END();
 }
