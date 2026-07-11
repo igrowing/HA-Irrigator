@@ -21,18 +21,20 @@ void IrrigatorUi::begin() {
     display_.clearBuffer();
     display_.sendBuffer();
     input_.begin();
+    display_.setDisplayRotation(U8G2_R2);
     ::irrigator::drivers::Log.info("UI initialized (SSD1309 + rotary input)");
 }
 
 void IrrigatorUi::showCaptivePortal(const String& apSsid, const IPAddress& ip) {
     display_.clearBuffer();
     display_.setFont(u8g2_font_6x10_tr);
-    display_.drawStr(0, 10, "CAPTIVE PORTAL");
+    drawCentered(display_, 10, "= CAPTIVE PORTAL =");
     char line[40];
     snprintf(line, sizeof(line), "SSID: %s", apSsid.c_str());
-    display_.drawStr(0, 26, line);
+    drawCentered(display_, 26, line);
     snprintf(line, sizeof(line), "IP: %s", ip.toString().c_str());
-    display_.drawStr(0, 40, line);
+    drawCentered(display_, 40, line);
+    drawCentered(display_, 60, "Connect&Configure");
     display_.sendBuffer();
 }
 

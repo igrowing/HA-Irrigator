@@ -4,6 +4,7 @@
 #include <WiFi.h>
 #include <Wire.h>
 #include <esp_system.h>
+#include <esp_mac.h>
 
 #include "board_config.h"
 #include "domain/CalendarMath.h"
@@ -80,12 +81,11 @@ uint32_t pumpWindowCloseAtMs = 0;
 bool pumpFaultActive = false;
 
 String makeDevicePrefix() {
-    String mac = WiFi.macAddress();
-    mac.replace(":", "");
-    if (mac.length() < 2) {
-        return "irrigator00";
-    }
-    return "irrigator" + mac.substring(mac.length() - 2);
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
+    char suffix[3];
+    snprintf(suffix, sizeof(suffix), "%02X", mac[5]);
+    return "irrigator" + String(suffix);
 }
 
 const char* zoneName(uint8_t zone) {
@@ -660,7 +660,7 @@ void connectWifiOnce() {
 
 void enterCaptivePortalMode() {
     appMode = AppMode::CaptivePortal;
-    const String apSsid = makeDevicePrefix() + "_SETUP";
+    const String apSsid = makeDevicePrefix();
     captivePortal.begin(apSsid, fileStore);
     led.setMode(irrigator::drivers::LedMode::CaptivePortal);
     ui.showCaptivePortal(apSsid, IPAddress(192, 168, 4, 1));
