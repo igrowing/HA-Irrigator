@@ -29,6 +29,7 @@ using irrigator::board::PUMP_CURRENT_ADC_PIN;
 using irrigator::board::STATUS_LED_PIN;
 using irrigator::board::VALVE_CURRENT_ADC_PIN;
 using irrigator::domain::RunReason;
+using irrigator::domain::UiIntentType;
 using irrigator::domain::WateringRequest;
 
 namespace {
@@ -220,6 +221,50 @@ bool persistSettings() {
     return fileStore.writeTextWithBackup(irrigator::board::SETTINGS_FILE_PATH, String(buffer));
 }
 
+void persistScheduleAndReport() {
+    char buffer[irrigator::board::SCHEDULE_JSON_MAX_BYTES];
+    const size_t written = irrigator::domain::serializeSchedule(scheduleList, buffer, sizeof(buffer));
+    if (written == 0) {
+        return;
+    }
+    fileStore.writeTextWithBackup(irrigator::board::SCHEDULE_FILE_PATH, String(buffer));
+    mqtt.publishSchedule(buffer);
+}
+
+// Nearest future occurrence across the week, for Screen 1's "next zone to be active" display —
+// a UI-only nicety, not part of the actual scheduling decision (that's ScheduleEngine).
+uint8_t findNextScheduledZone(const struct tm& nowLocal) {
+    if (scheduleList.count == 0) {
+        return 0;
+    }
+    const uint8_t nowIsoDay = nowLocal.tm_wday == 0 ? 7 : static_cast<uint8_t>(nowLocal.tm_wday);
+    const int nowMinutes = nowLocal.tm_hour * 60 + nowLocal.tm_min;
+
+    int bestDelta = -1;
+    uint8_t bestZone = 0;
+    for (uint8_t i = 0; i < scheduleList.count; ++i) {
+        const auto& record = scheduleList.records[i];
+        if (!record.active) {
+            continue;
+        }
+        const int hour = (record.startTime[0] - '0') * 10 + (record.startTime[1] - '0');
+        const int minute = (record.startTime[3] - '0') * 10 + (record.startTime[4] - '0');
+        int dayDelta = record.dayOfWeek - nowIsoDay;
+        if (dayDelta < 0) {
+            dayDelta += 7;
+        }
+        int totalDelta = dayDelta * 1440 + ((hour * 60 + minute) - nowMinutes);
+        if (totalDelta < 0) {
+            totalDelta += 7 * 1440;
+        }
+        if (bestDelta < 0 || totalDelta < bestDelta) {
+            bestDelta = totalDelta;
+            bestZone = record.zone;
+        }
+    }
+    return bestZone;
+}
+
 void enqueueOrStart(const WateringRequest& request, uint32_t nowMs) {
     if (irrigation.isActive()) {
         if (!wateringQueue.push(request)) {
@@ -233,6 +278,50 @@ void enqueueOrStart(const WateringRequest& request, uint32_t nowMs) {
         }
     } else {
         startIrrigation(request, nowMs);
+    }
+}
+
+void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
+    switch (intent.type) {
+        case UiIntentType::StartWatering: {
+            WateringRequest request;
+            request.zone = intent.zone;
+            request.durationMin = intent.duration;
+            request.reason = RunReason::Manual;
+            enqueueOrStart(request, nowMs);
+            break;
+        }
+        case UiIntentType::AbortWatering:
+            stopIrrigationExplicit(nowMs);
+            break;
+        case UiIntentType::ToggleScheduleActive:
+            settings.scheduleActive = intent.boolValue;
+            persistSettings();
+            break;
+        case UiIntentType::SetWateringPercentage: {
+            irrigator::domain::Settings updated = settings;
+            updated.wateringPercentage = intent.percentage;
+            if (irrigator::domain::validateSettings(updated)) {
+                settings = updated;
+                persistSettings();
+            }
+            break;
+        }
+        case UiIntentType::SetScheduleDuration:
+            if (intent.scheduleRecordIndex < scheduleList.count) {
+                scheduleList.records[intent.scheduleRecordIndex].durationMin = intent.duration;
+                persistScheduleAndReport();
+            }
+            break;
+        case UiIntentType::SetScheduleActive:
+            if (intent.scheduleRecordIndex < scheduleList.count) {
+                scheduleList.records[intent.scheduleRecordIndex].active = intent.boolValue;
+                persistScheduleAndReport();
+            }
+            break;
+        case UiIntentType::None:
+        default:
+            break;
     }
 }
 
@@ -395,7 +484,12 @@ void enterOperationalMode() {
     mqtt.setCommandHandler(handleMqttCommand);
     mqtt.begin(mqttConfig);
 
-    ui.showNormal(irrigation.snapshot(millis()));
+    ota.setResultHandler([](bool success, const char* message) {
+        char alertMsg[128];
+        snprintf(alertMsg, sizeof(alertMsg), R"({"ota":"%s","message":"%s"})",
+                success ? "ok" : "failed", message);
+        mqtt.publishAlert(alertMsg);
+    });
 }
 
 void runScheduleEngine(uint32_t nowMs) {
@@ -570,6 +664,30 @@ void loop() {
             }
             updateCurrentMonitoring(nowMs);
             updateOutputsFromDomain();
+
+            {
+                irrigator::ui::RenderData renderData;
+                renderData.snapshot = irrigation.snapshot(nowMs);
+                renderData.settings = &settings;
+                renderData.schedule = &scheduleList;
+                renderData.scheduleActive = settings.scheduleActive;
+                renderData.deviceIp = WiFi.localIP();
+                renderData.mqttBrokerText = deviceConfig.mqttBroker;
+
+                struct tm wallTm;
+                renderData.hasWallClock = clockService.now(wallTm);
+                if (renderData.hasWallClock) {
+                    renderData.wallClockLocal = wallTm;
+                    renderData.nextScheduledZone = findNextScheduledZone(wallTm);
+                    snprintf(renderData.nextScheduledZoneName,
+                            sizeof(renderData.nextScheduledZoneName),
+                            "%s",
+                            zoneName(renderData.nextScheduledZone));
+                }
+
+                const irrigator::domain::UiIntent uiIntent = ui.poll(nowMs, renderData);
+                handleUiIntent(uiIntent, nowMs);
+            }
             break;
         case AppMode::Booting:
         default:

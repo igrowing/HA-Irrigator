@@ -10,6 +10,7 @@
 #include "../../src/domain/Schedule.h"
 #include "../../src/domain/ScheduleEngine.h"
 #include "../../src/domain/Settings.h"
+#include "../../src/domain/UiStateMachine.h"
 #include "../../src/domain/WateringQueue.h"
 #include "board_config.h"
 
@@ -298,6 +299,155 @@ void test_schedule_engine_skips_zero_duration_after_percentage() {
     TEST_ASSERT_EQUAL_UINT8(0, count);
 }
 
+void test_ui_state_machine_wakes_on_input_and_shows_normal() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::DisplayOff);
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1000);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
+}
+
+void test_ui_state_machine_active_interaction_timeout_returns_to_display_off() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1000);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
+
+    ui.tick(1000 + irrigator::board::ACTIVE_INTERACTION_TIMEOUT_MS - 1);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
+
+    ui.tick(1000 + irrigator::board::ACTIVE_INTERACTION_TIMEOUT_MS);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::DisplayOff);
+}
+
+void test_ui_state_machine_zone_and_duration_picker_flow_emits_start_watering() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.defaultManualDuration = 5;
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);  // wake -> Normal
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 100);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ZonePicker);
+    TEST_ASSERT_EQUAL_UINT8(1, ui.pendingZone());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);
+    TEST_ASSERT_EQUAL_UINT8(2, ui.pendingZone());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::DurationPicker);
+    TEST_ASSERT_EQUAL_UINT16(5, ui.pendingDuration());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 400);
+    TEST_ASSERT_EQUAL_UINT16(6, ui.pendingDuration());
+
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::StartWatering);
+    TEST_ASSERT_EQUAL_UINT8(2, intent.zone);
+    TEST_ASSERT_EQUAL_UINT16(6, intent.duration);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
+}
+
+void test_ui_state_machine_long_click_cancels_duration_picker() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 100);  // zone=0, -> DurationPicker
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::DurationPicker);
+
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 200);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::None);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
+}
+
+void test_ui_state_machine_watering_active_ignores_ticks_but_long_click_opens_menu() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.wateringActive = true;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);  // wake -> Normal
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 100);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);  // ticks ignored
+
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 200);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuMain);
+}
+
+void test_ui_state_machine_stop_confirm_flow() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.wateringActive = true;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    TEST_ASSERT_EQUAL_UINT8(0, ui.selectedIndex());  // Stop is item 0 while watering
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);  // -> StopConfirm
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::StopConfirm);
+    TEST_ASSERT_FALSE(ui.stopConfirmYesSelected());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300);
+    TEST_ASSERT_TRUE(ui.stopConfirmYesSelected());
+
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::AbortWatering);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
+}
+
+void test_ui_state_machine_settings_percentage_edit() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.wateringPercentage = 100;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Schedule -> Settings
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuSettings);
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);  // enter percentage edit
+    TEST_ASSERT_TRUE(ui.editing());
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 500);
+    TEST_ASSERT_EQUAL_INT16(110, ui.pendingPercentage());
+
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 600);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::SetWateringPercentage);
+    TEST_ASSERT_EQUAL_INT16(110, intent.percentage);
+    TEST_ASSERT_FALSE(ui.editing());
+}
+
+void test_ui_state_machine_schedule_duration_edit() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.scheduleRecordCount = 1;
+    ctx.selectedScheduleDurationMin = 20;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuSchedule
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuSchedule);
+
+    // Item layout for one record: 0=zone,1=day,2=time,3=duration,4=active, 5=BACK.
+    for (int i = 0; i < 3; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300 + i);
+    }
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kScheduleFieldDuration,
+                            ui.selectedIndex());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);  // enter duration edit
+    TEST_ASSERT_TRUE(ui.editing());
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 500);
+    TEST_ASSERT_EQUAL_UINT16(23, ui.pendingDuration());  // adjustScheduledDuration(20, CW)
+
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 600);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::SetScheduleDuration);
+    TEST_ASSERT_EQUAL_UINT8(0, intent.scheduleRecordIndex);
+    TEST_ASSERT_EQUAL_UINT16(23, intent.duration);
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -324,5 +474,13 @@ int main(int argc, char** argv) {
     RUN_TEST(test_schedule_engine_respects_rain_skip);
     RUN_TEST(test_schedule_engine_applies_watering_percentage);
     RUN_TEST(test_schedule_engine_skips_zero_duration_after_percentage);
+    RUN_TEST(test_ui_state_machine_wakes_on_input_and_shows_normal);
+    RUN_TEST(test_ui_state_machine_active_interaction_timeout_returns_to_display_off);
+    RUN_TEST(test_ui_state_machine_zone_and_duration_picker_flow_emits_start_watering);
+    RUN_TEST(test_ui_state_machine_long_click_cancels_duration_picker);
+    RUN_TEST(test_ui_state_machine_watering_active_ignores_ticks_but_long_click_opens_menu);
+    RUN_TEST(test_ui_state_machine_stop_confirm_flow);
+    RUN_TEST(test_ui_state_machine_settings_percentage_edit);
+    RUN_TEST(test_ui_state_machine_schedule_duration_edit);
     return UNITY_END();
 }
