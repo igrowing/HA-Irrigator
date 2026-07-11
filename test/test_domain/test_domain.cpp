@@ -8,6 +8,7 @@
 #include "../../src/domain/IrrigationStateMachine.h"
 #include "../../src/domain/RainSkip.h"
 #include "../../src/domain/Schedule.h"
+#include "../../src/domain/ScheduleEngine.h"
 #include "../../src/domain/Settings.h"
 #include "../../src/domain/WateringQueue.h"
 #include "board_config.h"
@@ -213,6 +214,90 @@ void test_schedule_store_rejects_whole_file_on_one_bad_record() {
     TEST_ASSERT_FALSE(irrigator::domain::parseSchedule(json, strlen(json), list));
 }
 
+namespace {
+
+irrigator::domain::ScheduleList makeOneRecordSchedule() {
+    irrigator::domain::ScheduleList list;
+    list.records[0] = {1, 3, "06:30", 20, true};
+    list.count = 1;
+    return list;
+}
+
+}  // namespace
+
+void test_schedule_engine_fires_matching_record_once_per_minute() {
+    irrigator::domain::ScheduleEngine engine;
+    const irrigator::domain::ScheduleList schedule = makeOneRecordSchedule();
+    const irrigator::domain::WallClock now{3, 6, 30};
+    irrigator::domain::RainSkip noSkip;
+    irrigator::domain::WateringRequest due[irrigator::board::SCHEDULE_MAX_RECORDS];
+
+    const uint8_t firstCount =
+        engine.tick(now, 100000, schedule, true, noSkip, 100, due, irrigator::board::SCHEDULE_MAX_RECORDS);
+    TEST_ASSERT_EQUAL_UINT8(1, firstCount);
+    TEST_ASSERT_EQUAL_UINT8(1, due[0].zone);
+    TEST_ASSERT_EQUAL_UINT16(20, due[0].durationMin);
+
+    const uint8_t secondCount =
+        engine.tick(now, 100000, schedule, true, noSkip, 100, due, irrigator::board::SCHEDULE_MAX_RECORDS);
+    TEST_ASSERT_EQUAL_UINT8(0, secondCount);
+
+    const irrigator::domain::WallClock later{3, 6, 31};
+    const uint8_t thirdCount =
+        engine.tick(later, 100060, schedule, true, noSkip, 100, due, irrigator::board::SCHEDULE_MAX_RECORDS);
+    TEST_ASSERT_EQUAL_UINT8(0, thirdCount);
+}
+
+void test_schedule_engine_respects_schedule_active_flag() {
+    irrigator::domain::ScheduleEngine engine;
+    const irrigator::domain::ScheduleList schedule = makeOneRecordSchedule();
+    const irrigator::domain::WallClock now{3, 6, 30};
+    irrigator::domain::RainSkip noSkip;
+    irrigator::domain::WateringRequest due[irrigator::board::SCHEDULE_MAX_RECORDS];
+
+    const uint8_t count =
+        engine.tick(now, 200000, schedule, false, noSkip, 100, due, irrigator::board::SCHEDULE_MAX_RECORDS);
+    TEST_ASSERT_EQUAL_UINT8(0, count);
+}
+
+void test_schedule_engine_respects_rain_skip() {
+    irrigator::domain::ScheduleEngine engine;
+    const irrigator::domain::ScheduleList schedule = makeOneRecordSchedule();
+    const irrigator::domain::WallClock now{3, 6, 30};
+    irrigator::domain::RainSkip skipping;
+    skipping.setSkipUntil(9999999999LL);
+    irrigator::domain::WateringRequest due[irrigator::board::SCHEDULE_MAX_RECORDS];
+
+    const uint8_t count =
+        engine.tick(now, 300000, schedule, true, skipping, 100, due, irrigator::board::SCHEDULE_MAX_RECORDS);
+    TEST_ASSERT_EQUAL_UINT8(0, count);
+}
+
+void test_schedule_engine_applies_watering_percentage() {
+    irrigator::domain::ScheduleEngine engine;
+    const irrigator::domain::ScheduleList schedule = makeOneRecordSchedule();
+    const irrigator::domain::WallClock now{3, 6, 30};
+    irrigator::domain::RainSkip noSkip;
+    irrigator::domain::WateringRequest due[irrigator::board::SCHEDULE_MAX_RECORDS];
+
+    const uint8_t count =
+        engine.tick(now, 400000, schedule, true, noSkip, 50, due, irrigator::board::SCHEDULE_MAX_RECORDS);
+    TEST_ASSERT_EQUAL_UINT8(1, count);
+    TEST_ASSERT_EQUAL_UINT16(10, due[0].durationMin);
+}
+
+void test_schedule_engine_skips_zero_duration_after_percentage() {
+    irrigator::domain::ScheduleEngine engine;
+    const irrigator::domain::ScheduleList schedule = makeOneRecordSchedule();
+    const irrigator::domain::WallClock now{3, 6, 30};
+    irrigator::domain::RainSkip noSkip;
+    irrigator::domain::WateringRequest due[irrigator::board::SCHEDULE_MAX_RECORDS];
+
+    const uint8_t count =
+        engine.tick(now, 500000, schedule, true, noSkip, 0, due, irrigator::board::SCHEDULE_MAX_RECORDS);
+    TEST_ASSERT_EQUAL_UINT8(0, count);
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -234,5 +319,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_settings_store_round_trips);
     RUN_TEST(test_schedule_store_round_trips_valid_list);
     RUN_TEST(test_schedule_store_rejects_whole_file_on_one_bad_record);
+    RUN_TEST(test_schedule_engine_fires_matching_record_once_per_minute);
+    RUN_TEST(test_schedule_engine_respects_schedule_active_flag);
+    RUN_TEST(test_schedule_engine_respects_rain_skip);
+    RUN_TEST(test_schedule_engine_applies_watering_percentage);
+    RUN_TEST(test_schedule_engine_skips_zero_duration_after_percentage);
     return UNITY_END();
 }

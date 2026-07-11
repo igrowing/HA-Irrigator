@@ -11,6 +11,7 @@
 #include "domain/IrrigationStateMachine.h"
 #include "domain/RainSkip.h"
 #include "domain/Schedule.h"
+#include "domain/ScheduleEngine.h"
 #include "domain/Settings.h"
 #include "domain/WateringQueue.h"
 #include "drivers/Clock.h"
@@ -38,8 +39,12 @@ AppMode appMode = AppMode::Booting;
 
 irrigator::drivers::FileStore fileStore;
 irrigator::drivers::RelayBank relayBank;
-irrigator::drivers::CurrentSensor valveCurrentSensor(VALVE_CURRENT_ADC_PIN);
-irrigator::drivers::CurrentSensor pumpCurrentSensor(PUMP_CURRENT_ADC_PIN);
+irrigator::drivers::CurrentSensor valveCurrentSensor(VALVE_CURRENT_ADC_PIN,
+                                                     irrigator::board::VALVE_CURRENT_SENSOR_ZERO_OFFSET_MV,
+                                                     irrigator::board::VALVE_CURRENT_SENSOR_MV_PER_MA);
+irrigator::drivers::CurrentSensor pumpCurrentSensor(PUMP_CURRENT_ADC_PIN,
+                                                    irrigator::board::PUMP_CURRENT_SENSOR_ZERO_OFFSET_MV,
+                                                    irrigator::board::PUMP_CURRENT_SENSOR_MV_PER_MA);
 irrigator::drivers::LedIndicator led(STATUS_LED_PIN);
 irrigator::drivers::Clock clockService;
 
@@ -53,6 +58,7 @@ irrigator::domain::CurrentFaultMonitor valveFaultMonitor({irrigator::board::VALV
 irrigator::domain::CurrentFaultMonitor pumpFaultMonitor({irrigator::board::PUMP_CURRENT_MIN_MA,
                                                          irrigator::board::PUMP_CURRENT_MAX_MA});
 irrigator::domain::IrrigationStateMachine irrigation;
+irrigator::domain::ScheduleEngine scheduleEngine;
 
 irrigator::network::CaptivePortalService captivePortal;
 irrigator::network::MqttService mqtt;
@@ -63,6 +69,13 @@ WateringRequest activeRequestForReporting;
 bool reportedActive = false;
 bool mqttBreathPlayed = false;
 uint32_t lastWifiRetryMs = 0;
+
+bool valveWindowOpen = false;
+uint32_t valveWindowCloseAtMs = 0;
+bool valveFaultActive = false;
+bool pumpWindowOpen = false;
+uint32_t pumpWindowCloseAtMs = 0;
+bool pumpFaultActive = false;
 
 String makeDevicePrefix() {
     String mac = WiFi.macAddress();
@@ -207,6 +220,22 @@ bool persistSettings() {
     return fileStore.writeTextWithBackup(irrigator::board::SETTINGS_FILE_PATH, String(buffer));
 }
 
+void enqueueOrStart(const WateringRequest& request, uint32_t nowMs) {
+    if (irrigation.isActive()) {
+        if (!wateringQueue.push(request)) {
+            char alertMsg[112];
+            snprintf(alertMsg,
+                    sizeof(alertMsg),
+                    "Watering queue is full. Dropping watering: zone=%u duration=%u",
+                    static_cast<unsigned>(request.zone),
+                    static_cast<unsigned>(request.durationMin));
+            mqtt.publishAlert(alertMsg);
+        }
+    } else {
+        startIrrigation(request, nowMs);
+    }
+}
+
 void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t length) {
     const uint32_t nowMs = millis();
     const String body(reinterpret_cast<const char*>(payload), length);
@@ -239,19 +268,7 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
             return;
         }
 
-        if (irrigation.isActive()) {
-            if (!wateringQueue.push(request)) {
-                char alertMsg[112];
-                snprintf(alertMsg,
-                        sizeof(alertMsg),
-                        "Watering queue is full. Dropping watering: zone=%u duration=%u",
-                        static_cast<unsigned>(request.zone),
-                        static_cast<unsigned>(request.durationMin));
-                mqtt.publishAlert(alertMsg);
-            }
-        } else {
-            startIrrigation(request, nowMs);
-        }
+        enqueueOrStart(request, nowMs);
         return;
     }
 
@@ -366,6 +383,8 @@ void enterOperationalMode() {
 
     led.setMode(irrigator::drivers::LedMode::Off);
     clockService.begin(deviceConfig.timezoneOffsetHours);
+    clockService.restoreFromRtc();  // Fallback baseline in case NTP takes a while (or never syncs).
+    clockService.syncFromNtp();     // Bounded wait; writes the result back to the DS3231 on success.
 
     irrigator::network::MqttConfig mqttConfig;
     mqttConfig.broker = deviceConfig.mqttBroker;
@@ -379,6 +398,88 @@ void enterOperationalMode() {
     ui.showNormal(irrigation.snapshot(millis()));
 }
 
+void runScheduleEngine(uint32_t nowMs) {
+    struct tm timeinfo;
+    if (!clockService.now(timeinfo)) {
+        return;  // Clock not synced yet; nothing to evaluate against.
+    }
+
+    irrigator::domain::WallClock wallClock;
+    wallClock.isoDayOfWeek = timeinfo.tm_wday == 0 ? 7 : static_cast<uint8_t>(timeinfo.tm_wday);
+    wallClock.hour = static_cast<uint8_t>(timeinfo.tm_hour);
+    wallClock.minute = static_cast<uint8_t>(timeinfo.tm_min);
+
+    WateringRequest dueRequests[irrigator::board::SCHEDULE_MAX_RECORDS];
+    const uint8_t dueCount = scheduleEngine.tick(wallClock,
+                                                 clockService.epoch(),
+                                                 scheduleList,
+                                                 settings.scheduleActive,
+                                                 rainSkip,
+                                                 settings.wateringPercentage,
+                                                 dueRequests,
+                                                 irrigator::board::SCHEDULE_MAX_RECORDS);
+    for (uint8_t i = 0; i < dueCount; ++i) {
+        enqueueOrStart(dueRequests[i], nowMs);
+    }
+}
+
+// Measurement windows per spec: sampling for a given output starts the moment it's commanded on
+// and keeps running until board::CURRENT_MEASURE_POST_OFF_MS after it turns off. Fault alerting
+// (via CurrentFaultMonitor's begin/endActiveCycle bracket) tracks the same window, which is also
+// what gives the "only once per cycle, until the alert clears" de-duplication for free.
+void updateCurrentMonitoring(uint32_t nowMs) {
+    const auto snapshot = irrigation.snapshot(nowMs);
+    const bool valveOn = snapshot.state == irrigator::domain::IrrigationState::Watering;
+    const bool pumpOn = snapshot.pumpOn;
+
+    if (valveOn) {
+        if (!valveWindowOpen) {
+            valveWindowOpen = true;
+            valveFaultMonitor.beginActiveCycle();
+        }
+        valveWindowCloseAtMs = nowMs + irrigator::board::CURRENT_MEASURE_POST_OFF_MS;
+
+        const uint16_t currentMa = valveCurrentSensor.readMilliAmps();
+        if (valveFaultMonitor.checkAndConsumeAlert(currentMa)) {
+            valveFaultActive = true;
+            char alertMsg[80];
+            snprintf(alertMsg,
+                    sizeof(alertMsg),
+                    R"({"valve":%u,"current":%u,"units":"mA"})",
+                    static_cast<unsigned>(snapshot.activeZone),
+                    static_cast<unsigned>(currentMa));
+            mqtt.publishAlert(alertMsg);
+        }
+    } else if (valveWindowOpen && nowMs >= valveWindowCloseAtMs) {
+        valveWindowOpen = false;
+        valveFaultActive = false;
+        valveFaultMonitor.endActiveCycle();
+    }
+
+    if (pumpOn) {
+        if (!pumpWindowOpen) {
+            pumpWindowOpen = true;
+            pumpFaultMonitor.beginActiveCycle();
+        }
+        pumpWindowCloseAtMs = nowMs + irrigator::board::CURRENT_MEASURE_POST_OFF_MS;
+
+        const uint16_t currentMa = pumpCurrentSensor.readMilliAmps();
+        if (pumpFaultMonitor.checkAndConsumeAlert(currentMa)) {
+            pumpFaultActive = true;
+            char alertMsg[64];
+            snprintf(alertMsg,
+                    sizeof(alertMsg),
+                    R"({"pump":0,"current":%u,"units":"mA"})",
+                    static_cast<unsigned>(currentMa));
+            mqtt.publishAlert(alertMsg);
+        }
+    } else if (pumpWindowOpen && nowMs >= pumpWindowCloseAtMs) {
+        pumpWindowOpen = false;
+        pumpFaultActive = false;
+        pumpFaultMonitor.endActiveCycle();
+    }
+}
+
 void updateOutputsFromDomain() {
     const auto snapshot = irrigation.snapshot(millis());
     relayBank.setPump(snapshot.pumpOn);
@@ -389,9 +490,12 @@ void updateOutputsFromDomain() {
         relayBank.setZone(zone, zoneOn);
     }
 
-    if (snapshot.pumpOn) {
+    if (valveFaultActive || pumpFaultActive) {
+        led.setMode(irrigator::drivers::LedMode::Alert);
+    } else if (snapshot.pumpOn) {
         led.setMode(irrigator::drivers::LedMode::SolidOn);
-    } else if (appMode == AppMode::Operational && led.mode() == irrigator::drivers::LedMode::SolidOn) {
+    } else if (led.mode() == irrigator::drivers::LedMode::SolidOn ||
+              led.mode() == irrigator::drivers::LedMode::Alert) {
         led.setMode(irrigator::drivers::LedMode::Off);
     }
 }
@@ -453,10 +557,18 @@ void loop() {
                 mqtt.publishStatus(buildStatusJson(nowMs));
             }
 
+            runScheduleEngine(nowMs);
+
             irrigation.tick(nowMs);
             if (reportedActive && !irrigation.isActive()) {
                 reportStop(activeRequestForReporting.reason);
+                // Pop the next queued watering (schedule-overlap or MQTT-during-active queueing).
+                WateringRequest next;
+                if (wateringQueue.pop(next)) {
+                    startIrrigation(next, nowMs);
+                }
             }
+            updateCurrentMonitoring(nowMs);
             updateOutputsFromDomain();
             break;
         case AppMode::Booting:

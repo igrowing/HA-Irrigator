@@ -43,6 +43,13 @@ static constexpr uint16_t VALVE_CURRENT_MAX_MA = 800;
 static constexpr uint16_t PUMP_CURRENT_MIN_MA = 200;
 static constexpr uint16_t PUMP_CURRENT_MAX_MA = 1800;
 
+// PLACEHOLDERS — not a real calibration. Tune against the actual installed current-sensor
+// modules on real hardware (see agents.md Step 5); readMilliAmps() is meaningless until then.
+static constexpr uint16_t VALVE_CURRENT_SENSOR_ZERO_OFFSET_MV = 1650;
+static constexpr float VALVE_CURRENT_SENSOR_MV_PER_MA = 1.0f;
+static constexpr uint16_t PUMP_CURRENT_SENSOR_ZERO_OFFSET_MV = 1650;
+static constexpr float PUMP_CURRENT_SENSOR_MV_PER_MA = 1.0f;
+
 static constexpr uint16_t ACTIVE_INTERACTION_TIMEOUT_MS = 20000;
 static constexpr uint16_t PUMP_PRESTART_MS = 500;
 static constexpr uint32_t PUMP_GRACEFUL_SHUTDOWN_MS = 60000UL;
