@@ -17,7 +17,8 @@ struct MqttConfig {
     String prefix;
 };
 
-// Called for every message on `<prefix>/cmd/<commandName>`.
+// Called for every message on `<prefix>/cmd/<commandName>` — commandName is everything after
+// `cmd/`, so a message on `cmd/upload/settings.json` arrives as commandName="upload/settings.json".
 using MqttCommandHandler =
     std::function<void(const String& commandName, const uint8_t* payload, size_t length)>;
 
@@ -42,6 +43,10 @@ public:
                       ::irrigator::domain::RunReason reason);
     void publishAlert(const String& jsonOrTextPayload);
     void publishSchedule(const String& jsonPayload);
+
+    // Publishes file content to `<prefix>/download/<filename>` in response to a
+    // `<prefix>/cmd/download` request (payload = filename).
+    void publishDownload(const String& filename, const String& content);
 
     // Returns true exactly once, ~15s after begin(), the first time the client is connected
     // at or after that point — the caller should build and publish the status payload then.

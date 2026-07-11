@@ -65,8 +65,15 @@ const char* IrrigatorUi::dayOfWeekName(uint8_t isoDay) {
         const uint8_t recordIndex = static_cast<uint8_t>(
             uiState_.selectedIndex() / ::irrigator::domain::UiStateMachine::kScheduleFieldsPerRecord);
         if (recordIndex < data.schedule->count) {
-            ctx.selectedScheduleDurationMin = data.schedule->records[recordIndex].durationMin;
-            ctx.selectedScheduleActive = data.schedule->records[recordIndex].active;
+            const auto& record = data.schedule->records[recordIndex];
+            ctx.selectedScheduleZone = record.zone;
+            ctx.selectedScheduleDay = record.dayOfWeek;
+            ctx.selectedScheduleHour =
+                static_cast<uint8_t>((record.startTime[0] - '0') * 10 + (record.startTime[1] - '0'));
+            ctx.selectedScheduleMinute =
+                static_cast<uint8_t>((record.startTime[3] - '0') * 10 + (record.startTime[4] - '0'));
+            ctx.selectedScheduleDurationMin = record.durationMin;
+            ctx.selectedScheduleActive = record.active;
         }
     }
 
@@ -370,15 +377,30 @@ void IrrigatorUi::renderMenuSchedule(const RenderData& data) {
                     const auto& record = data.schedule->records[recordIndex];
                     const uint8_t field = static_cast<uint8_t>(index % kFieldsPerRecord);
                     const unsigned pn = static_cast<unsigned>(recordIndex + 1);
+                    const bool isEditingThisRow = editing && editingIndex == index;
                     switch (field) {
-                        case ::irrigator::domain::UiStateMachine::kScheduleFieldZone:
-                            snprintf(buffer, size, "%u:%s", pn, zoneLabel(data, record.zone));
+                        case ::irrigator::domain::UiStateMachine::kScheduleFieldZone: {
+                            const uint8_t zone = isEditingThisRow ? uiState_.pendingScheduleZone() : record.zone;
+                            snprintf(buffer, size, "%u:%s", pn, zoneLabel(data, zone));
                             break;
-                        case ::irrigator::domain::UiStateMachine::kScheduleFieldDay:
-                            snprintf(buffer, size, "%u:Start %s", pn, dayOfWeekName(record.dayOfWeek));
+                        }
+                        case ::irrigator::domain::UiStateMachine::kScheduleFieldDay: {
+                            const uint8_t day = isEditingThisRow ? uiState_.pendingScheduleDay() : record.dayOfWeek;
+                            snprintf(buffer, size, "%u:Start %s", pn, dayOfWeekName(day));
                             break;
+                        }
                         case ::irrigator::domain::UiStateMachine::kScheduleFieldTime:
-                            snprintf(buffer, size, "%u:On %s", pn, record.startTime);
+                            if (isEditingThisRow) {
+                                snprintf(buffer,
+                                        size,
+                                        "%u:On %02u:%02u%s",
+                                        pn,
+                                        static_cast<unsigned>(uiState_.pendingScheduleHour()),
+                                        static_cast<unsigned>(uiState_.pendingScheduleMinute()),
+                                        uiState_.editingScheduleTimeMinuteStep() ? "" : " (hr)");
+                            } else {
+                                snprintf(buffer, size, "%u:On %s", pn, record.startTime);
+                            }
                             break;
                         case ::irrigator::domain::UiStateMachine::kScheduleFieldDuration: {
                             const uint16_t duration = (editing && editingIndex == index)

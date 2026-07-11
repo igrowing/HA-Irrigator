@@ -6,6 +6,7 @@
 #include <esp_system.h>
 
 #include "board_config.h"
+#include "domain/CalendarMath.h"
 #include "domain/ConfigStore.h"
 #include "domain/CurrentFaultMonitor.h"
 #include "domain/IrrigationStateMachine.h"
@@ -114,14 +115,12 @@ int64_t parseIso8601Utc(const char* value) {
         return -1;
     }
 
-    int y = year - (month <= 2 ? 1 : 0);
-    const int64_t era = (y >= 0 ? y : y - 399) / 400;
-    const unsigned yoe = static_cast<unsigned>(y - era * 400);
-    const unsigned mp = static_cast<unsigned>((month + 9) % 12);
-    const unsigned doy = (153 * mp + 2) / 5 + static_cast<unsigned>(day) - 1;
-    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    const int64_t days = era * 146097 + static_cast<int64_t>(doe) - 719468;
-    return days * 86400 + hour * 3600 + minute * 60 + second;
+    return irrigator::domain::epochFromUtc(year,
+                                           static_cast<unsigned>(month),
+                                           static_cast<unsigned>(day),
+                                           static_cast<unsigned>(hour),
+                                           static_cast<unsigned>(minute),
+                                           static_cast<unsigned>(second));
 }
 
 const char* bootReasonString(esp_reset_reason_t reason) {
@@ -221,6 +220,126 @@ bool persistSettings() {
     return fileStore.writeTextWithBackup(irrigator::board::SETTINGS_FILE_PATH, String(buffer));
 }
 
+void applyCurrentCalibration() {
+    valveCurrentSensor.setCalibration(settings.valveCurrentZeroOffsetMv, settings.valveCurrentMvPerMa);
+    pumpCurrentSensor.setCalibration(settings.pumpCurrentZeroOffsetMv, settings.pumpCurrentMvPerMa);
+}
+
+// Every MQTT command/topic failure (malformed payload, out-of-range value, unknown command,
+// missing file, etc.) goes through here: one consistent, structured alert plus a matching log
+// line, rather than each call site deciding independently whether/how to report a problem.
+void reportMqttError(const char* context, const String& detail, const char* reason) {
+    char alertMsg[192];
+    snprintf(alertMsg, sizeof(alertMsg), R"({"%s":"%s","error":"%s"})", context, detail.c_str(), reason);
+    mqtt.publishAlert(alertMsg);
+    irrigator::drivers::Log.printf("[WARN] %s %s: %s\n", context, detail.c_str(), reason);
+}
+
+// `cmd/download` handler: payload is a filename (e.g. "config.json"), response goes to
+// `<prefix>/download/<filename>`. Response topic isn't specified by the spec text (only the
+// request shape is) — this is the chosen convention, adjust if HA/tooling expects otherwise.
+void handleMqttDownload(const String& filename) {
+    if (filename.length() == 0) {
+        reportMqttError("download", filename, "empty filename");
+        return;
+    }
+
+    String path = filename;
+    path.trim();
+    if (!path.startsWith("/")) {
+        path = "/" + path;
+    }
+
+    String content;
+    if (!fileStore.exists(path.c_str()) || !fileStore.readText(path.c_str(), content)) {
+        reportMqttError("download", filename, "not_found");
+        return;
+    }
+
+    mqtt.publishDownload(filename, content);
+}
+
+// `cmd/upload/<filename>` handler: payload is the new file content. config.json/settings.json/
+// schedule.json are parsed and validated (reject-whole-file-on-invalid, same as loading them
+// from flash at boot) before being written and applied live; any other filename is written
+// as-is since there's no schema to validate it against. A successful config.json upload
+// restarts the device (new Wi-Fi/MQTT credentials only take effect from enterOperationalMode()
+// at boot).
+void handleMqttUpload(const String& filename, const uint8_t* payload, size_t length) {
+    if (filename.length() == 0) {
+        reportMqttError("upload", filename, "empty filename");
+        return;
+    }
+
+    String path = filename;
+    path.trim();
+    if (!path.startsWith("/")) {
+        path = "/" + path;
+    }
+    const String content(reinterpret_cast<const char*>(payload), length);
+
+    if (path == irrigator::board::CONFIG_FILE_PATH) {
+        irrigator::domain::DeviceConfig parsed;
+        if (!irrigator::domain::parseConfig(content.c_str(), content.length(), parsed)) {
+            reportMqttError("upload", filename, "invalid config.json content");
+            return;
+        }
+        if (!fileStore.writeTextWithBackup(path.c_str(), content)) {
+            reportMqttError("upload", filename, "write failed");
+            return;
+        }
+        irrigator::drivers::Log.info("config.json updated via MQTT upload; restarting");
+        mqtt.publishAvailability(false);
+        delay(200);
+        ESP.restart();
+        return;
+    }
+
+    if (path == irrigator::board::SETTINGS_FILE_PATH) {
+        irrigator::domain::Settings parsed;
+        if (!irrigator::domain::parseSettings(content.c_str(), content.length(), parsed)) {
+            reportMqttError("upload", filename, "invalid settings.json content");
+            return;
+        }
+        if (!fileStore.writeTextWithBackup(path.c_str(), content)) {
+            reportMqttError("upload", filename, "write failed");
+            return;
+        }
+        settings = parsed;
+        applyCurrentCalibration();
+        return;
+    }
+
+    if (path == irrigator::board::SCHEDULE_FILE_PATH) {
+        irrigator::domain::ScheduleList parsed;
+        if (!irrigator::domain::parseSchedule(content.c_str(), content.length(), parsed)) {
+            reportMqttError("upload", filename, "invalid schedule.json content");
+            return;
+        }
+        if (!fileStore.writeTextWithBackup(path.c_str(), content)) {
+            reportMqttError("upload", filename, "write failed");
+            return;
+        }
+        scheduleList = parsed;
+        mqtt.publishSchedule(content);
+        return;
+    }
+
+    // Unrecognized filename: raw passthrough, there's no schema to validate it against.
+    if (!fileStore.writeTextWithBackup(path.c_str(), content)) {
+        reportMqttError("upload", filename, "write failed");
+    }
+}
+
+// `cmd/state` handler: publishes the current watering/pump status on demand, independent of
+// the edge-triggered publishes that fire on every start/stop.
+void publishCurrentState() {
+    const auto snapshot = irrigation.snapshot(millis());
+    const bool valveOn = snapshot.state == irrigator::domain::IrrigationState::Watering;
+    const RunReason reason = reportedActive ? activeRequestForReporting.reason : RunReason::Manual;
+    mqtt.publishState(snapshot.activeZone, zoneName(snapshot.activeZone), valveOn, snapshot.pumpOn, reason);
+}
+
 void persistScheduleAndReport() {
     char buffer[irrigator::board::SCHEDULE_JSON_MAX_BYTES];
     const size_t written = irrigator::domain::serializeSchedule(scheduleList, buffer, sizeof(buffer));
@@ -307,6 +426,43 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
             }
             break;
         }
+        case UiIntentType::SetScheduleZone:
+            if (intent.scheduleRecordIndex < scheduleList.count) {
+                irrigator::domain::ScheduleRecord updated =
+                    scheduleList.records[intent.scheduleRecordIndex];
+                updated.zone = intent.zone;
+                if (irrigator::domain::validateScheduleRecord(updated)) {
+                    scheduleList.records[intent.scheduleRecordIndex] = updated;
+                    persistScheduleAndReport();
+                }
+            }
+            break;
+        case UiIntentType::SetScheduleDay:
+            if (intent.scheduleRecordIndex < scheduleList.count) {
+                irrigator::domain::ScheduleRecord updated =
+                    scheduleList.records[intent.scheduleRecordIndex];
+                updated.dayOfWeek = intent.dayOfWeek;
+                if (irrigator::domain::validateScheduleRecord(updated)) {
+                    scheduleList.records[intent.scheduleRecordIndex] = updated;
+                    persistScheduleAndReport();
+                }
+            }
+            break;
+        case UiIntentType::SetScheduleTime:
+            if (intent.scheduleRecordIndex < scheduleList.count) {
+                irrigator::domain::ScheduleRecord updated =
+                    scheduleList.records[intent.scheduleRecordIndex];
+                snprintf(updated.startTime,
+                        sizeof(updated.startTime),
+                        "%02u:%02u",
+                        static_cast<unsigned>(intent.hour),
+                        static_cast<unsigned>(intent.minute));
+                if (irrigator::domain::validateScheduleRecord(updated)) {
+                    scheduleList.records[intent.scheduleRecordIndex] = updated;
+                    persistScheduleAndReport();
+                }
+            }
+            break;
         case UiIntentType::SetScheduleDuration:
             if (intent.scheduleRecordIndex < scheduleList.count) {
                 scheduleList.records[intent.scheduleRecordIndex].durationMin = intent.duration;
@@ -329,12 +485,30 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
     const uint32_t nowMs = millis();
     const String body(reinterpret_cast<const char*>(payload), length);
 
+    if (commandName == "state") {
+        publishCurrentState();
+        return;
+    }
+
+    if (commandName == "download") {
+        handleMqttDownload(body);
+        return;
+    }
+
+    if (commandName.startsWith("upload/")) {
+        handleMqttUpload(commandName.substring(String("upload/").length()), payload, length);
+        return;
+    }
+
     if (commandName == "watering_percentage") {
+        if (body.length() == 0) {
+            reportMqttError("command", commandName, "empty payload, expected an integer");
+            return;
+        }
         irrigator::domain::Settings updated = settings;
         updated.wateringPercentage = static_cast<int16_t>(body.toInt());
         if (!irrigator::domain::validateSettings(updated)) {
-            irrigator::drivers::Log.printf("[WARN] Rejected watering_percentage=%s (out of range)\n",
-                                           body.c_str());
+            reportMqttError("command", commandName, "percentage out of range (0-300)");
             return;
         }
         settings = updated;
@@ -345,15 +519,19 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
     if (commandName == "run") {
         JsonDocument doc;
         if (deserializeJson(doc, body)) {
-            irrigator::drivers::Log.warn("cmd/run: invalid JSON payload");
+            reportMqttError("command", commandName, "invalid JSON payload");
             return;
         }
         WateringRequest request;
         request.zone = doc["zone"] | 0;
         request.durationMin = doc["duration"] | 0;
         request.reason = RunReason::Mqtt;
-        if (request.zone > irrigator::board::ZONE_COUNT || request.durationMin == 0) {
-            irrigator::drivers::Log.warn("cmd/run: invalid zone/duration");
+        if (request.zone > irrigator::board::ZONE_COUNT) {
+            reportMqttError("command", commandName, "zone out of range (0-11)");
+            return;
+        }
+        if (request.durationMin == 0 || request.durationMin > irrigator::board::MANUAL_DURATION_MAX_MINUTES) {
+            reportMqttError("command", commandName, "duration out of range (1-120)");
             return;
         }
 
@@ -379,16 +557,16 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
     if (commandName == "skip_rain") {
         JsonDocument doc;
         if (deserializeJson(doc, body)) {
-            irrigator::drivers::Log.warn("cmd/skip_rain: invalid JSON payload");
+            reportMqttError("command", commandName, "invalid JSON payload");
             return;
         }
         const char* iso = doc["skip_until"] | "";
         const int64_t epoch = parseIso8601Utc(iso);
-        if (epoch > 0) {
-            rainSkip.setSkipUntil(epoch);
-        } else {
-            irrigator::drivers::Log.warn("cmd/skip_rain: invalid timestamp");
+        if (epoch <= 0) {
+            reportMqttError("command", commandName, "invalid or missing skip_until timestamp");
+            return;
         }
+        rainSkip.setSkipUntil(epoch);
         return;
     }
 
@@ -400,11 +578,36 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
     }
 
     if (commandName == "ota") {
+        if (body.length() == 0) {
+            reportMqttError("command", commandName, "empty payload, expected a firmware URL");
+            return;
+        }
         ota.beginUpdateFromUrl(body.c_str());
         return;
     }
 
-    irrigator::drivers::Log.printf("[WARN] Unknown MQTT command: %s\n", commandName.c_str());
+    if (commandName == "set_calibration") {
+        JsonDocument doc;
+        if (deserializeJson(doc, body)) {
+            reportMqttError("command", commandName, "invalid JSON payload");
+            return;
+        }
+        irrigator::domain::Settings updated = settings;
+        updated.valveCurrentZeroOffsetMv = doc["valve_zero_mv"] | settings.valveCurrentZeroOffsetMv;
+        updated.valveCurrentMvPerMa = doc["valve_mv_per_ma"] | settings.valveCurrentMvPerMa;
+        updated.pumpCurrentZeroOffsetMv = doc["pump_zero_mv"] | settings.pumpCurrentZeroOffsetMv;
+        updated.pumpCurrentMvPerMa = doc["pump_mv_per_ma"] | settings.pumpCurrentMvPerMa;
+        if (!irrigator::domain::validateSettings(updated)) {
+            reportMqttError("command", commandName, "calibration value out of range");
+            return;
+        }
+        settings = updated;
+        persistSettings();
+        applyCurrentCalibration();
+        return;
+    }
+
+    reportMqttError("command", commandName, "unknown command");
 }
 
 bool loadOperationalConfig() {
@@ -467,6 +670,7 @@ void enterOperationalMode() {
     appMode = AppMode::Operational;
 
     loadOrCreateSettings();
+    applyCurrentCalibration();
     loadSchedule();
     connectWifiOnce();
 

@@ -12,10 +12,9 @@ namespace irrigator::domain {
 // supplies whatever the currently-selected item needs via Context each call, and executes the
 // UiIntent this returns. That keeps this class fully host-testable.
 //
-// Scope note: schedule-record editing only covers the "For Xmin" duration (existing formula)
-// and the active/paused toggle. Editing a record's zone/day-of-week/start-time fields from the
-// local UI is not implemented yet — the spec lists them as menu rows (shown here, view-only)
-// but doesn't specify a tick-adjustment shape for them the way it does for durations.
+// Every menu row is clickable: it either opens a submenu or enters edit mode for that item
+// (only IP/MQTT IP are spec'd "not clickable"). Zone/day-of-week cycle by 1 per tick; start-time
+// is edited as two sequential steps (hour, then minute) under the same click-to-edit gesture.
 class UiStateMachine {
 public:
     struct Context {
@@ -27,6 +26,10 @@ public:
         // Only need to be valid when a MenuSchedule row is selected; the caller refreshes these
         // from the live schedule record at selectedIndex()/kScheduleFieldsPerRecord before
         // calling handleInput().
+        uint8_t selectedScheduleZone = 0;
+        uint8_t selectedScheduleDay = 0;
+        uint8_t selectedScheduleHour = 0;
+        uint8_t selectedScheduleMinute = 0;
         uint16_t selectedScheduleDurationMin = 0;
         bool selectedScheduleActive = false;
     };
@@ -52,6 +55,12 @@ public:
     bool stopConfirmYesSelected() const { return stopConfirmYes_; }
     int16_t pendingPercentage() const { return pendingPercentage_; }
 
+    uint8_t pendingScheduleZone() const { return pendingScheduleZone_; }
+    uint8_t pendingScheduleDay() const { return pendingScheduleDay_; }
+    uint8_t pendingScheduleHour() const { return pendingScheduleHour_; }
+    uint8_t pendingScheduleMinute() const { return pendingScheduleMinute_; }
+    bool editingScheduleTimeMinuteStep() const { return editingScheduleMinuteStep_; }
+
 private:
     void enterDisplayOff();
     void wake(uint32_t nowMs);
@@ -63,6 +72,7 @@ private:
     UiIntent handleStopConfirm(UiInputEvent event);
     UiIntent handleMenuMain(UiInputEvent event, const Context& ctx);
     UiIntent handleMenuSchedule(UiInputEvent event, const Context& ctx);
+    UiIntent handleMenuScheduleEdit(UiInputEvent event, uint8_t fieldIndex, uint8_t recordIndex);
     UiIntent handleMenuSettings(UiInputEvent event, const Context& ctx);
 
     static uint8_t stepIndex(uint8_t current, uint8_t count, bool forward);
@@ -75,6 +85,12 @@ private:
     uint16_t pendingDuration_ = 0;
     bool stopConfirmYes_ = false;
     int16_t pendingPercentage_ = 0;
+
+    uint8_t pendingScheduleZone_ = 0;
+    uint8_t pendingScheduleDay_ = 0;
+    uint8_t pendingScheduleHour_ = 0;
+    uint8_t pendingScheduleMinute_ = 0;
+    bool editingScheduleMinuteStep_ = false;
 
     bool active_ = false;  // Active-interaction vs. display-off.
     uint32_t interactionDeadlineMs_ = 0;

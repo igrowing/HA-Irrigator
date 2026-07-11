@@ -145,8 +145,15 @@ void MqttService::publishSchedule(const String& jsonPayload) {
     publishRaw("/schedule", jsonPayload, false);
 }
 
+void MqttService::publishDownload(const String& filename, const String& content) {
+    String safeName = filename;
+    safeName.replace("/", "_");
+    publishRaw("/download/" + safeName, content, false);
+}
+
 void MqttService::dispatchMessage(char* topic, uint8_t* payload, unsigned int length) {
     const String topicStr(topic);
+
     const String cmdPrefix = config_.prefix + "/cmd/";
     if (!topicStr.startsWith(cmdPrefix)) {
         return;

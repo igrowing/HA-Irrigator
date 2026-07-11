@@ -17,6 +17,14 @@ public:
     uint16_t readMilliAmps() const;
     uint16_t readRawMilliVolts() const;
 
+    // Overrides the constructor's calibration at runtime — used to apply a saved calibration
+    // result from settings.json (see domain::Settings) once it's loaded, or a fresh one pushed
+    // over MQTT (cmd/set_calibration).
+    void setCalibration(uint16_t zeroOffsetMv, float milliVoltsPerMilliAmp) {
+        zeroOffsetMv_ = zeroOffsetMv;
+        milliVoltsPerMilliAmp_ = milliVoltsPerMilliAmp;
+    }
+
 private:
     uint8_t adcPin_;
     uint16_t zeroOffsetMv_;

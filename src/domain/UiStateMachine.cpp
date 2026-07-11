@@ -209,27 +209,9 @@ UiIntent UiStateMachine::handleMenuSchedule(UiInputEvent event, const Context& c
     UiIntent intent;
 
     if (editing_) {
-        switch (event) {
-            case UiInputEvent::Clockwise:
-                pendingDuration_ =
-                    adjustScheduledDuration(pendingDuration_, RotationDirection::Clockwise);
-                break;
-            case UiInputEvent::CounterClockwise:
-                pendingDuration_ =
-                    adjustScheduledDuration(pendingDuration_, RotationDirection::CounterClockwise);
-                break;
-            case UiInputEvent::Click:
-                intent.type = UiIntentType::SetScheduleDuration;
-                intent.scheduleRecordIndex =
-                    static_cast<uint8_t>(selectedIndex_ / kScheduleFieldsPerRecord);
-                intent.duration = pendingDuration_;
-                editing_ = false;
-                break;
-            case UiInputEvent::LongClick:
-                editing_ = false;
-                break;
-        }
-        return intent;
+        const uint8_t fieldIndex = static_cast<uint8_t>(selectedIndex_ % kScheduleFieldsPerRecord);
+        const uint8_t recordIndex = static_cast<uint8_t>(selectedIndex_ / kScheduleFieldsPerRecord);
+        return handleMenuScheduleEdit(event, fieldIndex, recordIndex);
     }
 
     switch (event) {
@@ -246,17 +228,37 @@ UiIntent UiStateMachine::handleMenuSchedule(UiInputEvent event, const Context& c
                 selectedIndex_ = 0;
                 break;
             }
+            // Every row is clickable: it either opens edit mode for that field, or (Active) is
+            // a direct toggle with no separate edit step.
             const uint8_t fieldIndex = static_cast<uint8_t>(selectedIndex_ % kScheduleFieldsPerRecord);
-            if (fieldIndex == kScheduleFieldDuration) {
-                pendingDuration_ = ctx.selectedScheduleDurationMin;
-                editing_ = true;
-            } else if (fieldIndex == kScheduleFieldActive) {
-                intent.type = UiIntentType::SetScheduleActive;
-                intent.scheduleRecordIndex =
-                    static_cast<uint8_t>(selectedIndex_ / kScheduleFieldsPerRecord);
-                intent.boolValue = !ctx.selectedScheduleActive;
+            switch (fieldIndex) {
+                case kScheduleFieldZone:
+                    pendingScheduleZone_ = ctx.selectedScheduleZone;
+                    editing_ = true;
+                    break;
+                case kScheduleFieldDay:
+                    pendingScheduleDay_ = ctx.selectedScheduleDay;
+                    editing_ = true;
+                    break;
+                case kScheduleFieldTime:
+                    pendingScheduleHour_ = ctx.selectedScheduleHour;
+                    pendingScheduleMinute_ = ctx.selectedScheduleMinute;
+                    editingScheduleMinuteStep_ = false;
+                    editing_ = true;
+                    break;
+                case kScheduleFieldDuration:
+                    pendingDuration_ = ctx.selectedScheduleDurationMin;
+                    editing_ = true;
+                    break;
+                case kScheduleFieldActive:
+                    intent.type = UiIntentType::SetScheduleActive;
+                    intent.scheduleRecordIndex =
+                        static_cast<uint8_t>(selectedIndex_ / kScheduleFieldsPerRecord);
+                    intent.boolValue = !ctx.selectedScheduleActive;
+                    break;
+                default:
+                    break;
             }
-            // Zone/day/time fields: view-only in this pass, click is a no-op.
             break;
         }
         case UiInputEvent::LongClick:
@@ -264,6 +266,129 @@ UiIntent UiStateMachine::handleMenuSchedule(UiInputEvent event, const Context& c
             selectedIndex_ = 0;
             break;
     }
+    return intent;
+}
+
+UiIntent UiStateMachine::handleMenuScheduleEdit(UiInputEvent event,
+                                                uint8_t fieldIndex,
+                                                uint8_t recordIndex) {
+    UiIntent intent;
+
+    if (fieldIndex == kScheduleFieldZone) {
+        switch (event) {
+            case UiInputEvent::Clockwise:
+                pendingScheduleZone_ = static_cast<uint8_t>(
+                    stepIndex(static_cast<uint8_t>(pendingScheduleZone_ - 1), board::ZONE_COUNT, true) +
+                    1);
+                break;
+            case UiInputEvent::CounterClockwise:
+                pendingScheduleZone_ = static_cast<uint8_t>(
+                    stepIndex(static_cast<uint8_t>(pendingScheduleZone_ - 1), board::ZONE_COUNT, false) +
+                    1);
+                break;
+            case UiInputEvent::Click:
+                intent.type = UiIntentType::SetScheduleZone;
+                intent.scheduleRecordIndex = recordIndex;
+                intent.zone = pendingScheduleZone_;
+                editing_ = false;
+                break;
+            case UiInputEvent::LongClick:
+                editing_ = false;
+                break;
+        }
+        return intent;
+    }
+
+    if (fieldIndex == kScheduleFieldDay) {
+        switch (event) {
+            case UiInputEvent::Clockwise:
+                pendingScheduleDay_ = static_cast<uint8_t>(
+                    stepIndex(static_cast<uint8_t>(pendingScheduleDay_ - 1), 7, true) + 1);
+                break;
+            case UiInputEvent::CounterClockwise:
+                pendingScheduleDay_ = static_cast<uint8_t>(
+                    stepIndex(static_cast<uint8_t>(pendingScheduleDay_ - 1), 7, false) + 1);
+                break;
+            case UiInputEvent::Click:
+                intent.type = UiIntentType::SetScheduleDay;
+                intent.scheduleRecordIndex = recordIndex;
+                intent.dayOfWeek = pendingScheduleDay_;
+                editing_ = false;
+                break;
+            case UiInputEvent::LongClick:
+                editing_ = false;
+                break;
+        }
+        return intent;
+    }
+
+    if (fieldIndex == kScheduleFieldTime) {
+        if (!editingScheduleMinuteStep_) {
+            switch (event) {
+                case UiInputEvent::Clockwise:
+                    pendingScheduleHour_ = stepIndex(pendingScheduleHour_, 24, true);
+                    break;
+                case UiInputEvent::CounterClockwise:
+                    pendingScheduleHour_ = stepIndex(pendingScheduleHour_, 24, false);
+                    break;
+                case UiInputEvent::Click:
+                    editingScheduleMinuteStep_ = true;  // Hour confirmed; now edit the minute.
+                    break;
+                case UiInputEvent::LongClick:
+                    editing_ = false;
+                    break;
+            }
+            return intent;
+        }
+
+        switch (event) {
+            case UiInputEvent::Clockwise:
+                pendingScheduleMinute_ = stepIndex(pendingScheduleMinute_, 60, true);
+                break;
+            case UiInputEvent::CounterClockwise:
+                pendingScheduleMinute_ = stepIndex(pendingScheduleMinute_, 60, false);
+                break;
+            case UiInputEvent::Click:
+                intent.type = UiIntentType::SetScheduleTime;
+                intent.scheduleRecordIndex = recordIndex;
+                intent.hour = pendingScheduleHour_;
+                intent.minute = pendingScheduleMinute_;
+                editing_ = false;
+                editingScheduleMinuteStep_ = false;
+                break;
+            case UiInputEvent::LongClick:
+                editing_ = false;
+                editingScheduleMinuteStep_ = false;
+                break;
+        }
+        return intent;
+    }
+
+    if (fieldIndex == kScheduleFieldDuration) {
+        switch (event) {
+            case UiInputEvent::Clockwise:
+                pendingDuration_ =
+                    adjustScheduledDuration(pendingDuration_, RotationDirection::Clockwise);
+                break;
+            case UiInputEvent::CounterClockwise:
+                pendingDuration_ =
+                    adjustScheduledDuration(pendingDuration_, RotationDirection::CounterClockwise);
+                break;
+            case UiInputEvent::Click:
+                intent.type = UiIntentType::SetScheduleDuration;
+                intent.scheduleRecordIndex = recordIndex;
+                intent.duration = pendingDuration_;
+                editing_ = false;
+                break;
+            case UiInputEvent::LongClick:
+                editing_ = false;
+                break;
+        }
+        return intent;
+    }
+
+    // Active never enters editing_ (it's a direct toggle) — defensive fallback only.
+    editing_ = false;
     return intent;
 }
 

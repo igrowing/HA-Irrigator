@@ -6,10 +6,17 @@
 
 #include "Logger.h"
 #include "board_config.h"
+#include "domain/CalendarMath.h"
+#include "domain/DstRules.h"
 
 namespace irrigator::drivers {
 
 namespace {
+
+// Below this, the system clock is still at its post-boot default and hasn't been set by NTP or
+// the DS3231 yet (~2023-11-14); used purely as a "is it set at all" sanity check, not a real
+// calendar bound.
+constexpr time_t kMinPlausibleEpoch = 1700000000;
 
 uint8_t toBcd(uint8_t value) {
     return static_cast<uint8_t>(((value / 10) << 4) | (value % 10));
@@ -19,38 +26,23 @@ uint8_t fromBcd(uint8_t value) {
     return static_cast<uint8_t>(((value >> 4) * 10) + (value & 0x0F));
 }
 
-// Howard Hinnant's days_from_civil, used instead of timegm() (a GNU/BSD extension not
-// guaranteed present in the ESP32 toolchain's newlib) to turn a UTC struct tm into epoch
-// seconds without relying on the process TZ.
-int64_t epochFromUtcTm(const struct tm& utcTm) {
-    int y = (utcTm.tm_year + 1900) - (utcTm.tm_mon + 1 <= 2 ? 1 : 0);
-    const int64_t era = (y >= 0 ? y : y - 399) / 400;
-    const unsigned yoe = static_cast<unsigned>(y - era * 400);
-    const unsigned mp = static_cast<unsigned>((utcTm.tm_mon + 1 + 9) % 12);
-    const unsigned doy = (153 * mp + 2) / 5 + static_cast<unsigned>(utcTm.tm_mday) - 1;
-    const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    const int64_t days = era * 146097 + static_cast<int64_t>(doe) - 719468;
-    return days * 86400 + utcTm.tm_hour * 3600 + utcTm.tm_min * 60 + utcTm.tm_sec;
-}
-
 }  // namespace
 
 bool Clock::begin(int8_t utcOffsetHours) {
-    configTime(static_cast<long>(utcOffsetHours) * 3600L, 0, "pool.ntp.org");
+    utcOffsetHours_ = utcOffsetHours;
+    // gmtOffset/daylightOffset both 0: the system clock always tracks plain UTC. The configured
+    // offset and EU DST are applied on read, in now() below, instead of being baked in here.
+    configTime(0, 0, "pool.ntp.org");
     return true;
 }
 
 bool Clock::syncFromNtp() {
-    struct tm localTime;
-    const bool ok = getLocalTime(&localTime, 5000);
+    struct tm utcTm;
+    const bool ok = getLocalTime(&utcTm, 5000);  // gmtOffset is 0, so this is already UTC.
     if (!ok) {
         Log.warn("NTP time is not available yet");
         return false;
     }
-
-    const time_t nowUtc = time(nullptr);
-    struct tm utcTm;
-    gmtime_r(&nowUtc, &utcTm);
     writeToRtc(utcTm);
     return true;
 }
@@ -61,8 +53,14 @@ bool Clock::restoreFromRtc() {
         return false;
     }
 
+    const int64_t epochUtc = domain::epochFromUtc(utcTm.tm_year + 1900,
+                                                  static_cast<unsigned>(utcTm.tm_mon + 1),
+                                                  static_cast<unsigned>(utcTm.tm_mday),
+                                                  static_cast<unsigned>(utcTm.tm_hour),
+                                                  static_cast<unsigned>(utcTm.tm_min),
+                                                  static_cast<unsigned>(utcTm.tm_sec));
     struct timeval tv;
-    tv.tv_sec = static_cast<time_t>(epochFromUtcTm(utcTm));
+    tv.tv_sec = static_cast<time_t>(epochUtc);
     tv.tv_usec = 0;
     settimeofday(&tv, nullptr);
     Log.info("System clock restored from DS3231 (NTP not yet available)");
@@ -70,7 +68,17 @@ bool Clock::restoreFromRtc() {
 }
 
 bool Clock::now(struct tm& out) const {
-    return getLocalTime(&out, 10);
+    time_t utcNow;
+    time(&utcNow);
+    if (utcNow < kMinPlausibleEpoch) {
+        return false;
+    }
+
+    const bool dst = domain::isEuDstActive(static_cast<int64_t>(utcNow));
+    const time_t localEpoch =
+        utcNow + static_cast<time_t>(utcOffsetHours_) * 3600 + (dst ? 3600 : 0);
+    gmtime_r(&localEpoch, &out);  // gmtime_r on a pre-shifted epoch yields the correct local fields.
+    return true;
 }
 
 time_t Clock::epoch() const {

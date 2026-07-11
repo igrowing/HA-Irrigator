@@ -2,8 +2,10 @@
 
 #include <string.h>
 
+#include "../../src/domain/CalendarMath.h"
 #include "../../src/domain/ConfigStore.h"
 #include "../../src/domain/CurrentFaultMonitor.h"
+#include "../../src/domain/DstRules.h"
 #include "../../src/domain/DurationAdjuster.h"
 #include "../../src/domain/IrrigationStateMachine.h"
 #include "../../src/domain/RainSkip.h"
@@ -448,6 +450,110 @@ void test_ui_state_machine_schedule_duration_edit() {
     TEST_ASSERT_EQUAL_UINT16(23, intent.duration);
 }
 
+void test_ui_state_machine_schedule_zone_edit_wraps() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.scheduleRecordCount = 1;
+    ctx.selectedScheduleZone = irrigator::board::ZONE_COUNT;  // 11: next CW tick should wrap to 1
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuSchedule
+    // Item 0 for one record is the Zone field already.
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kScheduleFieldZone, ui.selectedIndex());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);  // enter zone edit
+    TEST_ASSERT_TRUE(ui.editing());
+    TEST_ASSERT_EQUAL_UINT8(irrigator::board::ZONE_COUNT, ui.pendingScheduleZone());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 400);
+    TEST_ASSERT_EQUAL_UINT8(1, ui.pendingScheduleZone());  // wrapped past 11 back to 1
+
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::SetScheduleZone);
+    TEST_ASSERT_EQUAL_UINT8(0, intent.scheduleRecordIndex);
+    TEST_ASSERT_EQUAL_UINT8(1, intent.zone);
+    TEST_ASSERT_FALSE(ui.editing());
+}
+
+void test_ui_state_machine_schedule_day_edit_wraps() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.scheduleRecordCount = 1;
+    ctx.selectedScheduleDay = 7;  // Sunday: next CW tick should wrap to Monday (1)
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300);  // Zone -> Day field
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kScheduleFieldDay, ui.selectedIndex());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);  // enter day edit
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 500);
+    TEST_ASSERT_EQUAL_UINT8(1, ui.pendingScheduleDay());
+
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 600);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::SetScheduleDay);
+    TEST_ASSERT_EQUAL_UINT8(1, intent.dayOfWeek);
+}
+
+void test_ui_state_machine_schedule_time_edit_hour_then_minute() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.scheduleRecordCount = 1;
+    ctx.selectedScheduleHour = 23;
+    ctx.selectedScheduleMinute = 59;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);
+    for (int i = 0; i < 2; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300 + i);  // -> Time field
+    }
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kScheduleFieldTime, ui.selectedIndex());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);  // enter time edit (hour step)
+    TEST_ASSERT_TRUE(ui.editing());
+    TEST_ASSERT_FALSE(ui.editingScheduleTimeMinuteStep());
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 500);
+    TEST_ASSERT_EQUAL_UINT8(0, ui.pendingScheduleHour());  // wrapped past 23 to 0
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 600);  // confirm hour -> minute step
+    TEST_ASSERT_TRUE(ui.editing());
+    TEST_ASSERT_TRUE(ui.editingScheduleTimeMinuteStep());
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 700);
+    TEST_ASSERT_EQUAL_UINT8(0, ui.pendingScheduleMinute());  // wrapped past 59 to 0
+
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 800);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::SetScheduleTime);
+    TEST_ASSERT_EQUAL_UINT8(0, intent.hour);
+    TEST_ASSERT_EQUAL_UINT8(0, intent.minute);
+    TEST_ASSERT_FALSE(ui.editing());
+}
+
+void test_calendar_math_round_trips_and_weekday() {
+    const int64_t days = irrigator::domain::daysFromCivil(2024, 3, 31);
+    const irrigator::domain::CivilDate civil = irrigator::domain::civilFromDays(days);
+    TEST_ASSERT_EQUAL_INT(2024, civil.year);
+    TEST_ASSERT_EQUAL_UINT(3, civil.month);
+    TEST_ASSERT_EQUAL_UINT(31, civil.day);
+    TEST_ASSERT_EQUAL_INT(0, irrigator::domain::weekdayFromDays(days));  // Sunday
+}
+
+void test_dst_rules_matches_known_2024_eu_transitions() {
+    using irrigator::domain::epochFromUtc;
+    using irrigator::domain::isEuDstActive;
+
+    // EU DST 2024: forward March 31 01:00 UTC, back October 27 01:00 UTC (public record).
+    TEST_ASSERT_FALSE(isEuDstActive(epochFromUtc(2024, 3, 31, 0, 59, 59)));
+    TEST_ASSERT_TRUE(isEuDstActive(epochFromUtc(2024, 3, 31, 1, 0, 0)));
+    TEST_ASSERT_TRUE(isEuDstActive(epochFromUtc(2024, 10, 27, 0, 59, 59)));
+    TEST_ASSERT_FALSE(isEuDstActive(epochFromUtc(2024, 10, 27, 1, 0, 0)));
+
+    TEST_ASSERT_TRUE(isEuDstActive(epochFromUtc(2024, 6, 15, 12, 0, 0)));
+    TEST_ASSERT_FALSE(isEuDstActive(epochFromUtc(2024, 1, 15, 12, 0, 0)));
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -482,5 +588,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_stop_confirm_flow);
     RUN_TEST(test_ui_state_machine_settings_percentage_edit);
     RUN_TEST(test_ui_state_machine_schedule_duration_edit);
+    RUN_TEST(test_ui_state_machine_schedule_zone_edit_wraps);
+    RUN_TEST(test_ui_state_machine_schedule_day_edit_wraps);
+    RUN_TEST(test_ui_state_machine_schedule_time_edit_hour_then_minute);
+    RUN_TEST(test_calendar_math_round_trips_and_weekday);
+    RUN_TEST(test_dst_rules_matches_known_2024_eu_transitions);
     return UNITY_END();
 }

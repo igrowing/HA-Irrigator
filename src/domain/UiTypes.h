@@ -23,6 +23,9 @@ enum class UiIntentType : uint8_t {
     AbortWatering,
     ToggleScheduleActive,
     SetWateringPercentage,
+    SetScheduleZone,
+    SetScheduleDay,
+    SetScheduleTime,
     SetScheduleDuration,
     SetScheduleActive,
 };
@@ -33,6 +36,9 @@ struct UiIntent {
     uint16_t duration = 0;
     int16_t percentage = 0;
     uint8_t scheduleRecordIndex = 0;
+    uint8_t dayOfWeek = 0;
+    uint8_t hour = 0;
+    uint8_t minute = 0;
     bool boolValue = false;
 };
 

@@ -12,6 +12,14 @@ struct Settings {
     char zoneNames[board::ZONE_COUNT][16] = {};
     bool scheduleActive = true;
     uint8_t defaultManualDuration = board::DEFAULT_MANUAL_DURATION_MINUTES;
+
+    // Current-sensor calibration (see drivers::CurrentSensor). Board-config constants are only
+    // the pre-calibration fallback used until a real calibration result is saved here (e.g. via
+    // MQTT cmd/set_calibration).
+    uint16_t valveCurrentZeroOffsetMv = board::VALVE_CURRENT_SENSOR_ZERO_OFFSET_MV;
+    float valveCurrentMvPerMa = board::VALVE_CURRENT_SENSOR_MV_PER_MA;
+    uint16_t pumpCurrentZeroOffsetMv = board::PUMP_CURRENT_SENSOR_ZERO_OFFSET_MV;
+    float pumpCurrentMvPerMa = board::PUMP_CURRENT_SENSOR_MV_PER_MA;
 };
 
 Settings makeDefaultSettings();
