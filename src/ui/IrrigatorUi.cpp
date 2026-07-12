@@ -17,7 +17,7 @@ void drawCentered(U8G2& display, uint8_t y, const char* text) {
 
 void IrrigatorUi::begin() {
     display_.begin();
-    display_.setContrast(40);
+    display_.setContrast(20);
     display_.clearBuffer();
     display_.sendBuffer();
     input_.begin();
@@ -28,7 +28,7 @@ void IrrigatorUi::begin() {
 void IrrigatorUi::showCaptivePortal(const String& apSsid, const IPAddress& ip) {
     display_.clearBuffer();
     display_.setFont(u8g2_font_6x10_tr);
-    drawCentered(display_, 10, "= CAPTIVE PORTAL =");
+    drawCentered(display_, 10, "= HA-IRRIGATOR =");
     char line[40];
     snprintf(line, sizeof(line), "SSID: %s", apSsid.c_str());
     drawCentered(display_, 26, line);
@@ -153,12 +153,12 @@ void IrrigatorUi::render(uint32_t nowMs, const RenderData& data) {
 void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
     display_.clearBuffer();
 
-    display_.setFont(u8g2_font_6x10_tr);
+    display_.setFont(u8g2_font_5x7_tr);
     char upperLeft[16] = "";
     if (data.deviceIp != IPAddress(0, 0, 0, 0)) {
         snprintf(upperLeft, sizeof(upperLeft), "IP.%u", data.deviceIp[3]);
     }
-    display_.drawStr(0, 8, upperLeft);
+    display_.drawStr(0, 7, upperLeft);
 
     char upperRight[24] = "";
     if (data.hasWallClock) {
@@ -173,7 +173,7 @@ void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
                 data.wallClockLocal.tm_sec);
     }
     const uint16_t rightWidth = display_.getStrWidth(upperRight);
-    display_.drawStr(128 - static_cast<int16_t>(rightWidth), 8, upperRight);
+    display_.drawStr(128 - static_cast<int16_t>(rightWidth), 7, upperRight);
 
     display_.setFont(u8g2_font_helvB18_tr);
     char mainText[20] = "";
@@ -202,7 +202,7 @@ void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
     }
     drawCentered(display_, 54, statusText);
 
-    display_.setFont(u8g2_font_6x10_tr);
+    display_.setFont(u8g2_font_5x7_tr);
     if (data.snapshot.pumpOn) {
         drawCentered(display_, 63, "LONG CLICK = MENU");
     } else {

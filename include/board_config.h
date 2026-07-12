@@ -11,20 +11,18 @@ namespace irrigator::board {
 
 static constexpr const char* FIRMWARE_VERSION = APP_VERSION;
 
-// I2C bus shared by PCF8574 relay expander, DS3231 RTC, and SSD1309 OLED.
+// I2C bus shared by DS3231 RTC and SSD1309 OLED (PCF8574 relay expander retired — unreliable
+// on this bus; zones 1-8 now drive direct GPIO like zones 9-11 always did).
 static constexpr uint8_t I2C_SDA_PIN = 21;
 static constexpr uint8_t I2C_SCL_PIN = 22;
 static constexpr uint32_t I2C_CLOCK_HZ = 400000UL;
 
-static constexpr uint8_t PCF8574_ADDRESS = 0x20;
 static constexpr uint8_t DS3231_ADDRESS = 0x68;
 static constexpr uint8_t SSD1309_ADDRESS = 0x3C;
 
 static constexpr uint8_t ZONE_COUNT = 11;
-static constexpr uint8_t PCF8574_ZONE_COUNT = 8;
-static constexpr uint8_t GPIO_ZONE_9_PIN = 25;
-static constexpr uint8_t GPIO_ZONE_10_PIN = 26;
-static constexpr uint8_t GPIO_ZONE_11_PIN = 27;
+// Zones 1-11, all active-low, direct GPIO. Avoids boot-strapping pins 0/2/12.
+static constexpr uint8_t GPIO_ZONE_PINS[ZONE_COUNT] = {4, 5, 13, 17, 18, 19, 23, 15, 25, 26, 27};
 static constexpr uint8_t PUMP_RELAY_PIN = 16;
 
 static constexpr uint8_t STATUS_LED_PIN = 14;

@@ -27,11 +27,7 @@ public:
     void allOff() override;
 
 private:
-    bool writePcf8574();
-    static uint8_t gpioPinForZone(uint8_t zone);
-
-    uint8_t pcfState_ = 0xFF;  // PCF8574 active-low outputs: 1 = off, 0 = on.
-    bool gpioZoneOn_[3] = {false, false, false};
+    bool zoneOn_[board::ZONE_COUNT] = {};
     bool pumpOn_ = false;
 };
 

@@ -1,5 +1,7 @@
 #include "RotaryInput.h"
 
+#include "Logger.h"
+
 namespace irrigator::drivers {
 
 void RotaryInput::begin() {
@@ -8,8 +10,14 @@ void RotaryInput::begin() {
 
     button_.begin(board::ROTARY_BUTTON_PIN);
     button_.setLongClickTime(board::ROTARY_LONG_CLICK_MS);
-    button_.setClickHandler([this](Button2&) { pendingButtonEvent_ = RotaryEvent::Click; });
-    button_.setLongClickHandler([this](Button2&) { pendingButtonEvent_ = RotaryEvent::LongClick; });
+    button_.setClickHandler([this](Button2&) {
+        Log.info("[ROTARY] button: click");
+        pendingButtonEvent_ = RotaryEvent::Click;
+    });
+    button_.setLongClickHandler([this](Button2&) {
+        Log.info("[ROTARY] button: long click");
+        pendingButtonEvent_ = RotaryEvent::LongClick;
+    });
 }
 
 RotaryEvent RotaryInput::poll() {
@@ -26,10 +34,12 @@ RotaryEvent RotaryInput::poll() {
     const int delta = newPosition - position_;
     if (delta > 0) {
         position_ += 1;
+        Log.printf("[ROTARY] CW (position=%d)\n", position_);
         return RotaryEvent::Clockwise;
     }
     if (delta < 0) {
         position_ -= 1;
+        Log.printf("[ROTARY] CCW (position=%d)\n", position_);
         return RotaryEvent::CounterClockwise;
     }
     return RotaryEvent::None;

@@ -802,7 +802,7 @@ void updateOutputsFromDomain() {
 
 void setup() {
     irrigator::drivers::Log.begin(115200);
-    irrigator::drivers::Log.info(F("Irrigator firmware starting"));
+    irrigator::drivers::Log.printf("Irrigator firmware starting v.%s", APP_VERSION);
 
     Wire.begin(irrigator::board::I2C_SDA_PIN, irrigator::board::I2C_SCL_PIN);
     Wire.setClock(irrigator::board::I2C_CLOCK_HZ);
