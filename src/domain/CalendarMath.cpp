@@ -1,5 +1,7 @@
 #include "CalendarMath.h"
 
+#include <stdio.h>
+
 namespace irrigator::domain {
 
 int64_t daysFromCivil(int year, unsigned month, unsigned day) {
@@ -39,6 +41,22 @@ int weekdayFromDays(int64_t daysSinceEpoch) {
 int64_t epochFromUtc(int year, unsigned month, unsigned day, unsigned hour, unsigned minute, unsigned second) {
     return daysFromCivil(year, month, day) * 86400 + static_cast<int64_t>(hour) * 3600 +
            static_cast<int64_t>(minute) * 60 + static_cast<int64_t>(second);
+}
+
+void formatIso8601Utc(int64_t epochSeconds, char* buffer, size_t bufferSize) {
+    const int64_t daysSinceEpoch =
+        epochSeconds >= 0 ? epochSeconds / 86400 : (epochSeconds - 86399) / 86400;
+    const int64_t secondsOfDay = epochSeconds - daysSinceEpoch * 86400;
+    const CivilDate civil = civilFromDays(daysSinceEpoch);
+    snprintf(buffer,
+            bufferSize,
+            "%04d-%02u-%02uT%02u:%02u:%02u",
+            civil.year,
+            civil.month,
+            civil.day,
+            static_cast<unsigned>(secondsOfDay / 3600),
+            static_cast<unsigned>((secondsOfDay % 3600) / 60),
+            static_cast<unsigned>(secondsOfDay % 60));
 }
 
 }  // namespace irrigator::domain

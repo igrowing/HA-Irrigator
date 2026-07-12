@@ -15,7 +15,7 @@ public:
     void update(uint32_t nowMs);
 
 private:
-    void writeActiveLow(bool on);
+    void writeOutput(bool on);
 
     uint8_t pin_;
     LedMode mode_ = LedMode::Off;

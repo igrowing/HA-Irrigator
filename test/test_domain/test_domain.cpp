@@ -178,7 +178,7 @@ void test_settings_store_rejects_out_of_range_percentage() {
 }
 
 void test_settings_store_round_trips() {
-    irrigator::domain::Settings settings = irrigator::domain::makeDefaultSettings();
+    irrigator::domain::Settings settings = irrigator::domain::makeDefaultZones();
     settings.wateringPercentage = 120;
     settings.scheduleActive = false;
 

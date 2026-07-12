@@ -2,6 +2,7 @@
 
 #include <WiFi.h>
 
+#include "../domain/CalendarMath.h"
 #include "../drivers/Logger.h"
 
 namespace irrigator::network {
@@ -39,7 +40,7 @@ bool MqttService::connected() const {
 void MqttService::attemptReconnect(uint32_t nowMs) {
     (void)nowMs;
     const String clientId = config_.prefix;
-    const String availabilityTopic = config_.prefix + "/availability";
+    const String availabilityTopic = config_.prefix + "/online";
 
     const bool ok = mqttClient_.connect(clientId.c_str(),
                                         config_.user.length() ? config_.user.c_str() : nullptr,
@@ -48,11 +49,11 @@ void MqttService::attemptReconnect(uint32_t nowMs) {
                                         availabilityTopic.c_str(),
                                         1,     // willQos
                                         true,  // willRetain
-                                        "offline",
+                                        "false",
                                         true);  // cleanSession
 
     if (ok) {
-        ::irrigator::drivers::Log.info("MQTT connected");
+        ::irrigator::drivers::Log.info(withDatetime("MQTT connected").c_str());
         reconnectBackoffMs_ = kReconnectBackoffMinMs;
         onConnected();
     } else {
@@ -112,37 +113,83 @@ bool MqttService::publishRaw(const String& topicSuffix, const String& payload, b
     return ok;
 }
 
+String MqttService::withDatetime(const String& payload) const {
+    if (!nowEpochProvider_) {
+        return payload;
+    }
+    char iso[24];
+    ::irrigator::domain::formatIso8601Utc(nowEpochProvider_(), iso, sizeof(iso));
+
+    if (payload.length() > 0 && payload[0] == '{') {
+        String result = "{\"datetime\":\"";
+        result += iso;
+        result += "\",";
+        result += payload.substring(1);
+        return result;
+    }
+    String result = "{\"datetime\":\"";
+    result += iso;
+    result += "\",\"message\":\"";
+    result += payload;
+    result += "\"}";
+    return result;
+}
+
 void MqttService::publishAvailability(bool online) {
-    publishRaw("/availability", online ? "online" : "offline", true);
+    publishRaw("/online", online ? "true" : "false", true);
 }
 
 void MqttService::publishStatus(const String& jsonPayload) {
-    publishRaw("/status", jsonPayload, false);
+    publishRaw("/status", withDatetime(jsonPayload), false);
 }
 
 void MqttService::publishState(uint8_t zone,
                                const char* name,
                                bool on,
                                bool pump,
-                               ::irrigator::domain::RunReason reason) {
-    char payload[192];
+                               ::irrigator::domain::RunReason reason,
+                               bool scheduled,
+                               uint16_t remainingMin) {
+    char payload[224];
     snprintf(payload,
              sizeof(payload),
-             R"({"zone":%u,"name":"%s","on":%s,"pump":%s,"reason":"%s"})",
+             R"({"zone":%u,"name":"%s","on":%s,"pump":%s,"reason":"%s","scheduled":%s,"remaining_min":%u})",
              static_cast<unsigned>(zone),
              name == nullptr ? "" : name,
              on ? "true" : "false",
              pump ? "true" : "false",
-             ::irrigator::domain::toString(reason));
-    publishRaw("/state", payload, false);
+             ::irrigator::domain::toString(reason),
+             scheduled ? "true" : "false",
+             static_cast<unsigned>(remainingMin));
+    publishRaw("/state", withDatetime(payload), false);
 }
 
 void MqttService::publishAlert(const String& jsonOrTextPayload) {
-    publishRaw("/alert", jsonOrTextPayload, false);
+    publishRaw("/alert", withDatetime(jsonOrTextPayload), false);
 }
 
 void MqttService::publishSchedule(const String& jsonPayload) {
     publishRaw("/schedule", jsonPayload, false);
+}
+
+void MqttService::publishQueue(const String& jsonPayload) {
+    publishRaw("/queue", jsonPayload, false);
+}
+
+void MqttService::publishScheduled(bool active) {
+    publishRaw("/scheduled", active ? "true" : "false", false);
+}
+
+void MqttService::publishWateringPercentage(int16_t value) {
+    publishRaw("/watering_percentage", String(value), false);
+}
+
+void MqttService::publishOtaCompleted(const String& isoTimestamp) {
+    publishRaw("/ota_completed", isoTimestamp, false);
+}
+
+void MqttService::publishSkipRainUntil(const String& isoTimestamp) {
+    publishRaw("/skip_rain_until", isoTimestamp, false);
 }
 
 void MqttService::publishDownload(const String& filename, const String& content) {

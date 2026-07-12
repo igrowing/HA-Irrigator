@@ -5,7 +5,7 @@
 
 namespace irrigator::domain {
 
-Settings makeDefaultSettings() {
+Settings makeDefaultZones() {
     Settings settings;
     for (uint8_t i = 0; i < board::ZONE_COUNT; ++i) {
         snprintf(settings.zoneNames[i], sizeof(settings.zoneNames[i]), "Zone %u", static_cast<unsigned>(i + 1));
@@ -44,9 +44,9 @@ bool parseSettings(const char* json, size_t length, Settings& out) {
         return false;
     }
 
-    Settings parsed = makeDefaultSettings();
+    Settings parsed = makeDefaultZones();
     parsed.wateringPercentage = doc["watering_percentage"] | board::DEFAULT_WATERING_PERCENTAGE;
-    parsed.scheduleActive = doc["schedule_active"] | true;
+    parsed.scheduleActive = doc["schedule_active"] | false;
     parsed.defaultManualDuration =
         doc["default_manual_duration"] | board::DEFAULT_MANUAL_DURATION_MINUTES;
     parsed.valveCurrentZeroOffsetMv =

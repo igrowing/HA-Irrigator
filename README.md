@@ -9,11 +9,10 @@ rules if you're contributing code, not just using the device).
 
 | Function                 | Pin/Bus                 | Notes                                              |
 |---------------------------|--------------------------|-----------------------------------------------------|
-| I2C bus (shared)          | SDA=GPIO21, SCL=GPIO22  | PCF8574 relay expander, DS3231 RTC, SSD1309 OLED   |
-| Zones 1–8                 | PCF8574 (addr 0x20)     | Active low                                          |
-| Zones 9–11                | GPIO 25, 26, 27         | Active low                                          |
+| I2C bus (shared)          | SDA=GPIO21, SCL=GPIO22  | DS3231 RTC, SSD1309 OLED                            |
+| Zones 1–11                 | GPIO 4, 5, 13, 17, 18, 19, 23, 15, 25, 26, 27         | Active low                                          |
 | Pump                      | GPIO 16                 | Active low     |
-| Status/fault LED          | GPIO 14                 | Active low                                          |
+| Status/fault LED          | GPIO 14                 | Active high                                         |
 | Rotary encoder + button   | GPIO 34, 35, 39         | All pulled up externally (34/35/39 are input-only) |
 | DS3231 RTC                | I2C, addr 0x68          |                                                      |
 | SSD1309 OLED (128x64)     | I2C, addr 0x3C          |                                                      |
@@ -23,11 +22,13 @@ rules if you're contributing code, not just using the device).
 ## Feature overview
 
 - **11 independently-named sprinkler zones** plus pump-only runs, with the pump always
-  pre-started ~500ms before a valve opens and kept on for a 60s graceful-shutdown window after
-  the last valve closes (protects the pump from rapid-cycle wear).
+  pre-started ~500ms before a valve opens and kept on for a 60s graceful-shutdown window after a
+  valve closes (protects the pump from rapid-cycle wear) — if another watering is queued up, it
+  hands off to the still-running pump immediately instead of waiting out that window.
 - **Weekly schedule** (`schedule.json`, up to 32 records) with a per-zone watering-percentage
   multiplier, a pause/rain-skip mechanism, and a 10-deep queue so overlapping or MQTT-triggered
-  runs during an active watering don't get lost — they queue and run in order.
+  runs during an active watering don't get lost — they queue and run in order, back-to-back on
+  the same pump cycle whenever the pump is still spinning down from the previous one.
 - **Local UI**: SSD1309 OLED + rotary encoder, auto-dimming after 20s of inactivity, full menu
   for stopping, viewing/adjusting the schedule, and settings.
 - **MQTT**: status/availability reporting (Home-Assistant-compatible LWT), remote run/stop/
@@ -123,71 +124,50 @@ wakes the screen back to normal without acting on that input.
 Every topic is prefixed `irrigator<xx>` where `<xx>` is the last two hex digits of the device's
 MAC address (e.g. `irrigator4f`). Substitute your device's actual prefix below.
 
-### Status & availability
+### Command/response
 
-| Topic | Direction | Notes |
-|---|---|---|
-| `irrigator4f/availability` | published, retained | `online` (on connect) / `offline` (LWT on ungraceful disconnect, or explicitly before a deliberate restart). Matches Home Assistant's default MQTT `availability_topic` convention. |
-| `irrigator4f/status` | published | ~15s after boot and on request. JSON: `firmware_version`, `boot_reason`, `ip`, `uptime_s`, `free_heap_bytes`, `free_storage_bytes`, `cpu_temp_c`, `outputs` (only lists zones/pump that are currently on, each with `current_ma`). |
-| `irrigator4f/state` | published | On every start/stop of a valve or pump, *and* on demand via `cmd/state`: `{"zone":3,"name":"Back Lawn","on":true,"pump":true,"reason":"manual"}` (`reason` is one of `manual`/`schedule`/`mqtt`/`abort`; `zone:0` means pump-only). |
-| `irrigator4f/alert` | published | Fire-and-forget notices: current out of expected range, watering queue full, OTA result, and any command/topic error (see **Error reporting** below). Not retained, not queued for delivery guarantees. |
-| `irrigator4f/schedule` | published | Full `schedule.json` content, republished whenever a schedule record changes (from the local UI or MQTT). |
-
-### Commands (subscribe topics, `irrigator4f/cmd/<name>`)
-
-| Command | Payload | Effect |
-|---|---|---|
-| `cmd/run` | `{"zone":3,"duration":15}` | Starts zone 3 for 15 min (or queues it if something's already running). `zone:0` = pump only. |
-| `cmd/stop` | empty, or `all` | Stops the current run. Plain/empty payload also pops and starts the next queued item, if any; `all` also empties the queue. |
-| `cmd/state` | any | Publishes the current watering/pump status to `state` on demand (see the table above) — use this to get an immediate answer instead of waiting for the next start/stop transition. |
-| `cmd/watering_percentage` | integer, e.g. `80` | Sets the schedule-wide watering multiplier (0–300%), persisted to `settings.json`. |
-| `cmd/skip_rain` | `{"skip_until":"2026-07-12T06:00:00"}` | Suppresses **scheduled** runs until this UTC timestamp (manual/MQTT runs are never affected — this only gates the schedule engine). |
-| `cmd/restart` | any | Publishes `offline` to `availability`, then restarts. |
-| `cmd/ota` | firmware `.bin` URL | Downloads and flashes that URL, restarts on success. Blocking by design — see [agents.md](agents.md) for why. |
-| `cmd/set_calibration` | `{"valve_zero_mv":1650,"valve_mv_per_ma":1.0,"pump_zero_mv":1650,"pump_mv_per_ma":1.0}` | Any subset of the four fields; updates the live current-sensor calibration and persists it to `settings.json`. See **Current-sensor calibration** below — the factory defaults are *not* real calibration values. |
-| `cmd/download` | filename, e.g. `schedule.json` | Reads that file from flash and publishes it — see **File backup/restore** below. |
-| `cmd/upload/<filename>` | new file content | Writes that file to flash — see **File backup/restore** below. |
+|  Command topic | Command msg | Response topic | Response msg | Comment |
+|--|--|--|--|--|
+| `/cmd/state` | "" | `/state` | `{"datetime":"2026-07-12T06:00:00",`<br>`"zone":3,"name":"Back Lawn",`<br>`"on":true,"pump":true,`<br>`"reason":"manual","scheduled":true,"remaining_min":12}` | On every start/stop of a valve or pump, and on demand via `cmd/state` (reason is one of manual/schedule/mqtt/abort; zone:0 means pump-only; scheduled reflects whether the schedule engine is currently active/paused; remaining_min is minutes left in the current run, 0 when off). Also fires the instant the valve closes even while the pump is still in its graceful-shutdown tail (`on:false,pump:true`), so `remaining_min`/`on` track the requested duration, not the pump's extra runtime. |
+| `/cmd/queue` | "" | `/queue` | list of waiting waterings from the queue | On every push and pull from watering queue or by `cmd/queue` request. |
+| `/cmd/run` | `{"zone":3,"duration":15}` |  |  | **No special response** Response will be either adding to the queue or alert. Starts zone 3 for 15 min (or queues it if something's already running). `zone:0` = pump only. |
+| `/cmd/stop` | empty, or `all`  |  |  | **No special response** Response will be either adding to the queue or alert. Stops the current run. Plain/empty payload also pops and starts the next queued item, if any; `all` also empties the queue. |
+| `/cmd/scheduled` | bool | `/scheduled` | bool | Turn the schedule on/off, write the schedule state in settings.json if changed, report back true/false. | 
+| `/cmd/watering_percentage` | integer | `/watering_percentage` | integer | Sets the schedule-wide watering multiplier (0–300%), persisted to `settings.json`. |
+| `/cmd/skip_rain_until` | `"2026-07-12T06:00:00"` |  `/skip_rain_until` | `"2026-07-12T06:00:00"` | Suppresses **scheduled** runs until this UTC timestamp (manual/MQTT runs are never affected — this only gates the schedule engine). |
+|  |  | `/online` |  boolean (LWT on ungraceful disconnect, or explicitly before a deliberate restart). | **Retained message**. Matches Home Assistant's default MQTT `availability_topic` convention. |
+| `/cmd/status` | "" | `/status`  | JSON: `datetime`, `firmware_version`, `boot_reason`, `ip`, `uptime_s`, `free_heap_bytes`, `free_storage_bytes`, `cpu_temp_c`, `outputs` (only lists zones/pump that are currently on, each with `current_ma`). | ~15s after boot and on request.  |
+|  |  | `/alert` | see **Error reporting** below | Fire-and-forget notices: current out of expected range, watering queue full, OTA result, and any command/topic error. Not retained, not queued for delivery guarantees. Every alert carries a `datetime` field — JSON alerts get it spliced in alongside their other keys, plain-text alerts are wrapped as `{"datetime":"...","message":"..."}`. |
+| `/cmd/restart` | "" |  |  | **No special response** Publishes `false` to `online`, then restarts. |
+| `/cmd/ota` | FW `.bin` URL | `/ota_completed` | `"2026-07-12T06:00:00"` |  Downloads and flashes that URL, restarts on success. Blocking by design — see [agents.md](agents.md) for why. |
+| `/cmd/set_calibration` | `{"valve_zero_mv":1650,`<br>`"valve_mv_per_ma":1.0,`<br>`"pump_zero_mv":1650,`<br>`"pump_mv_per_ma":1.0}` |   |  | **No special response** Any subset of the four fields; updates the live current-sensor calibration and persists it to `settings.json`. See **Current-sensor calibration** below — the factory defaults are *not* real calibration values. |
+| `/cmd/download/<filename>` | "" | `/download/<filename>` | String | Reads that file from flash and publishes it. |
+| `/cmd/upload/<filename>` | new file content |  |  | Writes that file to flash. |
 
 #### Error reporting
 
 Every command above rejects malformed or out-of-range input rather than guessing at intent
 (e.g. clamping a duration, defaulting a missing field) — invalid input is reported, not
 silently dropped or coerced. A malformed payload, an out-of-range value, an unrecognized
-`cmd/<name>`, or a `download` for a file that doesn't exist all publish to `irrigator4f/alert`:
+`cmd/<name>`, or a `download` for a file that doesn't exist all publish to `irrigator4f/alert`
+(each also carries a `datetime` field, omitted below for brevity):
 
 ```json
 {"command":"run","error":"duration out of range (1-120)"}
 {"command":"set_calibration","error":"calibration value out of range"}
 {"command":"nonexistent_command","error":"unknown command"}
-{"download":"missing.json","error":"not_found"}
+{"download":"missing.json","error":"not found"}
+{"download":"settings.json","error":"failed to read"}
 {"upload":"schedule.json","error":"invalid schedule.json content"}
+{"upload":"schedule.json","error":"failed to write"}
 ```
 
-### File backup/restore
-
-**Download** — publish a filename as the payload to `cmd/download`, e.g. `config.json`,
-`settings.json`, or `schedule.json`. The device reads it from flash and publishes the raw
-content to `irrigator4f/download/<filename>` (not retained). If the file doesn't exist, an
-`{"download":"<filename>","error":"not_found"}` message goes to `.../alert` instead.
-
-```
-mosquitto_pub -t irrigator4f/cmd/download -m schedule.json
-mosquitto_sub -t 'irrigator4f/download/#'
-```
-
-**Upload** — publish new file content to `cmd/upload/<filename>` (the filename is the topic's
-last segment, not the payload — the payload is the file's new content). `config.json`,
-`settings.json`, and `schedule.json` are parsed and validated before being written — an invalid
-upload is rejected (reported to `.../alert`) and the file on flash is left untouched, same as
-loading a corrupt file at boot. Any other filename is written as-is, with no validation, since
-the device has no schema for it. A successful `config.json` upload restarts the device (new
-Wi-Fi/MQTT credentials only take effect on the next boot); `settings.json` and `schedule.json`
-take effect immediately, no restart needed.
+### Examples
 
 ```
 # Round-trip: fetch the current schedule, edit it locally, push it back.
 mosquitto_sub -t irrigator4f/download/schedule.json -C 1 > schedule.json
-mosquitto_pub -t irrigator4f/cmd/download -m schedule.json
+mosquitto_pub -t irrigator4f/cmd/download/schedule.json -m ""
 # ...edit schedule.json...
 mosquitto_pub -t irrigator4f/cmd/upload/schedule.json -f schedule.json
 ```
@@ -202,7 +182,7 @@ conversion. The zero-offset and sensitivity are **placeholders** in firmware
    that's your `zero_mv`.
 2. Turn the output on with a known load and note the millivolt delta per known milliamp —
    that's `mv_per_ma`.
-3. Push the result via `cmd/set_calibration`; it's saved to `settings.json` and survives
+3. Push the result via `/cmd/set_calibration`; it's saved to `settings.json` and survives
    reboots (and re-applied on every boot before anything reads current).
 
 ## Home Assistant integration
@@ -215,9 +195,9 @@ MQTT → Add entity** in the UI. A minimal starting set:
 mqtt:
   binary_sensor:
     - name: "Irrigator Online"
-      state_topic: "irrigator4f/availability"
-      payload_on: "online"
-      payload_off: "offline"
+      state_topic: "irrigator4f/online"
+      payload_on: true
+      payload_off: false
 
   sensor:
     - name: "Irrigator Free Heap"
@@ -248,7 +228,8 @@ mqtt:
 ```
 
 For rain-based skipping, an automation reading a weather/rain-forecast entity and publishing to
-`cmd/skip_rain` covers the spec's intent — HA computes the timestamp from its own forecast data:
+`cmd/skip_rain_until` covers the spec's intent — HA computes the timestamp from its own forecast
+data. The payload is a bare ISO8601 UTC timestamp string, not JSON:
 
 ```yaml
 automation:
@@ -260,9 +241,8 @@ automation:
     action:
       - service: mqtt.publish
         data:
-          topic: "irrigator4f/cmd/skip_rain"
-          payload: >-
-            {"skip_until": "{{ (now() + timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%S') }}"}
+          topic: "irrigator4f/cmd/skip_rain_until"
+          payload: "{{ (now() + timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%S') }}"
 ```
 
 Alerts (`irrigator4f/alert`) are free-form JSON/text and not retained — a generic MQTT trigger

@@ -72,6 +72,7 @@ WateringRequest activeRequestForReporting;
 bool reportedActive = false;
 bool mqttBreathPlayed = false;
 uint32_t lastWifiRetryMs = 0;
+irrigator::domain::IrrigationState previousIrrigationState = irrigator::domain::IrrigationState::Idle;
 
 bool valveWindowOpen = false;
 uint32_t valveWindowCloseAtMs = 0;
@@ -99,7 +100,7 @@ const char* zoneName(uint8_t zone) {
 }
 
 // Minimal ISO8601 "YYYY-MM-DDTHH:MM:SS" (UTC) -> epoch seconds. Ignores any trailing
-// offset/'Z' suffix; HA is expected to publish a plain UTC timestamp for cmd/skip_rain.
+// offset/'Z' suffix; HA is expected to publish a plain UTC timestamp for cmd/skip_rain_until.
 int64_t parseIso8601Utc(const char* value) {
     int year = 0;
     int month = 0;
@@ -189,8 +190,28 @@ void reportStop(RunReason reason) {
                       zoneName(activeRequestForReporting.zone),
                       false,
                       false,
-                      reason);
+                      reason,
+                      settings.scheduleActive,
+                      0);
     reportedActive = false;
+}
+
+// The valve closes at the end of the requested duration, but the pump lingers for a further
+// PUMP_GRACEFUL_SHUTDOWN_MS afterwards (protects it from rapid-cycle wear) — `isActive()` stays
+// true for that whole tail, so the edge-triggered stop report in loop() (gated on !isActive())
+// would otherwise fire ~a minute late relative to the requested duration. This fires the instant
+// the valve itself closes, independent of the pump's graceful-shutdown tail.
+void reportValveClosed() {
+    if (!reportedActive) {
+        return;
+    }
+    mqtt.publishState(activeRequestForReporting.zone,
+                      zoneName(activeRequestForReporting.zone),
+                      false,
+                      true,
+                      activeRequestForReporting.reason,
+                      settings.scheduleActive,
+                      0);
 }
 
 bool startIrrigation(const WateringRequest& request, uint32_t nowMs) {
@@ -199,8 +220,13 @@ bool startIrrigation(const WateringRequest& request, uint32_t nowMs) {
     }
     activeRequestForReporting = request;
     reportedActive = true;
-    mqtt.publishState(
-        request.zone, zoneName(request.zone), request.zone != 0, true, request.reason);
+    mqtt.publishState(request.zone,
+                      zoneName(request.zone),
+                      request.zone != 0,
+                      true,
+                      request.reason,
+                      settings.scheduleActive,
+                      request.durationMin);
     return true;
 }
 
@@ -235,9 +261,8 @@ void reportMqttError(const char* context, const String& detail, const char* reas
     irrigator::drivers::Log.printf("[WARN] %s %s: %s\n", context, detail.c_str(), reason);
 }
 
-// `cmd/download` handler: payload is a filename (e.g. "config.json"), response goes to
-// `<prefix>/download/<filename>`. Response topic isn't specified by the spec text (only the
-// request shape is) — this is the chosen convention, adjust if HA/tooling expects otherwise.
+// `cmd/download/<filename>` handler: filename comes from the topic (payload is unused, "" per
+// spec), response goes to `<prefix>/download/<filename>`.
 void handleMqttDownload(const String& filename) {
     if (filename.length() == 0) {
         reportMqttError("download", filename, "empty filename");
@@ -250,9 +275,13 @@ void handleMqttDownload(const String& filename) {
         path = "/" + path;
     }
 
+    if (!fileStore.exists(path.c_str())) {
+        reportMqttError("download", filename, "not found");
+        return;
+    }
     String content;
-    if (!fileStore.exists(path.c_str()) || !fileStore.readText(path.c_str(), content)) {
-        reportMqttError("download", filename, "not_found");
+    if (!fileStore.readText(path.c_str(), content)) {
+        reportMqttError("download", filename, "failed to read");
         return;
     }
 
@@ -285,7 +314,7 @@ void handleMqttUpload(const String& filename, const uint8_t* payload, size_t len
             return;
         }
         if (!fileStore.writeTextWithBackup(path.c_str(), content)) {
-            reportMqttError("upload", filename, "write failed");
+            reportMqttError("upload", filename, "failed to write");
             return;
         }
         irrigator::drivers::Log.info("config.json updated via MQTT upload; restarting");
@@ -302,7 +331,7 @@ void handleMqttUpload(const String& filename, const uint8_t* payload, size_t len
             return;
         }
         if (!fileStore.writeTextWithBackup(path.c_str(), content)) {
-            reportMqttError("upload", filename, "write failed");
+            reportMqttError("upload", filename, "failed to write");
             return;
         }
         settings = parsed;
@@ -317,7 +346,7 @@ void handleMqttUpload(const String& filename, const uint8_t* payload, size_t len
             return;
         }
         if (!fileStore.writeTextWithBackup(path.c_str(), content)) {
-            reportMqttError("upload", filename, "write failed");
+            reportMqttError("upload", filename, "failed to write");
             return;
         }
         scheduleList = parsed;
@@ -327,7 +356,7 @@ void handleMqttUpload(const String& filename, const uint8_t* payload, size_t len
 
     // Unrecognized filename: raw passthrough, there's no schema to validate it against.
     if (!fileStore.writeTextWithBackup(path.c_str(), content)) {
-        reportMqttError("upload", filename, "write failed");
+        reportMqttError("upload", filename, "failed to write");
     }
 }
 
@@ -337,7 +366,14 @@ void publishCurrentState() {
     const auto snapshot = irrigation.snapshot(millis());
     const bool valveOn = snapshot.state == irrigator::domain::IrrigationState::Watering;
     const RunReason reason = reportedActive ? activeRequestForReporting.reason : RunReason::Manual;
-    mqtt.publishState(snapshot.activeZone, zoneName(snapshot.activeZone), valveOn, snapshot.pumpOn, reason);
+    const uint16_t remainingMin = static_cast<uint16_t>(snapshot.remainingMs / 60000UL);
+    mqtt.publishState(snapshot.activeZone,
+                      zoneName(snapshot.activeZone),
+                      valveOn,
+                      snapshot.pumpOn,
+                      reason,
+                      settings.scheduleActive,
+                      remainingMin);
 }
 
 void persistScheduleAndReport() {
@@ -384,19 +420,47 @@ uint8_t findNextScheduledZone(const struct tm& nowLocal) {
     return bestZone;
 }
 
+// `cmd/queue` handler and change notifications: publishes the current FIFO contents to
+// `/queue`, called on demand and on every push/pop so subscribers stay in sync.
+void publishQueueState() {
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    for (uint8_t i = 0; i < wateringQueue.size(); ++i) {
+        const auto& item = wateringQueue.at(i);
+        JsonObject obj = arr.add<JsonObject>();
+        obj["zone"] = item.zone;
+        obj["duration"] = item.durationMin;
+    }
+    String payload;
+    serializeJson(doc, payload);
+    mqtt.publishQueue(payload);
+}
+
+// Every watering/pumping request — manual, scheduled, or MQTT — funnels through the queue
+// first, even when it can start immediately: push, report, then (if idle) pop it straight back
+// off and start it. That guarantees a push report and a pull report for every request, not just
+// the ones that have to wait behind an active run.
 void enqueueOrStart(const WateringRequest& request, uint32_t nowMs) {
-    if (irrigation.isActive()) {
-        if (!wateringQueue.push(request)) {
-            char alertMsg[112];
-            snprintf(alertMsg,
-                    sizeof(alertMsg),
-                    "Watering queue is full. Dropping watering: zone=%u duration=%u",
-                    static_cast<unsigned>(request.zone),
-                    static_cast<unsigned>(request.durationMin));
-            mqtt.publishAlert(alertMsg);
+    if (!wateringQueue.push(request)) {
+        char alertMsg[112];
+        snprintf(alertMsg,
+                sizeof(alertMsg),
+                "Watering queue is full. Dropping watering: zone=%u duration=%u",
+                static_cast<unsigned>(request.zone),
+                static_cast<unsigned>(request.durationMin));
+        mqtt.publishAlert(alertMsg);
+        return;
+    }
+    publishQueueState();
+
+    // Idle, or the pump is only in its post-run graceful-shutdown tail (still spinning, nothing
+    // watering) — either way, this request can start right now.
+    if (irrigation.canStartImmediately()) {
+        WateringRequest next;
+        if (wateringQueue.pop(next)) {
+            publishQueueState();
+            startIrrigation(next, nowMs);
         }
-    } else {
-        startIrrigation(request, nowMs);
     }
 }
 
@@ -416,6 +480,7 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
         case UiIntentType::ToggleScheduleActive:
             settings.scheduleActive = intent.boolValue;
             persistSettings();
+            mqtt.publishScheduled(settings.scheduleActive);
             break;
         case UiIntentType::SetWateringPercentage: {
             irrigator::domain::Settings updated = settings;
@@ -490,13 +555,43 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
         return;
     }
 
-    if (commandName == "download") {
-        handleMqttDownload(body);
+    if (commandName == "queue") {
+        publishQueueState();
+        return;
+    }
+
+    if (commandName == "status") {
+        mqtt.publishStatus(buildStatusJson(nowMs));
+        return;
+    }
+
+    if (commandName.startsWith("download/")) {
+        handleMqttDownload(commandName.substring(String("download/").length()));
         return;
     }
 
     if (commandName.startsWith("upload/")) {
         handleMqttUpload(commandName.substring(String("upload/").length()), payload, length);
+        return;
+    }
+
+    if (commandName == "scheduled") {
+        String trimmed = body;
+        trimmed.trim();
+        bool newValue;
+        if (trimmed == "true" || trimmed == "1") {
+            newValue = true;
+        } else if (trimmed == "false" || trimmed == "0") {
+            newValue = false;
+        } else {
+            reportMqttError("command", commandName, "invalid bool payload, expected true/false");
+            return;
+        }
+        if (settings.scheduleActive != newValue) {
+            settings.scheduleActive = newValue;
+            persistSettings();
+        }
+        mqtt.publishScheduled(settings.scheduleActive);
         return;
     }
 
@@ -513,6 +608,7 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
         }
         settings = updated;
         persistSettings();
+        mqtt.publishWateringPercentage(settings.wateringPercentage);
         return;
     }
 
@@ -545,28 +641,27 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
         stopIrrigationExplicit(nowMs);
         if (trimmed == "all") {
             wateringQueue.clear();
+            publishQueueState();
         } else {
             WateringRequest next;
             if (wateringQueue.pop(next)) {
+                publishQueueState();
                 startIrrigation(next, nowMs);
             }
         }
         return;
     }
 
-    if (commandName == "skip_rain") {
-        JsonDocument doc;
-        if (deserializeJson(doc, body)) {
-            reportMqttError("command", commandName, "invalid JSON payload");
-            return;
-        }
-        const char* iso = doc["skip_until"] | "";
-        const int64_t epoch = parseIso8601Utc(iso);
+    if (commandName == "skip_rain_until") {
+        String trimmed = body;
+        trimmed.trim();
+        const int64_t epoch = parseIso8601Utc(trimmed.c_str());
         if (epoch <= 0) {
-            reportMqttError("command", commandName, "invalid or missing skip_until timestamp");
+            reportMqttError("command", commandName, "invalid or missing timestamp");
             return;
         }
         rainSkip.setSkipUntil(epoch);
+        mqtt.publishSkipRainUntil(trimmed);
         return;
     }
 
@@ -627,7 +722,7 @@ void loadOrCreateSettings() {
     }
 
     irrigator::drivers::Log.warn("settings.json missing or invalid; writing defaults");
-    settings = irrigator::domain::makeDefaultSettings();
+    settings = irrigator::domain::makeDefaultZones();
     persistSettings();
 }
 
@@ -686,6 +781,7 @@ void enterOperationalMode() {
     mqttConfig.password = deviceConfig.mqttPassword;
     mqttConfig.prefix = makeDevicePrefix();
     mqtt.setCommandHandler(handleMqttCommand);
+    mqtt.setNowEpochProvider([]() { return static_cast<int64_t>(clockService.epoch()); });
     mqtt.begin(mqttConfig);
 
     ota.setResultHandler([](bool success, const char* message) {
@@ -693,6 +789,11 @@ void enterOperationalMode() {
         snprintf(alertMsg, sizeof(alertMsg), R"({"ota":"%s","message":"%s"})",
                 success ? "ok" : "failed", message);
         mqtt.publishAlert(alertMsg);
+        if (success) {
+            char iso[24];
+            irrigator::domain::formatIso8601Utc(clockService.epoch(), iso, sizeof(iso));
+            mqtt.publishOtaCompleted(iso);
+        }
     });
 }
 
@@ -802,7 +903,7 @@ void updateOutputsFromDomain() {
 
 void setup() {
     irrigator::drivers::Log.begin(115200);
-    irrigator::drivers::Log.printf("Irrigator firmware starting v.%s", APP_VERSION);
+    irrigator::drivers::Log.printf("Irrigator firmware starting v.%s\n", APP_VERSION);
 
     Wire.begin(irrigator::board::I2C_SDA_PIN, irrigator::board::I2C_SCL_PIN);
     Wire.setClock(irrigator::board::I2C_CLOCK_HZ);
@@ -858,15 +959,32 @@ void loop() {
             runScheduleEngine(nowMs);
 
             irrigation.tick(nowMs);
-            if (reportedActive && !irrigation.isActive()) {
-                reportStop(activeRequestForReporting.reason);
-                // Pop the next queued watering (schedule-overlap or MQTT-during-active queueing).
+            if (previousIrrigationState == irrigator::domain::IrrigationState::Watering &&
+                irrigation.snapshot(nowMs).state == irrigator::domain::IrrigationState::PumpGracePeriod) {
+                reportValveClosed();
+                // Seamless hand-off: the pump is still running its graceful-shutdown tail, so a
+                // queued item can start right now instead of waiting for that tail to finish —
+                // this is the whole point of the pump lingering rather than shutting off.
                 WateringRequest next;
                 if (wateringQueue.pop(next)) {
+                    publishQueueState();
                     startIrrigation(next, nowMs);
                 }
             }
-            updateCurrentMonitoring(nowMs);
+            previousIrrigationState = irrigation.snapshot(nowMs).state;
+
+            if (reportedActive && !irrigation.isActive()) {
+                reportStop(activeRequestForReporting.reason);
+                // Pump-only runs have no graceful-shutdown tail (no valve to protect), so this
+                // is their only hand-off point; it also acts as a safety net for the zone-chain
+                // case above if nothing was queued in time.
+                WateringRequest next;
+                if (wateringQueue.pop(next)) {
+                    publishQueueState();
+                    startIrrigation(next, nowMs);
+                }
+            }
+            // updateCurrentMonitoring(nowMs);  // Disabled for now, until measurement circuit is tested in HW and calibrated..
             updateOutputsFromDomain();
 
             {

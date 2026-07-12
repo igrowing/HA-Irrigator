@@ -26,6 +26,13 @@ public:
     bool isActive() const { return state_ != IrrigationState::Idle; }
     IrrigationState state() const { return state_; }
 
+    // True in Idle, and also during PumpGracePeriod — the pump is still spinning down from the
+    // previous run but hasn't stopped yet, so a queued request can hand off to it seamlessly
+    // (see start()) instead of waiting for the full graceful-shutdown window to elapse.
+    bool canStartImmediately() const {
+        return state_ == IrrigationState::Idle || state_ == IrrigationState::PumpGracePeriod;
+    }
+
 private:
     IrrigationState state_ = IrrigationState::Idle;
     WateringRequest current_ = {};

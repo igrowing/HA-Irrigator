@@ -22,7 +22,7 @@ struct Settings {
     float pumpCurrentMvPerMa = board::PUMP_CURRENT_SENSOR_MV_PER_MA;
 };
 
-Settings makeDefaultSettings();
+Settings makeDefaultZones();
 bool validateSettings(const Settings& settings);
 
 // Missing fields fall back to makeDefaultSettings() values (this is the spec-defined default,

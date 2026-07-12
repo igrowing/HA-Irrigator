@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace irrigator::domain {
@@ -20,5 +21,9 @@ CivilDate civilFromDays(int64_t daysSinceEpoch);
 int weekdayFromDays(int64_t daysSinceEpoch);  // 0=Sunday..6=Saturday
 
 int64_t epochFromUtc(int year, unsigned month, unsigned day, unsigned hour, unsigned minute, unsigned second);
+
+// Epoch seconds -> "YYYY-MM-DDTHH:MM:SS" (UTC), null-terminated. Inverse of epochFromUtc; buffer
+// must be at least 20 bytes.
+void formatIso8601Utc(int64_t epochSeconds, char* buffer, size_t bufferSize);
 
 }  // namespace irrigator::domain

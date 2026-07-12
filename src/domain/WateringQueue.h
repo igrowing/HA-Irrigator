@@ -33,6 +33,12 @@ public:
         count_ = 0;
     }
 
+    // Peek without dequeuing, in FIFO order (index 0 = next to run) — for reporting queue
+    // contents (e.g. cmd/queue) without disturbing it.
+    const WateringRequest& at(uint8_t index) const {
+        return items_[(head_ + index) % Capacity];
+    }
+
     uint8_t size() const { return count_; }
     constexpr uint8_t capacity() const { return Capacity; }
     bool empty() const { return count_ == 0; }

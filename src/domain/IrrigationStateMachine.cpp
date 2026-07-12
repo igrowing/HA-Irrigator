@@ -9,15 +9,25 @@ static uint32_t durationToMs(uint16_t minutes) {
 }
 
 bool IrrigationStateMachine::start(const WateringRequest& request, uint32_t nowMs) {
-    if (state_ != IrrigationState::Idle || request.durationMin == 0 || request.zone > board::ZONE_COUNT) {
+    if (!canStartImmediately() || request.durationMin == 0 || request.zone > board::ZONE_COUNT) {
         return false;
     }
 
+    // Seamless hand-off: if the pump is still spinning down from the previous run
+    // (PumpGracePeriod), it never actually stopped — skip the prestart ramp-up and open the
+    // next valve immediately instead of cycling the pump off and back on.
+    const bool pumpAlreadyRunning = state_ == IrrigationState::PumpGracePeriod;
+
     current_ = request;
     startedAtMs_ = nowMs;
-    wateringStartedAtMs_ = request.zone == 0 ? nowMs : 0;
     pumpGraceStartedAtMs_ = 0;
-    state_ = request.zone == 0 ? IrrigationState::PumpOnly : IrrigationState::StartingPump;
+    if (pumpAlreadyRunning) {
+        wateringStartedAtMs_ = nowMs;
+        state_ = request.zone == 0 ? IrrigationState::PumpOnly : IrrigationState::Watering;
+    } else {
+        wateringStartedAtMs_ = request.zone == 0 ? nowMs : 0;
+        state_ = request.zone == 0 ? IrrigationState::PumpOnly : IrrigationState::StartingPump;
+    }
     return true;
 }
 
