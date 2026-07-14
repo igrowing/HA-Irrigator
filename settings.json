@@ -1,0 +1,22 @@
+{
+  "watering_percentage": 100,
+  "schedule_active": false,
+  "default_manual_duration": 5,
+  "valve_current_zero_offset_mv": 1650,
+  "valve_current_mv_per_ma": 1,
+  "pump_current_zero_offset_mv": 1650,
+  "pump_current_mv_per_ma": 1,
+  "zone_names": {
+    "1": {"name": "Trees left", "enabled": true},
+    "2": {"name": "Triangle", "enabled": true},
+    "3": {"name": "Back left", "enabled": true},
+    "4": {"name": "Mid-left", "enabled": true},
+    "5": {"name": "Mid-right", "enabled": true},
+    "6": {"name": "Back gate", "enabled": true},
+    "7": {"name": "Back right", "enabled": true},
+    "8": {"name": "Trees right", "enabled": true},
+    "9": {"name": "Ginko", "enabled": true},
+    "10": {"name": "Front", "enabled": true},
+    "11": {"name": "Zone 11", "enabled": false}
+  }
+}

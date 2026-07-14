@@ -22,14 +22,14 @@ static constexpr uint8_t SSD1309_ADDRESS = 0x3C;
 
 static constexpr uint8_t ZONE_COUNT = 11;
 // Zones 1-11, all active-low, direct GPIO. Avoids boot-strapping pins 0/2/12.
-static constexpr uint8_t GPIO_ZONE_PINS[ZONE_COUNT] = {4, 5, 13, 17, 18, 19, 23, 15, 25, 26, 27};
-static constexpr uint8_t PUMP_RELAY_PIN = 16;
+static constexpr uint8_t GPIO_ZONE_PINS[ZONE_COUNT] = {4, 16, 17, 5, 18, 19, 23, 13, 27, 26, 25};
+static constexpr uint8_t PUMP_RELAY_PIN = 15;
 
 static constexpr uint8_t STATUS_LED_PIN = 14;
 
 static constexpr uint8_t ROTARY_CLK_PIN = 34;
-static constexpr uint8_t ROTARY_DAT_PIN = 35;
-static constexpr uint8_t ROTARY_BUTTON_PIN = 39;
+static constexpr uint8_t ROTARY_DAT_PIN = 39;
+static constexpr uint8_t ROTARY_BUTTON_PIN = 35;
 static constexpr uint16_t ROTARY_LONG_CLICK_MS = 1000;
 
 static constexpr uint8_t VALVE_CURRENT_ADC_PIN = 32;

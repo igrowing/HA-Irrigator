@@ -10,10 +10,10 @@ rules if you're contributing code, not just using the device).
 | Function                 | Pin/Bus                 | Notes                                              |
 |---------------------------|--------------------------|-----------------------------------------------------|
 | I2C bus (shared)          | SDA=GPIO21, SCL=GPIO22  | DS3231 RTC, SSD1309 OLED                            |
-| Zones 1–11                 | GPIO 4, 5, 13, 17, 18, 19, 23, 15, 25, 26, 27         | Active low                                          |
-| Pump                      | GPIO 16                 | Active low     |
+| Zones 1–11                 | GPIO 4, 16, 17, 5, 18, 19, 23, 13, 27, 26, 25 | Active low                                          |
+| Pump                      | GPIO 15                 | Active low     |
 | Status/fault LED          | GPIO 14                 | Active high                                         |
-| Rotary encoder + button   | GPIO 34, 35, 39         | All pulled up externally (34/35/39 are input-only) |
+| Rotary encoder + button   | GPIO 34, 39, 35 (BTN)         | All pulled up externally (34/35/39 are input-only), A and B are low-pass protected (RC). Button is debounced with 220nF. |
 | DS3231 RTC                | I2C, addr 0x68          |                                                      |
 | SSD1309 OLED (128x64)     | I2C, addr 0x3C          |                                                      |
 | 24VAC current sense       | GPIO 32 (ADC)           | Valve current, ~200mA nominal                       |
@@ -24,7 +24,10 @@ rules if you're contributing code, not just using the device).
 - **11 independently-named sprinkler zones** plus pump-only runs, with the pump always
   pre-started ~500ms before a valve opens and kept on for a 60s graceful-shutdown window after a
   valve closes (protects the pump from rapid-cycle wear) — if another watering is queued up, it
-  hands off to the still-running pump immediately instead of waiting out that window.
+  hands off to the still-running pump immediately instead of waiting out that window. Each zone
+  can also be individually disabled (`settings.json`'s `zone_names.<n>.enabled`) to exclude it
+  from scheduled, manual, and MQTT-triggered watering alike — an MQTT `cmd/run` (or a scheduled/
+  manual attempt) against a disabled zone is rejected with a `/alert` instead of running.
 - **Weekly schedule** (`schedule.json`, up to 32 records) with a per-zone watering-percentage
   multiplier, a pause/rain-skip mechanism, and a 10-deep queue so overlapping or MQTT-triggered
   runs during an active watering don't get lost — they queue and run in order, back-to-back on
