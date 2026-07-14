@@ -433,10 +433,10 @@ UiIntent UiStateMachine::handleMenuScheduleEdit(UiInputEvent event,
 
 UiIntent UiStateMachine::handleMenuSettings(UiInputEvent event, const Context& ctx) {
     UiIntent intent;
-    constexpr uint8_t kItemCount = 5;
+    constexpr uint8_t kItemCount = 6;
     constexpr uint8_t kPercentageIndex = 0;
     constexpr uint8_t kScheduleActiveIndex = 1;
-    constexpr uint8_t kBackIndex = 4;
+    constexpr uint8_t kBackIndex = 5;
 
     if (editing_) {
         switch (event) {

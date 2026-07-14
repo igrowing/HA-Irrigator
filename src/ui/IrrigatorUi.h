@@ -55,6 +55,7 @@ private:
     using MenuLabelBuilder = std::function<void(uint8_t index, char* buffer, size_t bufferSize)>;
 
     void render(uint32_t nowMs, const RenderData& data);
+    void drawTopStatusLine(const RenderData& data);
     void renderNormal(uint32_t nowMs, const RenderData& data);
     void renderZonePicker(const RenderData& data);
     void renderDurationPicker(const RenderData& data);

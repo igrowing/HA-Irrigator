@@ -169,15 +169,13 @@ void IrrigatorUi::render(uint32_t nowMs, const RenderData& data) {
     }
 }
 
-void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
-    display_.clearBuffer();
-
+void IrrigatorUi::drawTopStatusLine(const RenderData& data) {
     display_.setFont(u8g2_font_5x7_tr);
     char upperLeft[16] = "";
     if (data.deviceIp != IPAddress(0, 0, 0, 0)) {
         snprintf(upperLeft, sizeof(upperLeft), "IP.%u", data.deviceIp[3]);
     }
-    display_.drawStr(0, 7, upperLeft);
+    display_.drawStr(0, board::DISPLAY_1ST_LINE_OFFSET, upperLeft);
 
     char upperRight[24] = "";
     if (data.hasWallClock) {
@@ -192,16 +190,26 @@ void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
                 data.wallClockLocal.tm_sec);
     }
     const uint16_t rightWidth = display_.getStrWidth(upperRight);
-    display_.drawStr(128 - static_cast<int16_t>(rightWidth), 7, upperRight);
+    display_.drawStr(128 - static_cast<int16_t>(rightWidth), board::DISPLAY_1ST_LINE_OFFSET, upperRight);
+}
+
+void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
+    display_.clearBuffer();
+
+    drawTopStatusLine(data);
+
+    const bool scheduled = data.scheduleActive && data.nextScheduledZone != 0;
 
     display_.setFont(u8g2_font_helvB14_tr);
     char mainText[20] = "";
     if (data.snapshot.pumpOn) {
         snprintf(mainText, sizeof(mainText), "%s", zoneLabel(data, data.snapshot.activeZone));
-    } else if (data.scheduleActive && data.nextScheduledZone != 0) {
+    } else if (scheduled) {
         snprintf(mainText, sizeof(mainText), "%s", data.nextScheduledZoneName);
+    } else {
+        snprintf(mainText, sizeof(mainText), "%s", zoneLabel(data, 1));
     }
-    drawCentered(display_, 40, mainText);
+    drawCentered(display_, board::DISPLAY_2ND_LINE_OFFSET, mainText);
 
     display_.setFont(u8g2_font_helvB10_tr);
     char statusText[24] = "";
@@ -214,18 +222,18 @@ void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
             snprintf(
                 statusText, sizeof(statusText), "REMAINING %uM", static_cast<unsigned>(remainingMin));
         }
-    } else if (data.scheduleActive) {
+    } else if (scheduled) {
         snprintf(statusText, sizeof(statusText), "SCHEDULED");
     } else {
         snprintf(statusText, sizeof(statusText), "IDLE");
     }
-    drawCentered(display_, 54, statusText);
+    drawCentered(display_, board::DISPLAY_3RD_LINE_OFFSET, statusText);
 
     display_.setFont(u8g2_font_5x7_tr);
     if (data.snapshot.pumpOn) {
-        drawCentered(display_, 63, "LONG CLICK = MENU");
+        drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "LONG CLICK = MENU");
     } else {
-        drawCentered(display_, 63, "< DECR. o SELECT INCR. >");
+        drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "< DECR. o SELECT INCR. >");
     }
 
     display_.sendBuffer();
@@ -233,32 +241,34 @@ void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
 
 void IrrigatorUi::renderZonePicker(const RenderData& data) {
     display_.clearBuffer();
+    drawTopStatusLine(data);
     display_.setFont(u8g2_font_helvB14_tr);
-    drawCentered(display_, 40, zoneLabel(data, uiState_.pendingZone()));
+    drawCentered(display_, board::DISPLAY_2ND_LINE_OFFSET, zoneLabel(data, uiState_.pendingZone()));
     display_.setFont(u8g2_font_helvB10_tr);
-    drawCentered(display_, 54, "SELECT ZONE");
-    display_.setFont(u8g2_font_6x10_tr);
-    drawCentered(display_, 63, "< DECR. o SELECT INCR. >");
+    drawCentered(display_, board::DISPLAY_3RD_LINE_OFFSET, "SELECT ZONE");
+    display_.setFont(u8g2_font_5x7_tr);
+    drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "< DECR. o SELECT INCR. >");
     display_.sendBuffer();
 }
 
 void IrrigatorUi::renderDurationPicker(const RenderData& data) {
     display_.clearBuffer();
+    drawTopStatusLine(data);
     display_.setFont(u8g2_font_helvB14_tr);
     char text[16];
     snprintf(text, sizeof(text), "%u MINs", static_cast<unsigned>(uiState_.pendingDuration()));
-    drawCentered(display_, 40, text);
+    drawCentered(display_, board::DISPLAY_2ND_LINE_OFFSET, text);
     display_.setFont(u8g2_font_helvB10_tr);
-    drawCentered(display_, 54, zoneLabel(data, uiState_.pendingZone()));
-    display_.setFont(u8g2_font_6x10_tr);
-    drawCentered(display_, 63, "< DECR. o START INCR. >");
+    drawCentered(display_, board::DISPLAY_3RD_LINE_OFFSET, zoneLabel(data, uiState_.pendingZone()));
+    display_.setFont(u8g2_font_5x7_tr);
+    drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "< DECR. o START INCR. >");
     display_.sendBuffer();
 }
 
 void IrrigatorUi::renderStopConfirm(const RenderData& data) {
     (void)data;
     display_.clearBuffer();
-    display_.setFont(u8g2_font_helvB10_tr);
+    display_.setFont(u8g2_font_helvB08_tr);
     drawCentered(display_, 30, "STOP?");
 
     const char* noText = "NO";
@@ -280,11 +290,11 @@ void IrrigatorUi::renderStopConfirm(const RenderData& data) {
 
 void IrrigatorUi::renderFactoryResetConfirm() {
     display_.clearBuffer();
-    display_.setFont(u8g2_font_helvB10_tr);
+    display_.setFont(u8g2_font_helvB08_tr);
     drawCentered(display_, 20, "FACTORY RESET?");
     display_.setFont(u8g2_font_6x10_tr);
-    drawCentered(display_, 32, "Erases config/settings");
-    drawCentered(display_, 42, "/schedule, restarts.");
+    drawCentered(display_, 32, "Erase config/settings");
+    drawCentered(display_, 42, "/schedule, restart.");
 
     const char* noText = "NO";
     const char* yesText = "YES";
@@ -390,7 +400,7 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                                    : (data.settings != nullptr ? data.settings->wateringPercentage : 0);
 
     drawMenuList(
-        "SETTINGS", 5, uiState_.selectedIndex(), [this, &data, percentage](uint8_t index, char* buffer, size_t size) {
+        "SETTINGS", 6, uiState_.selectedIndex(), [this, &data, percentage](uint8_t index, char* buffer, size_t size) {
             switch (index) {
                 case 0:
                     snprintf(buffer, size, "Adjust: %d %%", percentage);
@@ -402,9 +412,12 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                     snprintf(buffer, size, "IP: %s", data.deviceIp.toString().c_str());
                     break;
                 case 3:
-                    snprintf(buffer, size, "MQTT IP: %s", data.mqttBrokerText.c_str());
+                    snprintf(buffer, size, "MQTT: %s", data.mqttBrokerText.c_str());
                     break;
                 case 4:
+                    snprintf(buffer, size, "FW: v.%s", irrigator::board::FIRMWARE_VERSION);
+                    break;
+                case 5:
                     snprintf(buffer, size, "BACK");
                     break;
                 default:

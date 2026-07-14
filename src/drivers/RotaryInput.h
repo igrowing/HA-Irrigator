@@ -20,18 +20,14 @@ public:
     RotaryEvent poll();
 
 private:
-    RotaryEncoder encoder_{board::ROTARY_CLK_PIN, board::ROTARY_DAT_PIN, RotaryEncoder::LatchMode::TWO03};
+    // TWO03 assumes the encoder detents at both the 00 and 11 states (2 external counts per
+    // click); FOUR0/FOUR3 assume one full 4-state Gray cycle per click (1 count). Most cheap
+    // incremental encoders are the latter — if this still reports 2 per click, try FOUR3
+    // instead (mirrors FOUR0 for the opposite CLK/DAT phase wiring).
+    RotaryEncoder encoder_{board::ROTARY_CLK_PIN, board::ROTARY_DAT_PIN, RotaryEncoder::LatchMode::FOUR0};
     Button2 button_{board::ROTARY_BUTTON_PIN};
     int position_ = 0;
     RotaryEvent pendingButtonEvent_ = RotaryEvent::None;
-
-    // Legal quadrature-transition filter, applied in front of the library (see poll()): a real
-    // encoder detent only ever changes one signal at a time (Gray-code sequence 00-01-11-10-00
-    // or its reverse). A reading where both CLK and DAT appear to have flipped at once is
-    // physically impossible for a genuine rotation — it means noise/bounce, and is discarded
-    // before the library ever sees it, rather than letting it corrupt the library's own
-    // internal "last state" baseline.
-    uint8_t lastQuadratureState_ = 0;
 };
 
 }  // namespace irrigator::drivers

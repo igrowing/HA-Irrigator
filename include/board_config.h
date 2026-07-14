@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "0.1.1"
+#define APP_VERSION "0.1.2"
 #endif
 
 namespace irrigator::board {
@@ -74,6 +74,11 @@ static constexpr uint16_t DEFAULT_MQTT_PORT = 1883;
 static constexpr size_t CONFIG_JSON_MAX_BYTES = 768;
 static constexpr size_t SETTINGS_JSON_MAX_BYTES = 768;
 static constexpr size_t SCHEDULE_JSON_MAX_BYTES = 4096;
+
+static constexpr const uint8_t DISPLAY_1ST_LINE_OFFSET = 7;
+static constexpr const uint8_t DISPLAY_2ND_LINE_OFFSET = 30;
+static constexpr const uint8_t DISPLAY_3RD_LINE_OFFSET = 52;
+static constexpr const uint8_t DISPLAY_4TH_LINE_OFFSET = 63;
 
 static constexpr const char* CONFIG_FILE_PATH = "/config.json";
 static constexpr const char* SETTINGS_FILE_PATH = "/settings.json";
