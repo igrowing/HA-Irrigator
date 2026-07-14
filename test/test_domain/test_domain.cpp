@@ -399,13 +399,30 @@ void test_ui_state_machine_stop_confirm_flow() {
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
 }
 
+void test_ui_state_machine_stop_all_clears_queue_without_aborting() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.wateringActive = true;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Stop -> Stop all
+    TEST_ASSERT_EQUAL_UINT8(1, ui.selectedIndex());
+
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::ClearQueue);
+    // Stays on the menu — unlike Stop, this doesn't touch the active run or return to Normal.
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuMain);
+}
+
 void test_ui_state_machine_settings_percentage_edit() {
     irrigator::domain::UiStateMachine ui;
     irrigator::domain::UiStateMachine::Context ctx;
     ctx.wateringPercentage = 100;
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
-    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Schedule -> Settings
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Schedule -> Test all zones
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Test all zones -> Settings
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuSettings);
 
@@ -419,6 +436,34 @@ void test_ui_state_machine_settings_percentage_edit() {
     TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::SetWateringPercentage);
     TEST_ASSERT_EQUAL_INT16(110, intent.percentage);
     TEST_ASSERT_FALSE(ui.editing());
+}
+
+void test_ui_state_machine_test_all_zones_flow() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Schedule -> Test all zones
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);      // -> MenuTestAll
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuTestAll);
+    TEST_ASSERT_EQUAL_UINT16(5, ui.testAllZonesDurationMin());  // default
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 500);  // Run -> Dur./zone
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 600);      // enter duration edit
+    TEST_ASSERT_TRUE(ui.editing());
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 700);
+    TEST_ASSERT_EQUAL_UINT16(6, ui.pendingDuration());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 800);  // confirm duration
+    TEST_ASSERT_FALSE(ui.editing());
+    TEST_ASSERT_EQUAL_UINT16(6, ui.testAllZonesDurationMin());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::CounterClockwise, ctx, 900);  // Dur./zone -> Run
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1000);  // Run
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::RunAllZonesTest);
+    TEST_ASSERT_EQUAL_UINT16(6, intent.duration);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
 }
 
 void test_ui_state_machine_schedule_duration_edit() {
@@ -586,7 +631,9 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_long_click_cancels_duration_picker);
     RUN_TEST(test_ui_state_machine_watering_active_ignores_ticks_but_long_click_opens_menu);
     RUN_TEST(test_ui_state_machine_stop_confirm_flow);
+    RUN_TEST(test_ui_state_machine_stop_all_clears_queue_without_aborting);
     RUN_TEST(test_ui_state_machine_settings_percentage_edit);
+    RUN_TEST(test_ui_state_machine_test_all_zones_flow);
     RUN_TEST(test_ui_state_machine_schedule_duration_edit);
     RUN_TEST(test_ui_state_machine_schedule_zone_edit_wraps);
     RUN_TEST(test_ui_state_machine_schedule_day_edit_wraps);

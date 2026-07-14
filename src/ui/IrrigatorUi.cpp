@@ -157,6 +157,9 @@ void IrrigatorUi::render(uint32_t nowMs, const RenderData& data) {
         case ::irrigator::domain::UiScreen::MenuSettings:
             renderMenuSettings(data);
             break;
+        case ::irrigator::domain::UiScreen::MenuTestAll:
+            renderMenuTestAll();
+            break;
         case ::irrigator::domain::UiScreen::FactoryResetConfirm:
             renderFactoryResetConfirm();
             break;
@@ -365,7 +368,7 @@ void IrrigatorUi::drawMenuList(const char* title,
 
 void IrrigatorUi::renderMenuMain(const RenderData& data) {
     const bool wateringActive = data.snapshot.pumpOn;
-    const uint8_t itemCount = static_cast<uint8_t>(wateringActive ? 4 : 3);
+    const uint8_t itemCount = static_cast<uint8_t>(wateringActive ? 6 : 4);
 
     drawMenuList(
         "MENU", itemCount, uiState_.selectedIndex(), [this, &data, wateringActive](uint8_t index, char* buffer, size_t size) {
@@ -375,16 +378,23 @@ void IrrigatorUi::renderMenuMain(const RenderData& data) {
                     snprintf(buffer, size, "Stop %s", zoneLabel(data, data.snapshot.activeZone));
                     return;
                 }
-                --i;
+                if (i == 1) {
+                    snprintf(buffer, size, "Stop all");
+                    return;
+                }
+                i -= 2;
             }
             switch (i) {
                 case 0:
                     snprintf(buffer, size, "Schedule");
                     break;
                 case 1:
-                    snprintf(buffer, size, "Settings");
+                    snprintf(buffer, size, "Test all zones");
                     break;
                 case 2:
+                    snprintf(buffer, size, "Settings");
+                    break;
+                case 3:
                     snprintf(buffer, size, "BACK");
                     break;
                 default:
@@ -400,7 +410,7 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                                    : (data.settings != nullptr ? data.settings->wateringPercentage : 0);
 
     drawMenuList(
-        "SETTINGS", 6, uiState_.selectedIndex(), [this, &data, percentage](uint8_t index, char* buffer, size_t size) {
+        "SETTINGS", 7, uiState_.selectedIndex(), [this, &data, percentage](uint8_t index, char* buffer, size_t size) {
             switch (index) {
                 case 0:
                     snprintf(buffer, size, "Adjust: %d %%", percentage);
@@ -415,9 +425,12 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                     snprintf(buffer, size, "MQTT: %s", data.mqttBrokerText.c_str());
                     break;
                 case 4:
-                    snprintf(buffer, size, "FW: v.%s", irrigator::board::FIRMWARE_VERSION);
+                    snprintf(buffer, size, "Topic: %s", data.mqttTopicText.c_str());
                     break;
                 case 5:
+                    snprintf(buffer, size, "FW: v.%s", irrigator::board::FIRMWARE_VERSION);
+                    break;
+                case 6:
                     snprintf(buffer, size, "BACK");
                     break;
                 default:
@@ -425,6 +438,28 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                     break;
             }
         });
+}
+
+void IrrigatorUi::renderMenuTestAll() {
+    const uint16_t durationMin =
+        uiState_.editing() ? uiState_.pendingDuration() : uiState_.testAllZonesDurationMin();
+
+    drawMenuList("TEST ALL ZONES", 3, uiState_.selectedIndex(), [durationMin](uint8_t index, char* buffer, size_t size) {
+        switch (index) {
+            case 0:
+                snprintf(buffer, size, "Run");
+                break;
+            case 1:
+                snprintf(buffer, size, "Dur./zone: %u min", static_cast<unsigned>(durationMin));
+                break;
+            case 2:
+                snprintf(buffer, size, "BACK");
+                break;
+            default:
+                buffer[0] = '\0';
+                break;
+        }
+    });
 }
 
 void IrrigatorUi::renderMenuSchedule(const RenderData& data) {

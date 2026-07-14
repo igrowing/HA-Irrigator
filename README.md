@@ -29,7 +29,7 @@ rules if you're contributing code, not just using the device).
   from scheduled, manual, and MQTT-triggered watering alike — an MQTT `cmd/run` (or a scheduled/
   manual attempt) against a disabled zone is rejected with a `/alert` instead of running.
 - **Weekly schedule** (`schedule.json`, up to 32 records) with a per-zone watering-percentage
-  multiplier, a pause/rain-skip mechanism, and a 10-deep queue so overlapping or MQTT-triggered
+  multiplier, a pause/rain-skip mechanism, and a 15-deep queue so overlapping or MQTT-triggered
   runs during an active watering don't get lost — they queue and run in order, back-to-back on
   the same pump cycle whenever the pump is still spinning down from the previous one.
 - **Local UI**: SSD1309 OLED + rotary encoder, auto-dimming after 20s of inactivity, full menu
@@ -97,7 +97,9 @@ the last two alternating every 3s), and a help line.
 ```
 MENU
 > Stop ZONE 3        (only shown while something is running)
+  Stop all            (only shown while something is running)
   Schedule
+  Test all zones
   Settings
   BACK
 ```
@@ -105,6 +107,9 @@ MENU
 - **Stop `<zone>`** (only present while watering): opens a confirm screen —
   `STOP?  [NO]  YES` — turn the knob to move the selection box onto `YES`, click to confirm.
   Either choice returns you to the normal screen.
+- **Stop all** (only present while watering): immediately clears the watering queue — no confirm
+  step. The zone currently running is *not* affected; it finishes out its own duration. Use
+  **Stop `<zone>`** instead to abort what's actively running.
 - **Schedule**: a flat, scrolling list — for each program `<n>`: zone, start day, start time,
   duration, active/paused. Every row is clickable and edits that field:
   - **Zone** / **start day**: click to edit, turn the knob to step through zones 1–11 (by name)
@@ -114,9 +119,24 @@ MENU
   - **Duration**: same step formula as manual watering, capped 1–60 min.
   - **Status**: click toggles active/paused immediately, no separate confirm step.
   A long click at any point during an edit cancels it and discards the change.
+- **Test all zones**: a 3-item submenu —
+  ```
+  TEST ALL ZONES
+  > Run
+    Dur./zone: 5 min
+    BACK
+  ```
+  - **Run**: queues every *enabled* zone (see per-zone `enabled` in Settings/`settings.json`) for
+    `Dur./zone` minutes each, one after another — same queue as any other watering request, so
+    the first zone starts immediately if idle and the rest follow back-to-back. The screen
+    returns to the normal screen right away, same as starting a manual watering.
+  - **Dur./zone**: click to edit, same step formula as manual watering (±`(duration/10 + 1)`
+    min/tick, clamped 1–120), click to confirm. Defaults to 5 min and is session-only (resets to
+    5 on reboot, not persisted to flash).
+  - **BACK**: returns to the main menu.
 - **Settings**: `Adjust: 100 %` (±10%/tick, click to edit, click to confirm), `Schedule:
-  active/paused` (click toggles), `IP: ...` and `MQTT IP: ...` (display only, not clickable),
-  `BACK`.
+  active/paused` (click toggles), `IP: ...`, `MQTT: ...`, `Topic: irrigator4f` (the MQTT prefix —
+  see [MQTT](#mqtt) below), and `FW: v.<version>` (display only, not clickable), `BACK`.
 
 ### Reset to factory defaults
 

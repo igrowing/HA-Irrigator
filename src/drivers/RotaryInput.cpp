@@ -14,8 +14,13 @@ void RotaryInput::begin() {
         Log.info("[ROTARY] button: click");
         pendingButtonEvent_ = RotaryEvent::Click;
     });
-    button_.setLongClickHandler([this](Button2&) {
-        Log.info("[ROTARY] button: long click");
+    // "Detected" (fires the instant the hold crosses ROTARY_LONG_CLICK_MS, while still held) not
+    // setLongClickHandler (fires only on release) — menu entry reacts the moment the hold
+    // threshold is reached, and the eventual release is left with no handler at all (neither
+    // long_cb nor click_cb fire for it, per Button2's _reportClicks()), so it's silently ignored
+    // rather than emitting a stray Click.
+    button_.setLongClickDetectedHandler([this](Button2&) {
+        Log.info("[ROTARY] button: long click (detected on hold)");
         pendingButtonEvent_ = RotaryEvent::LongClick;
     });
 }

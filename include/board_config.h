@@ -57,7 +57,10 @@ static constexpr uint16_t ACTIVE_INTERACTION_TIMEOUT_MS = 20000;
 static constexpr uint16_t PUMP_PRESTART_MS = 500;
 static constexpr uint32_t PUMP_GRACEFUL_SHUTDOWN_MS = 60000UL;
 static constexpr uint16_t CURRENT_MEASURE_POST_OFF_MS = 10000;
-static constexpr uint8_t WATERING_QUEUE_DEPTH = 10;
+// 15 covers "Test all zones" queuing up to ZONE_COUNT (11) requests behind whatever's already
+// running/queued, with headroom to spare. WateringRequest is a few bytes, so the extra slots
+// cost tens of bytes total — a non-issue against the ESP32's RAM budget.
+static constexpr uint8_t WATERING_QUEUE_DEPTH = 15;
 
 static constexpr uint8_t MANUAL_DURATION_MIN_MINUTES = 1;
 static constexpr uint8_t MANUAL_DURATION_MAX_MINUTES = 120;

@@ -15,6 +15,7 @@ enum class UiScreen : uint8_t {
     MenuMain,
     MenuSchedule,
     MenuSettings,
+    MenuTestAll,
     FactoryResetConfirm,
     FactoryResetResult,
 };
@@ -23,6 +24,7 @@ enum class UiIntentType : uint8_t {
     None,
     StartWatering,
     AbortWatering,
+    ClearQueue,
     ToggleScheduleActive,
     SetWateringPercentage,
     SetScheduleZone,
@@ -30,6 +32,7 @@ enum class UiIntentType : uint8_t {
     SetScheduleTime,
     SetScheduleDuration,
     SetScheduleActive,
+    RunAllZonesTest,
     FactoryReset,
 };
 

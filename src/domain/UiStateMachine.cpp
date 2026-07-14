@@ -76,6 +76,8 @@ UiIntent UiStateMachine::handleInput(UiInputEvent event, const Context& ctx, uin
             return handleMenuSchedule(event, ctx);
         case UiScreen::MenuSettings:
             return handleMenuSettings(event, ctx);
+        case UiScreen::MenuTestAll:
+            return handleMenuTestAll(event);
         case UiScreen::FactoryResetConfirm:
             return handleFactoryResetConfirm(event);
         case UiScreen::FactoryResetResult:
@@ -206,7 +208,10 @@ UiIntent UiStateMachine::handleFactoryResetConfirm(UiInputEvent event) {
 }
 
 UiIntent UiStateMachine::handleMenuMain(UiInputEvent event, const Context& ctx) {
-    const uint8_t itemCount = static_cast<uint8_t>(ctx.wateringActive ? 4 : 3);
+    // Item order, matching IrrigatorUi::renderMenuMain: [Stop, Stop all] (watering only),
+    // Schedule, Test all zones, Settings, BACK.
+    const uint8_t itemCount = static_cast<uint8_t>(ctx.wateringActive ? 6 : 4);
+    UiIntent intent;
 
     switch (event) {
         case UiInputEvent::Clockwise:
@@ -216,14 +221,20 @@ UiIntent UiStateMachine::handleMenuMain(UiInputEvent event, const Context& ctx) 
             selectedIndex_ = stepIndex(selectedIndex_, itemCount, false);
             break;
         case UiInputEvent::Click: {
-            const uint8_t scheduleIndex = static_cast<uint8_t>(ctx.wateringActive ? 1 : 0);
-            const uint8_t settingsIndex = static_cast<uint8_t>(ctx.wateringActive ? 2 : 1);
-            const uint8_t backIndex = static_cast<uint8_t>(ctx.wateringActive ? 3 : 2);
+            const uint8_t scheduleIndex = static_cast<uint8_t>(ctx.wateringActive ? 2 : 0);
+            const uint8_t testAllIndex = static_cast<uint8_t>(ctx.wateringActive ? 3 : 1);
+            const uint8_t settingsIndex = static_cast<uint8_t>(ctx.wateringActive ? 4 : 2);
+            const uint8_t backIndex = static_cast<uint8_t>(ctx.wateringActive ? 5 : 3);
             if (ctx.wateringActive && selectedIndex_ == 0) {
                 stopConfirmYes_ = false;
                 screen_ = UiScreen::StopConfirm;
+            } else if (ctx.wateringActive && selectedIndex_ == 1) {
+                intent.type = UiIntentType::ClearQueue;
             } else if (selectedIndex_ == scheduleIndex) {
                 screen_ = UiScreen::MenuSchedule;
+                selectedIndex_ = 0;
+            } else if (selectedIndex_ == testAllIndex) {
+                screen_ = UiScreen::MenuTestAll;
                 selectedIndex_ = 0;
             } else if (selectedIndex_ == settingsIndex) {
                 screen_ = UiScreen::MenuSettings;
@@ -239,7 +250,7 @@ UiIntent UiStateMachine::handleMenuMain(UiInputEvent event, const Context& ctx) 
             selectedIndex_ = 0;
             break;
     }
-    return {};
+    return intent;
 }
 
 UiIntent UiStateMachine::handleMenuSchedule(UiInputEvent event, const Context& ctx) {
@@ -433,10 +444,10 @@ UiIntent UiStateMachine::handleMenuScheduleEdit(UiInputEvent event,
 
 UiIntent UiStateMachine::handleMenuSettings(UiInputEvent event, const Context& ctx) {
     UiIntent intent;
-    constexpr uint8_t kItemCount = 6;
+    constexpr uint8_t kItemCount = 7;
     constexpr uint8_t kPercentageIndex = 0;
     constexpr uint8_t kScheduleActiveIndex = 1;
-    constexpr uint8_t kBackIndex = 5;
+    constexpr uint8_t kBackIndex = 6;
 
     if (editing_) {
         switch (event) {
@@ -477,6 +488,62 @@ UiIntent UiStateMachine::handleMenuSettings(UiInputEvent event, const Context& c
                 selectedIndex_ = 0;
             }
             // IP / MQTT IP rows are explicitly not clickable.
+            break;
+        case UiInputEvent::LongClick:
+            screen_ = UiScreen::MenuMain;
+            selectedIndex_ = 0;
+            break;
+    }
+    return intent;
+}
+
+UiIntent UiStateMachine::handleMenuTestAll(UiInputEvent event) {
+    UiIntent intent;
+    constexpr uint8_t kItemCount = 3;
+    constexpr uint8_t kRunIndex = 0;
+    constexpr uint8_t kDurationIndex = 1;
+    constexpr uint8_t kBackIndex = 2;
+
+    if (editing_) {
+        switch (event) {
+            case UiInputEvent::Clockwise:
+                pendingDuration_ = adjustManualDuration(pendingDuration_, RotationDirection::Clockwise);
+                break;
+            case UiInputEvent::CounterClockwise:
+                pendingDuration_ =
+                    adjustManualDuration(pendingDuration_, RotationDirection::CounterClockwise);
+                break;
+            case UiInputEvent::Click:
+                testAllZonesDurationMin_ = pendingDuration_;
+                editing_ = false;
+                break;
+            case UiInputEvent::LongClick:
+                editing_ = false;
+                break;
+        }
+        return intent;
+    }
+
+    switch (event) {
+        case UiInputEvent::Clockwise:
+            selectedIndex_ = stepIndex(selectedIndex_, kItemCount, true);
+            break;
+        case UiInputEvent::CounterClockwise:
+            selectedIndex_ = stepIndex(selectedIndex_, kItemCount, false);
+            break;
+        case UiInputEvent::Click:
+            if (selectedIndex_ == kRunIndex) {
+                intent.type = UiIntentType::RunAllZonesTest;
+                intent.duration = testAllZonesDurationMin_;
+                screen_ = UiScreen::Normal;
+                selectedIndex_ = 0;
+            } else if (selectedIndex_ == kDurationIndex) {
+                pendingDuration_ = testAllZonesDurationMin_;
+                editing_ = true;
+            } else if (selectedIndex_ == kBackIndex) {
+                screen_ = UiScreen::MenuMain;
+                selectedIndex_ = 0;
+            }
             break;
         case UiInputEvent::LongClick:
             screen_ = UiScreen::MenuMain;

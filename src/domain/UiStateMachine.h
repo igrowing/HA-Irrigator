@@ -76,6 +76,10 @@ public:
     uint8_t pendingScheduleMinute() const { return pendingScheduleMinute_; }
     bool editingScheduleTimeMinuteStep() const { return editingScheduleMinuteStep_; }
 
+    // Per-zone duration used by "Test all zones" (MenuTestAll) — session-only, not persisted;
+    // resets to kDefaultTestAllZonesDurationMin on boot, like the rest of UiStateMachine's state.
+    uint16_t testAllZonesDurationMin() const { return testAllZonesDurationMin_; }
+
 private:
     void enterDisplayOff();
     void armTimeout(uint32_t nowMs);
@@ -88,9 +92,12 @@ private:
     UiIntent handleMenuSchedule(UiInputEvent event, const Context& ctx);
     UiIntent handleMenuScheduleEdit(UiInputEvent event, uint8_t fieldIndex, uint8_t recordIndex);
     UiIntent handleMenuSettings(UiInputEvent event, const Context& ctx);
+    UiIntent handleMenuTestAll(UiInputEvent event);
     UiIntent handleFactoryResetConfirm(UiInputEvent event);
 
     static uint8_t stepIndex(uint8_t current, uint8_t count, bool forward);
+
+    static constexpr uint16_t kDefaultTestAllZonesDurationMin = 5;
 
     UiScreen screen_ = UiScreen::DisplayOff;
     uint8_t selectedIndex_ = 0;
@@ -106,6 +113,8 @@ private:
     uint8_t pendingScheduleHour_ = 0;
     uint8_t pendingScheduleMinute_ = 0;
     bool editingScheduleMinuteStep_ = false;
+
+    uint16_t testAllZonesDurationMin_ = kDefaultTestAllZonesDurationMin;
 
     bool factoryResetConfirmYes_ = false;
     bool factoryResetSucceeded_ = false;

@@ -23,6 +23,7 @@ struct RenderData {
     bool scheduleActive = false;
     IPAddress deviceIp;
     String mqttBrokerText;
+    String mqttTopicText;
     bool hasWallClock = false;
     struct tm wallClockLocal {};
     uint8_t nextScheduledZone = 0;  // 0 = none upcoming
@@ -63,6 +64,7 @@ private:
     void renderMenuMain(const RenderData& data);
     void renderMenuSchedule(const RenderData& data);
     void renderMenuSettings(const RenderData& data);
+    void renderMenuTestAll();
     void renderFactoryResetConfirm();
     void renderFactoryResetResult();
     void drawMenuList(const char* title, uint8_t itemCount, uint8_t selectedIndex,

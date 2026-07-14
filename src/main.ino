@@ -5,6 +5,7 @@
 #include <Wire.h>
 #include <esp_system.h>
 #include <esp_mac.h>
+#include <esp_wifi.h>
 
 #include "board_config.h"
 #include "domain/CalendarMath.h"
@@ -500,6 +501,10 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
         case UiIntentType::AbortWatering:
             stopIrrigationExplicit(nowMs);
             break;
+        case UiIntentType::ClearQueue:
+            wateringQueue.clear();
+            publishQueueState();
+            break;
         case UiIntentType::ToggleScheduleActive:
             settings.scheduleActive = intent.boolValue;
             persistSettings();
@@ -561,6 +566,18 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
             if (intent.scheduleRecordIndex < scheduleList.count) {
                 scheduleList.records[intent.scheduleRecordIndex].active = intent.boolValue;
                 persistScheduleAndReport();
+            }
+            break;
+        case UiIntentType::RunAllZonesTest:
+            for (uint8_t zone = 1; zone <= irrigator::board::ZONE_COUNT; ++zone) {
+                if (!settings.zoneEnabled[zone - 1]) {
+                    continue;
+                }
+                WateringRequest request;
+                request.zone = zone;
+                request.durationMin = intent.duration;
+                request.reason = RunReason::Manual;
+                enqueueOrStart(request, nowMs);
             }
             break;
         case UiIntentType::FactoryReset: {
@@ -784,6 +801,9 @@ void loadSchedule() {
 
 void connectWifiOnce() {
     WiFi.mode(WIFI_STA);
+    // Disable Wi-Fi modem sleep: costs more average current, but avoids the periodic
+    // beacon-interval current spikes that were showing up as a bursty load on the 3.3V rail.
+    esp_wifi_set_ps(WIFI_PS_NONE);
     WiFi.begin(deviceConfig.ssid, deviceConfig.password);
     const uint32_t startMs = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - startMs < 15000UL) {
@@ -804,7 +824,6 @@ void enterCaptivePortalMode() {
 
 void enterOperationalMode() {
     appMode = AppMode::Operational;
-    ui.wake(millis());
 
     loadOrCreateSettings();
     applyCurrentCalibration();
@@ -837,6 +856,14 @@ void enterOperationalMode() {
             mqtt.publishOtaCompleted(iso);
         }
     });
+
+    // Armed last, with a fresh timestamp: connectWifiOnce()/syncFromNtp() above block for up to
+    // ~15-20s with loop() (and so ui.poll()) not running yet. Arming the 20s active-interaction
+    // timeout before that blocking work — as this used to — could burn most or all of the window
+    // before the user ever saw the screen, so the first real long-click after boot would land
+    // exactly when the timeout silently expired, get swallowed as a mere "wake from display-off"
+    // instead of opening the menu, and only the next attempt would actually work.
+    ui.wake(millis());
 }
 
 void runScheduleEngine(uint32_t nowMs) {
@@ -1042,6 +1069,7 @@ void loop() {
                 renderData.scheduleActive = settings.scheduleActive;
                 renderData.deviceIp = WiFi.localIP();
                 renderData.mqttBrokerText = deviceConfig.mqttBroker;
+                renderData.mqttTopicText = mqtt.prefix();
 
                 struct tm wallTm;
                 renderData.hasWallClock = clockService.now(wallTm);
