@@ -29,6 +29,15 @@ void IrrigatorUi::wake(uint32_t nowMs) {
     uiState_.wake(nowMs);
 }
 
+void IrrigatorUi::confirmFactoryReset(uint32_t nowMs) {
+    uiState_.enterFactoryResetConfirm(nowMs);
+}
+
+void IrrigatorUi::showFactoryResetResult(bool success, uint32_t nowMs) {
+    uiState_.showFactoryResetResult(success, nowMs);
+    render(nowMs, RenderData{});
+}
+
 void IrrigatorUi::showCaptivePortal(const String& apSsid, const IPAddress& ip) {
     display_.clearBuffer();
     display_.setFont(u8g2_font_6x10_tr);
@@ -148,6 +157,12 @@ void IrrigatorUi::render(uint32_t nowMs, const RenderData& data) {
         case ::irrigator::domain::UiScreen::MenuSettings:
             renderMenuSettings(data);
             break;
+        case ::irrigator::domain::UiScreen::FactoryResetConfirm:
+            renderFactoryResetConfirm();
+            break;
+        case ::irrigator::domain::UiScreen::FactoryResetResult:
+            renderFactoryResetResult();
+            break;
         case ::irrigator::domain::UiScreen::DisplayOff:
         default:
             break;
@@ -179,7 +194,7 @@ void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
     const uint16_t rightWidth = display_.getStrWidth(upperRight);
     display_.drawStr(128 - static_cast<int16_t>(rightWidth), 7, upperRight);
 
-    display_.setFont(u8g2_font_helvB18_tr);
+    display_.setFont(u8g2_font_helvB14_tr);
     char mainText[20] = "";
     if (data.snapshot.pumpOn) {
         snprintf(mainText, sizeof(mainText), "%s", zoneLabel(data, data.snapshot.activeZone));
@@ -188,7 +203,7 @@ void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
     }
     drawCentered(display_, 40, mainText);
 
-    display_.setFont(u8g2_font_helvB12_tr);
+    display_.setFont(u8g2_font_helvB10_tr);
     char statusText[24] = "";
     if (data.snapshot.pumpOn) {
         const uint32_t elapsedMin = data.snapshot.elapsedMs / 60000UL;
@@ -218,9 +233,9 @@ void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
 
 void IrrigatorUi::renderZonePicker(const RenderData& data) {
     display_.clearBuffer();
-    display_.setFont(u8g2_font_helvB18_tr);
+    display_.setFont(u8g2_font_helvB14_tr);
     drawCentered(display_, 40, zoneLabel(data, uiState_.pendingZone()));
-    display_.setFont(u8g2_font_helvB12_tr);
+    display_.setFont(u8g2_font_helvB10_tr);
     drawCentered(display_, 54, "SELECT ZONE");
     display_.setFont(u8g2_font_6x10_tr);
     drawCentered(display_, 63, "< DECR. o SELECT INCR. >");
@@ -229,11 +244,11 @@ void IrrigatorUi::renderZonePicker(const RenderData& data) {
 
 void IrrigatorUi::renderDurationPicker(const RenderData& data) {
     display_.clearBuffer();
-    display_.setFont(u8g2_font_helvB18_tr);
+    display_.setFont(u8g2_font_helvB14_tr);
     char text[16];
     snprintf(text, sizeof(text), "%u MINs", static_cast<unsigned>(uiState_.pendingDuration()));
     drawCentered(display_, 40, text);
-    display_.setFont(u8g2_font_helvB12_tr);
+    display_.setFont(u8g2_font_helvB10_tr);
     drawCentered(display_, 54, zoneLabel(data, uiState_.pendingZone()));
     display_.setFont(u8g2_font_6x10_tr);
     drawCentered(display_, 63, "< DECR. o START INCR. >");
@@ -243,7 +258,7 @@ void IrrigatorUi::renderDurationPicker(const RenderData& data) {
 void IrrigatorUi::renderStopConfirm(const RenderData& data) {
     (void)data;
     display_.clearBuffer();
-    display_.setFont(u8g2_font_helvB12_tr);
+    display_.setFont(u8g2_font_helvB10_tr);
     drawCentered(display_, 30, "STOP?");
 
     const char* noText = "NO";
@@ -260,6 +275,41 @@ void IrrigatorUi::renderStopConfirm(const RenderData& data) {
     }
     display_.drawStr(noX, 52, noText);
     display_.drawStr(yesX, 52, yesText);
+    display_.sendBuffer();
+}
+
+void IrrigatorUi::renderFactoryResetConfirm() {
+    display_.clearBuffer();
+    display_.setFont(u8g2_font_helvB10_tr);
+    drawCentered(display_, 20, "FACTORY RESET?");
+    display_.setFont(u8g2_font_6x10_tr);
+    drawCentered(display_, 32, "Erases config/settings");
+    drawCentered(display_, 42, "/schedule, restarts.");
+
+    const char* noText = "NO";
+    const char* yesText = "YES";
+    const int16_t noX = 40;
+    const int16_t yesX = 80;
+    display_.setFont(u8g2_font_helvB10_tr);
+    const uint16_t noWidth = display_.getStrWidth(noText);
+    const uint16_t yesWidth = display_.getStrWidth(yesText);
+
+    if (!uiState_.factoryResetConfirmYesSelected()) {
+        display_.drawFrame(noX - 4, 48, noWidth + 8, 16);
+    } else {
+        display_.drawFrame(yesX - 4, 48, yesWidth + 8, 16);
+    }
+    display_.drawStr(noX, 60, noText);
+    display_.drawStr(yesX, 60, yesText);
+    display_.sendBuffer();
+}
+
+void IrrigatorUi::renderFactoryResetResult() {
+    display_.clearBuffer();
+    display_.setFont(u8g2_font_helvB10_tr);
+    drawCentered(display_, 30, "FACTORY RESET");
+    display_.setFont(u8g2_font_helvB14_tr);
+    drawCentered(display_, 52, uiState_.factoryResetSucceeded() ? "SUCCESS" : "FAILURE");
     display_.sendBuffer();
 }
 

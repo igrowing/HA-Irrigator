@@ -38,6 +38,14 @@ public:
     // operational mode so the display starts on rather than defaulting to display-off.
     void wake(uint32_t nowMs);
 
+    // Forces the factory-reset Yes/No confirm screen on, overriding whatever was showing —
+    // called from the dedicated 10s-hold hardware trigger, independent of rotary navigation.
+    void confirmFactoryReset(uint32_t nowMs);
+
+    // Shows the Success/Failure outcome and redraws immediately (the caller is about to block
+    // and restart, so there's no further poll() cycle left to pick the change up naturally).
+    void showFactoryResetResult(bool success, uint32_t nowMs);
+
     // Polls the rotary input, advances the UI state machine, renders the current screen
     // (throttled — see kRenderIntervalMs), and returns whatever intent the state machine
     // produced this call (UiIntentType::None if nothing actionable happened).
@@ -54,6 +62,8 @@ private:
     void renderMenuMain(const RenderData& data);
     void renderMenuSchedule(const RenderData& data);
     void renderMenuSettings(const RenderData& data);
+    void renderFactoryResetConfirm();
+    void renderFactoryResetResult();
     void drawMenuList(const char* title, uint8_t itemCount, uint8_t selectedIndex,
                       const MenuLabelBuilder& labelBuilder);
 

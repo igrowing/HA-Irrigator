@@ -15,6 +15,8 @@ enum class UiScreen : uint8_t {
     MenuMain,
     MenuSchedule,
     MenuSettings,
+    FactoryResetConfirm,
+    FactoryResetResult,
 };
 
 enum class UiIntentType : uint8_t {
@@ -28,6 +30,7 @@ enum class UiIntentType : uint8_t {
     SetScheduleTime,
     SetScheduleDuration,
     SetScheduleActive,
+    FactoryReset,
 };
 
 struct UiIntent {

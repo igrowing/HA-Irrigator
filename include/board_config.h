@@ -32,6 +32,11 @@ static constexpr uint8_t ROTARY_DAT_PIN = 39;
 static constexpr uint8_t ROTARY_BUTTON_PIN = 35;
 static constexpr uint16_t ROTARY_LONG_CLICK_MS = 1000;
 
+// The board's BOOT button, repurposed as a factory-reset trigger.
+static constexpr uint8_t FACTORY_RESET_BUTTON_PIN = 0;
+static constexpr uint32_t FACTORY_RESET_HOLD_MS = 10000UL;
+static constexpr uint32_t FACTORY_RESET_RESULT_DISPLAY_MS = 3000UL;
+
 static constexpr uint8_t VALVE_CURRENT_ADC_PIN = 32;
 static constexpr uint8_t PUMP_CURRENT_ADC_PIN = 33;
 static constexpr uint8_t ADC_RESOLUTION_BITS = 12;

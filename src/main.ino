@@ -18,6 +18,7 @@
 #include "domain/WateringQueue.h"
 #include "drivers/Clock.h"
 #include "drivers/CurrentSensor.h"
+#include "drivers/FactoryResetButton.h"
 #include "drivers/FileStore.h"
 #include "drivers/LedIndicator.h"
 #include "drivers/Logger.h"
@@ -50,6 +51,7 @@ irrigator::drivers::CurrentSensor pumpCurrentSensor(PUMP_CURRENT_ADC_PIN,
                                                     irrigator::board::PUMP_CURRENT_SENSOR_MV_PER_MA);
 irrigator::drivers::LedIndicator led(STATUS_LED_PIN);
 irrigator::drivers::Clock clockService;
+irrigator::drivers::FactoryResetButton factoryResetButton;
 
 irrigator::domain::DeviceConfig deviceConfig;
 irrigator::domain::Settings settings;
@@ -561,6 +563,24 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
                 persistScheduleAndReport();
             }
             break;
+        case UiIntentType::FactoryReset: {
+            irrigator::drivers::Log.warn("Factory reset requested (10s BOOT-button hold, confirmed)");
+            const bool configRemoved = fileStore.remove(irrigator::board::CONFIG_FILE_PATH);
+            const bool settingsRemoved = fileStore.remove(irrigator::board::SETTINGS_FILE_PATH);
+            const bool scheduleRemoved = fileStore.remove(irrigator::board::SCHEDULE_FILE_PATH);
+            // Best-effort: a stray .bak left behind by writeTextWithBackup() doesn't affect the
+            // success/failure verdict below, which only tracks the primary files.
+            fileStore.remove((String(irrigator::board::CONFIG_FILE_PATH) + ".bak").c_str());
+            fileStore.remove((String(irrigator::board::SETTINGS_FILE_PATH) + ".bak").c_str());
+            fileStore.remove((String(irrigator::board::SCHEDULE_FILE_PATH) + ".bak").c_str());
+
+            const bool success = configRemoved && settingsRemoved && scheduleRemoved;
+            ui.showFactoryResetResult(success, nowMs);
+            mqtt.publishAvailability(false);
+            delay(irrigator::board::FACTORY_RESET_RESULT_DISPLAY_MS);
+            ESP.restart();
+            break;
+        }
         case UiIntentType::None:
         default:
             break;
@@ -998,6 +1018,7 @@ void setup() {
     pumpCurrentSensor.begin();
     led.begin();
     ui.begin();
+    factoryResetButton.begin();
     rotary_isr_debug::begin();  // DEBUG ONLY — remove once rotary investigation is done.
 
     if (!fileStore.exists(irrigator::board::CONFIG_FILE_PATH) || !loadOperationalConfig()) {
@@ -1037,6 +1058,10 @@ void loop() {
             mqtt.loop();
             if (mqtt.consumeBootStatusDue(nowMs)) {
                 mqtt.publishStatus(buildStatusJson(nowMs));
+            }
+
+            if (factoryResetButton.poll()) {
+                ui.confirmFactoryReset(nowMs);
             }
 
             runScheduleEngine(nowMs);

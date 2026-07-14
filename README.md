@@ -118,6 +118,14 @@ MENU
   active/paused` (click toggles), `IP: ...` and `MQTT IP: ...` (display only, not clickable),
   `BACK`.
 
+### Reset to factory defaults
+
+|  **  DANGER ZONE **  |
+|---|
+| Long - 10 seconds - click on "Boot" button (GPIO 0)  deletes all configuration files from the local storage if comfirmed on the display. Then irrigator reboots in Captive portal mode, ready for new configuration. |
+|  |
+| Implemented only for manual execution when the irrigator is open and accessible |
+
 All menus wrap around (scrolling past the last item lands back on the first) and time out to the
 normal screen, then to display-off, after 20s of no input — any tick or click while off just
 wakes the screen back to normal without acting on that input.

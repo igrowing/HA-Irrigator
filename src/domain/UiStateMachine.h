@@ -52,6 +52,14 @@ public:
     // only reached via the timeout or explicitly turning the display off first).
     void wake(uint32_t nowMs);
 
+    // Forces the factory-reset Yes/No confirm screen, overriding whatever screen was showing
+    // (any unsaved edit is abandoned, same as a display-off timeout) — called from a dedicated
+    // hardware trigger (10s hold on the BOOT button), independent of normal rotary navigation.
+    void enterFactoryResetConfirm(uint32_t nowMs);
+
+    // Shows the Success/Failure outcome after the caller has actually performed the reset.
+    void showFactoryResetResult(bool success, uint32_t nowMs);
+
     UiScreen screen() const { return screen_; }
     uint8_t selectedIndex() const { return selectedIndex_; }
     bool editing() const { return editing_; }
@@ -59,6 +67,8 @@ public:
     uint16_t pendingDuration() const { return pendingDuration_; }
     bool stopConfirmYesSelected() const { return stopConfirmYes_; }
     int16_t pendingPercentage() const { return pendingPercentage_; }
+    bool factoryResetConfirmYesSelected() const { return factoryResetConfirmYes_; }
+    bool factoryResetSucceeded() const { return factoryResetSucceeded_; }
 
     uint8_t pendingScheduleZone() const { return pendingScheduleZone_; }
     uint8_t pendingScheduleDay() const { return pendingScheduleDay_; }
@@ -78,6 +88,7 @@ private:
     UiIntent handleMenuSchedule(UiInputEvent event, const Context& ctx);
     UiIntent handleMenuScheduleEdit(UiInputEvent event, uint8_t fieldIndex, uint8_t recordIndex);
     UiIntent handleMenuSettings(UiInputEvent event, const Context& ctx);
+    UiIntent handleFactoryResetConfirm(UiInputEvent event);
 
     static uint8_t stepIndex(uint8_t current, uint8_t count, bool forward);
 
@@ -95,6 +106,9 @@ private:
     uint8_t pendingScheduleHour_ = 0;
     uint8_t pendingScheduleMinute_ = 0;
     bool editingScheduleMinuteStep_ = false;
+
+    bool factoryResetConfirmYes_ = false;
+    bool factoryResetSucceeded_ = false;
 
     bool active_ = false;  // Active-interaction vs. display-off.
     uint32_t interactionDeadlineMs_ = 0;

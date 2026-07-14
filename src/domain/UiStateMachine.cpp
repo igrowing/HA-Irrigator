@@ -34,6 +34,19 @@ void UiStateMachine::wake(uint32_t nowMs) {
     editing_ = false;
 }
 
+void UiStateMachine::enterFactoryResetConfirm(uint32_t nowMs) {
+    armTimeout(nowMs);
+    screen_ = UiScreen::FactoryResetConfirm;
+    factoryResetConfirmYes_ = false;
+    editing_ = false;
+}
+
+void UiStateMachine::showFactoryResetResult(bool success, uint32_t nowMs) {
+    armTimeout(nowMs);
+    screen_ = UiScreen::FactoryResetResult;
+    factoryResetSucceeded_ = success;
+}
+
 void UiStateMachine::tick(uint32_t nowMs) {
     if (active_ && screen_ != UiScreen::DisplayOff && nowMs >= interactionDeadlineMs_) {
         enterDisplayOff();
@@ -63,6 +76,9 @@ UiIntent UiStateMachine::handleInput(UiInputEvent event, const Context& ctx, uin
             return handleMenuSchedule(event, ctx);
         case UiScreen::MenuSettings:
             return handleMenuSettings(event, ctx);
+        case UiScreen::FactoryResetConfirm:
+            return handleFactoryResetConfirm(event);
+        case UiScreen::FactoryResetResult:
         case UiScreen::DisplayOff:
         default:
             return {};
@@ -160,6 +176,29 @@ UiIntent UiStateMachine::handleStopConfirm(UiInputEvent event) {
             break;
         case UiInputEvent::LongClick:
             stopConfirmYes_ = false;
+            screen_ = UiScreen::Normal;
+            break;
+    }
+    return intent;
+}
+
+UiIntent UiStateMachine::handleFactoryResetConfirm(UiInputEvent event) {
+    UiIntent intent;
+    switch (event) {
+        case UiInputEvent::Clockwise:
+        case UiInputEvent::CounterClockwise:
+            factoryResetConfirmYes_ = !factoryResetConfirmYes_;
+            break;
+        case UiInputEvent::Click:
+            if (factoryResetConfirmYes_) {
+                intent.type = UiIntentType::FactoryReset;
+            } else {
+                screen_ = UiScreen::Normal;
+            }
+            factoryResetConfirmYes_ = false;
+            break;
+        case UiInputEvent::LongClick:
+            factoryResetConfirmYes_ = false;
             screen_ = UiScreen::Normal;
             break;
     }
