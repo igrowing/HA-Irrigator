@@ -34,6 +34,10 @@ public:
     void begin();
     void showCaptivePortal(const String& apSsid, const IPAddress& ip);
 
+    // Enters "Active interaction" (screen 1, 20s timeout armed) — call once when entering
+    // operational mode so the display starts on rather than defaulting to display-off.
+    void wake(uint32_t nowMs);
+
     // Polls the rotary input, advances the UI state machine, renders the current screen
     // (throttled — see kRenderIntervalMs), and returns whatever intent the state machine
     // produced this call (UiIntentType::None if nothing actionable happened).

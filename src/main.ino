@@ -99,6 +99,17 @@ const char* zoneName(uint8_t zone) {
     return "unknown";
 }
 
+// Pump-only requests (zone 0) aren't gated by this — "enabled" is a per-zone concept.
+bool isZoneEnabled(uint8_t zone) {
+    if (zone == 0) {
+        return true;
+    }
+    if (zone >= 1 && zone <= irrigator::board::ZONE_COUNT) {
+        return settings.zoneEnabled[zone - 1];
+    }
+    return false;
+}
+
 // Minimal ISO8601 "YYYY-MM-DDTHH:MM:SS" (UTC) -> epoch seconds. Ignores any trailing
 // offset/'Z' suffix; HA is expected to publish a plain UTC timestamp for cmd/skip_rain_until.
 int64_t parseIso8601Utc(const char* value) {
@@ -441,6 +452,16 @@ void publishQueueState() {
 // off and start it. That guarantees a push report and a pull report for every request, not just
 // the ones that have to wait behind an active run.
 void enqueueOrStart(const WateringRequest& request, uint32_t nowMs) {
+    if (!isZoneEnabled(request.zone)) {
+        char alertMsg[64];
+        snprintf(alertMsg,
+                sizeof(alertMsg),
+                "Zone %u (%s) is disabled. Enable it in settings first.",
+                static_cast<unsigned>(request.zone),
+                zoneName(request.zone));
+        mqtt.publishAlert(alertMsg);
+        return;
+    }
     if (!wateringQueue.push(request)) {
         char alertMsg[112];
         snprintf(alertMsg,
@@ -763,6 +784,7 @@ void enterCaptivePortalMode() {
 
 void enterOperationalMode() {
     appMode = AppMode::Operational;
+    ui.wake(millis());
 
     loadOrCreateSettings();
     applyCurrentCalibration();
@@ -899,6 +921,65 @@ void updateOutputsFromDomain() {
     }
 }
 
+// ==================== DEBUG ONLY — remove once rotary investigation is done ====================
+// Logs every edge (rising or falling) on the rotary CLK/DAT/button pins, independent of the
+// normal polling-based RotaryInput driver (does not interfere with it — this is a read-only
+// side channel). Per agents.md's ISR-safety rule (this project already hit a real freeze from
+// rotary-encoder logic running inside a GPIO ISR), the ISR itself only pushes {pin, state,
+// timestamp} into a lock-free ring buffer; loop() drains and Serial-prints it. Do NOT call
+// Serial.print() (or anything else non-trivial) directly from the ISR.
+namespace rotary_isr_debug {
+
+struct Event {
+    uint8_t pin;
+    uint8_t state;
+    uint32_t atMs;
+};
+
+constexpr uint8_t kBufSize = 32;
+volatile Event buf[kBufSize];
+volatile uint8_t head = 0;
+volatile uint8_t tail = 0;
+
+void IRAM_ATTR pushEvent(uint8_t pin) {
+    const uint8_t next = static_cast<uint8_t>((head + 1) % kBufSize);
+    if (next == tail) {
+        return;  // Buffer full; drop rather than block or allocate in ISR context.
+    }
+    buf[head].pin = pin;
+    buf[head].state = static_cast<uint8_t>(digitalRead(pin));
+    buf[head].atMs = millis();
+    head = next;
+}
+
+void IRAM_ATTR onClkChange() { pushEvent(irrigator::board::ROTARY_CLK_PIN); }
+void IRAM_ATTR onDatChange() { pushEvent(irrigator::board::ROTARY_DAT_PIN); }
+void IRAM_ATTR onButtonChange() { pushEvent(irrigator::board::ROTARY_BUTTON_PIN); }
+
+void begin() {
+    pinMode(irrigator::board::ROTARY_CLK_PIN, INPUT);
+    pinMode(irrigator::board::ROTARY_DAT_PIN, INPUT);
+    pinMode(irrigator::board::ROTARY_BUTTON_PIN, INPUT);
+    attachInterrupt(digitalPinToInterrupt(irrigator::board::ROTARY_CLK_PIN), onClkChange, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(irrigator::board::ROTARY_DAT_PIN), onDatChange, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(irrigator::board::ROTARY_BUTTON_PIN), onButtonChange, CHANGE);
+    irrigator::drivers::Log.info("[ROTARY-ISR-DEBUG] armed on GPIO34/35/39 (CHANGE)");
+}
+
+void drain() {
+    while (tail != head) {
+        const volatile Event& event = buf[tail];
+        Serial.printf("[ROTARY-ISR-DEBUG] GPIO%u -> %u @ %lums\n",
+                      static_cast<unsigned>(event.pin),
+                      static_cast<unsigned>(event.state),
+                      static_cast<unsigned long>(event.atMs));
+        tail = static_cast<uint8_t>((tail + 1) % kBufSize);
+    }
+}
+
+}  // namespace rotary_isr_debug
+// ==================== END DEBUG ONLY ====================
+
 }  // namespace
 
 void setup() {
@@ -917,6 +998,7 @@ void setup() {
     pumpCurrentSensor.begin();
     led.begin();
     ui.begin();
+    rotary_isr_debug::begin();  // DEBUG ONLY — remove once rotary investigation is done.
 
     if (!fileStore.exists(irrigator::board::CONFIG_FILE_PATH) || !loadOperationalConfig()) {
         enterCaptivePortalMode();
@@ -928,6 +1010,7 @@ void setup() {
 
 void loop() {
     const uint32_t nowMs = millis();
+    rotary_isr_debug::drain();  // DEBUG ONLY — remove once rotary investigation is done.
     led.update(nowMs);
 
     if (ota.inProgress()) {

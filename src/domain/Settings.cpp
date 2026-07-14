@@ -9,6 +9,7 @@ Settings makeDefaultZones() {
     Settings settings;
     for (uint8_t i = 0; i < board::ZONE_COUNT; ++i) {
         snprintf(settings.zoneNames[i], sizeof(settings.zoneNames[i]), "Zone %u", static_cast<unsigned>(i + 1));
+        settings.zoneEnabled[i] = true;
     }
     return settings;
 }
@@ -61,7 +62,18 @@ bool parseSettings(const char* json, size_t length, Settings& out) {
         for (uint8_t i = 0; i < board::ZONE_COUNT; ++i) {
             char key[4];
             snprintf(key, sizeof(key), "%u", static_cast<unsigned>(i + 1));
-            const char* name = zoneNames[key] | "";
+            JsonVariantConst entry = zoneNames[key];
+
+            // Accepts either the legacy plain-string form ("1": "Trees left" — enabled defaults
+            // true) or the current {"name":...,"enabled":...} object form, so settings.json
+            // files written before "enabled" existed keep working unchanged.
+            const char* name = "";
+            if (entry.is<JsonObjectConst>()) {
+                name = entry["name"] | "";
+                parsed.zoneEnabled[i] = entry["enabled"] | true;
+            } else {
+                name = entry.is<const char*>() ? entry.as<const char*>() : "";
+            }
             if (name[0] != '\0') {
                 snprintf(parsed.zoneNames[i], sizeof(parsed.zoneNames[i]), "%s", name);
             }
@@ -90,7 +102,9 @@ size_t serializeSettings(const Settings& settings, char* buffer, size_t bufferSi
     for (uint8_t i = 0; i < board::ZONE_COUNT; ++i) {
         char key[4];
         snprintf(key, sizeof(key), "%u", static_cast<unsigned>(i + 1));
-        zoneNames[key] = settings.zoneNames[i];
+        JsonObject entry = zoneNames[key].to<JsonObject>();
+        entry["name"] = settings.zoneNames[i];
+        entry["enabled"] = settings.zoneEnabled[i];
     }
 
     return serializeJson(doc, buffer, bufferSize);

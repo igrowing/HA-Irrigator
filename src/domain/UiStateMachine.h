@@ -47,6 +47,11 @@ public:
     // timeout expiring with no further ticks/clicks.
     void tick(uint32_t nowMs);
 
+    // Enters "Active interaction" showing screen 1, with the 20s timeout armed — call once when
+    // entering operational mode (boot starts active per spec, not display-off; display-off is
+    // only reached via the timeout or explicitly turning the display off first).
+    void wake(uint32_t nowMs);
+
     UiScreen screen() const { return screen_; }
     uint8_t selectedIndex() const { return selectedIndex_; }
     bool editing() const { return editing_; }
@@ -63,7 +68,6 @@ public:
 
 private:
     void enterDisplayOff();
-    void wake(uint32_t nowMs);
     void armTimeout(uint32_t nowMs);
 
     UiIntent handleNormal(UiInputEvent event, const Context& ctx);

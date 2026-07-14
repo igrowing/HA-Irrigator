@@ -24,6 +24,14 @@ private:
     Button2 button_{board::ROTARY_BUTTON_PIN};
     int position_ = 0;
     RotaryEvent pendingButtonEvent_ = RotaryEvent::None;
+
+    // Legal quadrature-transition filter, applied in front of the library (see poll()): a real
+    // encoder detent only ever changes one signal at a time (Gray-code sequence 00-01-11-10-00
+    // or its reverse). A reading where both CLK and DAT appear to have flipped at once is
+    // physically impossible for a genuine rotation — it means noise/bounce, and is discarded
+    // before the library ever sees it, rather than letting it corrupt the library's own
+    // internal "last state" baseline.
+    uint8_t lastQuadratureState_ = 0;
 };
 
 }  // namespace irrigator::drivers

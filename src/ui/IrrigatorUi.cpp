@@ -25,6 +25,10 @@ void IrrigatorUi::begin() {
     ::irrigator::drivers::Log.info("UI initialized (SSD1309 + rotary input)");
 }
 
+void IrrigatorUi::wake(uint32_t nowMs) {
+    uiState_.wake(nowMs);
+}
+
 void IrrigatorUi::showCaptivePortal(const String& apSsid, const IPAddress& ip) {
     display_.clearBuffer();
     display_.setFont(u8g2_font_6x10_tr);

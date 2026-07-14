@@ -10,6 +10,10 @@ namespace irrigator::domain {
 struct Settings {
     int16_t wateringPercentage = board::DEFAULT_WATERING_PERCENTAGE;
     char zoneNames[board::ZONE_COUNT][16] = {};
+    // Disabled zones are excluded from all watering activity — scheduled, manual (local UI), and
+    // MQTT cmd/run alike; see enqueueOrStart() in main.ino, the single choke point all three
+    // funnel through.
+    bool zoneEnabled[board::ZONE_COUNT] = {};
     bool scheduleActive = true;
     uint8_t defaultManualDuration = board::DEFAULT_MANUAL_DURATION_MINUTES;
 
