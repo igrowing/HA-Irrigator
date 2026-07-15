@@ -44,7 +44,6 @@ public:
 private:
     IrrigationState state_ = IrrigationState::Idle;
     WateringRequest current_ = {};
-    uint32_t startedAtMs_ = 0;
     uint32_t wateringStartedAtMs_ = 0;
     uint32_t pumpGraceStartedAtMs_ = 0;
 };

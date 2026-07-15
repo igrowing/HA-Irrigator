@@ -13,20 +13,9 @@ bool IrrigationStateMachine::start(const WateringRequest& request, uint32_t nowM
         return false;
     }
 
-    // Seamless hand-off: if the pump is still spinning down from the previous run
-    // (PumpGracePeriod), it never actually stopped — skip the prestart ramp-up and open the
-    // next valve immediately instead of cycling the pump off and back on.
-    const bool pumpAlreadyRunning = state_ == IrrigationState::PumpGracePeriod;
-
     current_ = request;
-    startedAtMs_ = nowMs;
     pumpGraceStartedAtMs_ = 0;
-    if (pumpAlreadyRunning) {
-        wateringStartedAtMs_ = nowMs;
-        // state_ = request.zone == 0 ? IrrigationState::PumpOnly : IrrigationState::Watering;
-    } else {
-        wateringStartedAtMs_ = request.zone == 0 ? nowMs : 0;
-    }
+    wateringStartedAtMs_ = nowMs;
     state_ = request.zone == 0 ? IrrigationState::PumpOnly : IrrigationState::Watering;
     return true;
 }
@@ -43,7 +32,6 @@ void IrrigationStateMachine::abort(uint32_t nowMs) {
     }
 
     current_ = {};
-    startedAtMs_ = 0;
     wateringStartedAtMs_ = 0;
     pumpGraceStartedAtMs_ = 0;
     state_ = IrrigationState::Idle;
@@ -51,12 +39,6 @@ void IrrigationStateMachine::abort(uint32_t nowMs) {
 
 void IrrigationStateMachine::tick(uint32_t nowMs) {
     switch (state_) {
-        // case IrrigationState::StartingPump:
-        //     if (nowMs - startedAtMs_ >= board::PUMP_PRESTART_MS) {
-        //         wateringStartedAtMs_ = nowMs;
-        //         state_ = IrrigationState::Watering;
-        //     }
-        //     break;
         case IrrigationState::Watering:
             if (nowMs - wateringStartedAtMs_ >= durationToMs(current_.durationMin)) {
                 pumpGraceStartedAtMs_ = nowMs;

@@ -70,13 +70,14 @@ void MqttService::onConnected() {
     publishAvailability(true);
 }
 
-void MqttService::loop() {
+void MqttService::loop(uint32_t nowMs) {
+    currentNowMs_ = nowMs;
+
     if (WiFi.status() != WL_CONNECTED) {
         return;
     }
 
     if (!mqttClient_.connected()) {
-        const uint32_t nowMs = millis();
         if (nowMs - lastReconnectAttemptMs_ >= reconnectBackoffMs_) {
             lastReconnectAttemptMs_ = nowMs;
             attemptReconnect(nowMs);
@@ -207,7 +208,7 @@ void MqttService::dispatchMessage(char* topic, uint8_t* payload, unsigned int le
     }
     const String commandName = topicStr.substring(cmdPrefix.length());
     if (commandHandler_) {
-        commandHandler_(commandName, payload, length);
+        commandHandler_(commandName, payload, length, currentNowMs_);
     }
 }
 

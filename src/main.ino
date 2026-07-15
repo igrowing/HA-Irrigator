@@ -636,8 +636,7 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
     }
 }
 
-void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t length) {
-    const uint32_t nowMs = millis();
+void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t length, uint32_t nowMs) {
     const String body(reinterpret_cast<const char*>(payload), length);
 
     if (commandName == "state") {
@@ -1049,7 +1048,7 @@ void loop() {
                 led.setMode(irrigator::drivers::LedMode::BreathOnce);
             }
 
-            mqtt.loop();
+            mqtt.loop(nowMs);
             if (mqtt.consumeBootStatusDue(nowMs)) {
                 mqtt.publishStatus(buildStatusJson(nowMs));
             }

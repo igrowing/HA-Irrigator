@@ -19,8 +19,12 @@ struct MqttConfig {
 
 // Called for every message on `<prefix>/cmd/<commandName>` — commandName is everything after
 // `cmd/`, so a message on `cmd/upload/settings.json` arrives as commandName="upload/settings.json".
+// nowMs is the same timestamp the caller's loop() iteration is using elsewhere (e.g. for
+// irrigation.tick()) — the handler must not sample its own millis(), since that would run later
+// than the loop's nowMs and could make a just-started watering run's start time appear to be in
+// the future relative to the next tick(), underflowing the elapsed-time subtraction.
 using MqttCommandHandler =
-    std::function<void(const String& commandName, const uint8_t* payload, size_t length)>;
+    std::function<void(const String& commandName, const uint8_t* payload, size_t length, uint32_t nowMs)>;
 
 // Supplies the current UTC epoch for stamping outgoing messages with a "datetime" field — set
 // once via setNowEpochProvider() so publishState/publishStatus/publishAlert don't each need the
@@ -30,7 +34,7 @@ using NowEpochProvider = std::function<int64_t()>;
 class MqttService {
 public:
     void begin(const MqttConfig& config);
-    void loop();
+    void loop(uint32_t nowMs);
     bool connected() const;
 
     void setCommandHandler(MqttCommandHandler handler) { commandHandler_ = handler; }
@@ -89,6 +93,7 @@ private:
 
     uint32_t bootMs_ = 0;
     bool bootStatusPublished_ = false;
+    uint32_t currentNowMs_ = 0;
 
     uint32_t lastReconnectAttemptMs_ = 0;
     uint32_t reconnectBackoffMs_ = 5000;

@@ -216,7 +216,10 @@ void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
     } else if (scheduled) {
         snprintf(mainText, sizeof(mainText), "%s", data.nextScheduledZoneName);
     } else {
-        snprintf(mainText, sizeof(mainText), "%s", zoneLabel(data, 1));
+        // A plain Click with no prior rotation defaults to pump-only (see
+        // UiStateMachine::handleNormal) — show that here so the idle screen matches what
+        // clicking actually starts, instead of a zone name the click won't touch.
+        snprintf(mainText, sizeof(mainText), "%s", zoneLabel(data, 0));
     }
     drawCentered(display_, board::DISPLAY_2ND_LINE_OFFSET, mainText);
 
