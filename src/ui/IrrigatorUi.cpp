@@ -13,6 +13,16 @@ void drawCentered(U8G2& display, uint8_t y, const char* text) {
     display.drawStr(x < 0 ? 0 : x, y, text);
 }
 
+// Deliberately narrower than IrrigationSnapshot::pumpOn (state_ != Idle, which also covers
+// PumpGracePeriod — the pump lingering post-run with nothing actually active). The UI treats the
+// grace tail as idle-equivalent: normal screen falls back to IDLE-READY/SCHEDULED, rotary ticks
+// work again (a fresh pick hot-hands-off the still-spinning pump, same mechanism the queue
+// already uses), and the menu drops "Stop"/"Stop all" since there's nothing left to abort.
+bool isActivelyRunning(const ::irrigator::domain::IrrigationSnapshot& snapshot) {
+    using ::irrigator::domain::IrrigationState;
+    return snapshot.state == IrrigationState::Watering || snapshot.state == IrrigationState::PumpOnly;
+}
+
 }  // namespace
 
 void IrrigatorUi::begin() {
@@ -71,7 +81,7 @@ const char* IrrigatorUi::dayOfWeekName(uint8_t isoDay) {
     const ::irrigator::drivers::RotaryEvent rotaryEvent = input_.poll();
 
     ::irrigator::domain::UiStateMachine::Context ctx;
-    ctx.wateringActive = data.snapshot.pumpOn;
+    ctx.wateringActive = isActivelyRunning(data.snapshot);
     ctx.scheduleActive = data.scheduleActive;
     ctx.scheduleRecordCount = data.schedule != nullptr ? data.schedule->count : 0;
     ctx.wateringPercentage = data.settings != nullptr ? data.settings->wateringPercentage : 0;
@@ -208,10 +218,11 @@ void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
     drawTopStatusLine(data);
 
     const bool scheduled = data.scheduleActive && data.nextScheduledZone != 0;
+    const bool running = isActivelyRunning(data.snapshot);
 
     display_.setFont(u8g2_font_helvB14_tr);
     char mainText[20] = "";
-    if (data.snapshot.pumpOn) {
+    if (running) {
         snprintf(mainText, sizeof(mainText), "%s", zoneLabel(data, data.snapshot.activeZone));
     } else if (scheduled) {
         snprintf(mainText, sizeof(mainText), "%s", data.nextScheduledZoneName);
@@ -225,7 +236,7 @@ void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
 
     display_.setFont(u8g2_font_helvB10_tr);
     char statusText[24] = "";
-    if (data.snapshot.pumpOn) {
+    if (running) {
         const uint32_t elapsedSec = data.snapshot.elapsedMs / 1000UL;
         const uint32_t remainingSec = data.snapshot.remainingMs / 1000UL;
         if ((nowMs / 3000UL) % 2 == 0) {
@@ -249,7 +260,7 @@ void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
     drawCentered(display_, board::DISPLAY_3RD_LINE_OFFSET, statusText);
 
     display_.setFont(u8g2_font_5x7_tr);
-    if (data.snapshot.pumpOn) {
+    if (running) {
         drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "LONG CLICK = MENU");
     } else {
         drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "< PREV. o SELECT NEXT >");
@@ -383,7 +394,7 @@ void IrrigatorUi::drawMenuList(const char* title,
 }
 
 void IrrigatorUi::renderMenuMain(const RenderData& data) {
-    const bool wateringActive = data.snapshot.pumpOn;
+    const bool wateringActive = isActivelyRunning(data.snapshot);
     const uint8_t itemCount = static_cast<uint8_t>(wateringActive ? 6 : 4);
 
     drawMenuList(
