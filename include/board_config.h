@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "0.1.2"
+#define APP_VERSION "0.1.3"
 #endif
 
 namespace irrigator::board {
@@ -22,7 +22,7 @@ static constexpr uint8_t SSD1309_ADDRESS = 0x3C;
 
 static constexpr uint8_t ZONE_COUNT = 11;
 // Zones 1-11, all active-low, direct GPIO. Avoids boot-strapping pins 0/2/12.
-static constexpr uint8_t GPIO_ZONE_PINS[ZONE_COUNT] = {4, 16, 17, 5, 18, 19, 23, 13, 27, 26, 25};
+static constexpr uint8_t GPIO_ZONE_PINS[ZONE_COUNT] = {4, 16, 17, 5, 18, 19, 23, 25, 26, 27, 13};
 static constexpr uint8_t PUMP_RELAY_PIN = 15;
 
 static constexpr uint8_t STATUS_LED_PIN = 14;
@@ -79,8 +79,8 @@ static constexpr size_t SETTINGS_JSON_MAX_BYTES = 768;
 static constexpr size_t SCHEDULE_JSON_MAX_BYTES = 4096;
 
 static constexpr const uint8_t DISPLAY_1ST_LINE_OFFSET = 7;
-static constexpr const uint8_t DISPLAY_2ND_LINE_OFFSET = 30;
-static constexpr const uint8_t DISPLAY_3RD_LINE_OFFSET = 52;
+static constexpr const uint8_t DISPLAY_2ND_LINE_OFFSET = 28;
+static constexpr const uint8_t DISPLAY_3RD_LINE_OFFSET = 50;
 static constexpr const uint8_t DISPLAY_4TH_LINE_OFFSET = 63;
 
 static constexpr const char* CONFIG_FILE_PATH = "/config.json";

@@ -23,16 +23,25 @@ bool IrrigationStateMachine::start(const WateringRequest& request, uint32_t nowM
     pumpGraceStartedAtMs_ = 0;
     if (pumpAlreadyRunning) {
         wateringStartedAtMs_ = nowMs;
-        state_ = request.zone == 0 ? IrrigationState::PumpOnly : IrrigationState::Watering;
+        // state_ = request.zone == 0 ? IrrigationState::PumpOnly : IrrigationState::Watering;
     } else {
         wateringStartedAtMs_ = request.zone == 0 ? nowMs : 0;
-        state_ = request.zone == 0 ? IrrigationState::PumpOnly : IrrigationState::StartingPump;
     }
+    state_ = request.zone == 0 ? IrrigationState::PumpOnly : IrrigationState::Watering;
     return true;
 }
 
 void IrrigationStateMachine::abort(uint32_t nowMs) {
-    (void)nowMs;
+    // Zone+pump run in progress (valve may or may not have opened yet): same transition tick()
+    // uses at natural end-of-duration — pump keeps running its graceful-shutdown tail, only the
+    // valve (implied by leaving Watering) closes right away.
+    if (current_.zone != 0 &&
+        (state_ == IrrigationState::Watering)) {
+        pumpGraceStartedAtMs_ = nowMs;
+        state_ = IrrigationState::PumpGracePeriod;
+        return;
+    }
+
     current_ = {};
     startedAtMs_ = 0;
     wateringStartedAtMs_ = 0;
@@ -42,12 +51,12 @@ void IrrigationStateMachine::abort(uint32_t nowMs) {
 
 void IrrigationStateMachine::tick(uint32_t nowMs) {
     switch (state_) {
-        case IrrigationState::StartingPump:
-            if (nowMs - startedAtMs_ >= board::PUMP_PRESTART_MS) {
-                wateringStartedAtMs_ = nowMs;
-                state_ = IrrigationState::Watering;
-            }
-            break;
+        // case IrrigationState::StartingPump:
+        //     if (nowMs - startedAtMs_ >= board::PUMP_PRESTART_MS) {
+        //         wateringStartedAtMs_ = nowMs;
+        //         state_ = IrrigationState::Watering;
+        //     }
+        //     break;
         case IrrigationState::Watering:
             if (nowMs - wateringStartedAtMs_ >= durationToMs(current_.durationMin)) {
                 pumpGraceStartedAtMs_ = nowMs;

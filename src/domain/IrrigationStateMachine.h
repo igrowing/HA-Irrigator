@@ -6,7 +6,7 @@
 
 namespace irrigator::domain {
 
-enum class IrrigationState : uint8_t { Idle, StartingPump, Watering, PumpOnly, PumpGracePeriod };
+enum class IrrigationState : uint8_t { Idle, Watering, PumpOnly, PumpGracePeriod };
 
 struct IrrigationSnapshot {
     IrrigationState state = IrrigationState::Idle;
@@ -19,6 +19,14 @@ struct IrrigationSnapshot {
 class IrrigationStateMachine {
 public:
     bool start(const WateringRequest& request, uint32_t nowMs);
+
+    // Explicit stop (UI Stop/Stop all, MQTT cmd/stop). Closes the valve immediately, same as it
+    // always did, but a zone+pump run (Watering) now gets the exact same graceful
+    // pump shutdown tail a natural end-of-duration completion gets, rather than cutting the pump
+    // immediately — the pump doesn't need protecting from the abort itself, only from being
+    // restarted right away, same as any other stop. PumpOnly has no valve to protect, so it still
+    // stops immediately; aborting an already-lingering PumpGracePeriod also stops immediately
+    // (there's no graceful window left to preserve — it's already the sole point of one).
     void abort(uint32_t nowMs);
     void tick(uint32_t nowMs);
     IrrigationSnapshot snapshot(uint32_t nowMs) const;

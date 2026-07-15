@@ -10,7 +10,7 @@ rules if you're contributing code, not just using the device).
 | Function                 | Pin/Bus                 | Notes                                              |
 |---------------------------|--------------------------|-----------------------------------------------------|
 | I2C bus (shared)          | SDA=GPIO21, SCL=GPIO22  | DS3231 RTC, SSD1309 OLED                            |
-| Zones 1–11                 | GPIO 4, 16, 17, 5, 18, 19, 23, 13, 27, 26, 25 | Active low                                          |
+| Zones 1–11                 | GPIO 4, 16, 17, 5, 18, 19, 23, 25, 26, 27, 13 | Active low, all pulled up externally to allow ESP32 boot  |
 | Pump                      | GPIO 15                 | Active low     |
 | Status/fault LED          | GPIO 14                 | Active high                                         |
 | Rotary encoder + button   | GPIO 34, 39, 35 (BTN)         | All pulled up externally (34/35/39 are input-only), A and B are low-pass protected (RC). Button is debounced with 220nF. |
@@ -26,8 +26,9 @@ rules if you're contributing code, not just using the device).
   valve closes (protects the pump from rapid-cycle wear) — if another watering is queued up, it
   hands off to the still-running pump immediately instead of waiting out that window. Each zone
   can also be individually disabled (`settings.json`'s `zone_names.<n>.enabled`) to exclude it
-  from scheduled, manual, and MQTT-triggered watering alike — an MQTT `cmd/run` (or a scheduled/
-  manual attempt) against a disabled zone is rejected with a `/alert` instead of running.
+  from scheduled, manual, and MQTT-triggered watering alike — an MQTT `cmd/run` against a disabled
+  zone is rejected with a `/alert` instead of running, and the local UI's manual zone picker (see
+  below) skips disabled zones entirely so they can't be dialed up in the first place.
 - **Weekly schedule** (`schedule.json`, up to 32 records) with a per-zone watering-percentage
   multiplier, a pause/rain-skip mechanism, and a 15-deep queue so overlapping or MQTT-triggered
   runs during an active watering don't get lost — they queue and run in order, back-to-back on
@@ -65,25 +66,27 @@ rules if you're contributing code, not just using the device).
 ```
 IP.42    2026-07-11 14:32:07
            ZONE 3
-        WATERING 4M
+      WATERING 4:32
      LONG CLICK = MENU
 ```
 
 Four lines: IP (last octet) + date/time top, the big status line (zone name / remaining-minutes
-during a manual pick), a status line (`IDLE` / `SCHEDULED` / `WATERING xM` / `REMAINING yM`,
-the last two alternating every 3s), and a help line.
+during a manual pick), a status line (`IDLE-READY` / `SCHEDULED` / `WATERING m:ss` /
+`REMAINING m:ss`, the last two alternating every 3s), and a help line.
 
-- **Idle, nothing scheduled**: status line reads `IDLE`.
+- **Idle, nothing scheduled**: status line reads `IDLE-READY`.
 - **Idle, schedule active**: status line reads `SCHEDULED`, main line shows the next zone due to
   run.
 - **Watering or pumping**: main line shows the active zone (or `PUMP`), status alternates
-  `WATERING 4M` / `REMAINING 11M`; rotary ticks are ignored (only a long click, which opens the
-  menu, does anything) so you can't accidentally bump the duration of a run already in progress.
+  `WATERING 4:32` / `REMAINING 11:05` (minutes:seconds elapsed/remaining in the current run);
+  rotary ticks are ignored (only a long click, which opens the menu, does anything) so you can't
+  accidentally bump the duration of a run already in progress.
 
 ### Manual watering (idle only)
 
 1. Turn the knob — the display switches to zone selection, cycling `PUMP → Zone 1 → … → Zone 11
-   → PUMP …` by name.
+   → PUMP …` by name. Disabled zones (see **Feature overview** above) are skipped over — if every
+   zone is disabled, the picker just stays on `PUMP`.
 2. Click to confirm the zone. The display switches to `<default> MINs`.
 3. Turn the knob to adjust — clockwise/counter-clockwise step by
    `±(duration/10 + 1)` minutes (so small durations move by 2 min/tick, larger ones move faster),
@@ -106,10 +109,16 @@ MENU
 
 - **Stop `<zone>`** (only present while watering): opens a confirm screen —
   `STOP?  [NO]  YES` — turn the knob to move the selection box onto `YES`, click to confirm.
-  Either choice returns you to the normal screen.
-- **Stop all** (only present while watering): immediately clears the watering queue — no confirm
-  step. The zone currently running is *not* affected; it finishes out its own duration. Use
-  **Stop `<zone>`** instead to abort what's actively running.
+  Either choice returns you to the normal screen. Confirming closes the valve immediately but,
+  for a zone run, gives the pump the same graceful-shutdown tail a normal end-of-duration
+  completion gets (see **Feature overview** above) — it does not cut the pump immediately, only
+  a pump-only run does that. It also pops and starts the next queued item, if any — same hand-off
+  as a plain (non-`all`) MQTT `cmd/stop`; if there is one, it starts immediately off the
+  still-running pump rather than waiting out the tail.
+- **Stop all** (only present while watering): opens the same confirm screen as **Stop `<zone>`**
+  (`STOP ALL?  [NO]  YES`). Confirming aborts whatever's currently running (same graceful pump
+  tail as above) *and* empties the watering queue — unlike **Stop `<zone>`**, it does not hand
+  off to the next queued item, since there isn't one left.
 - **Schedule**: a flat, scrolling list — for each program `<n>`: zone, start day, start time,
   duration, active/paused. Every row is clickable and edits that field:
   - **Zone** / **start day**: click to edit, turn the knob to step through zones 1–11 (by name)
@@ -162,7 +171,7 @@ MAC address (e.g. `irrigator4f`). Substitute your device's actual prefix below.
 | `/cmd/state` | "" | `/state` | `{"datetime":"2026-07-12T06:00:00",`<br>`"zone":3,"name":"Back Lawn",`<br>`"on":true,"pump":true,`<br>`"reason":"manual","scheduled":true,"remaining_min":12}` | On every start/stop of a valve or pump, and on demand via `cmd/state` (reason is one of manual/schedule/mqtt/abort; zone:0 means pump-only; scheduled reflects whether the schedule engine is currently active/paused; remaining_min is minutes left in the current run, 0 when off). Also fires the instant the valve closes even while the pump is still in its graceful-shutdown tail (`on:false,pump:true`), so `remaining_min`/`on` track the requested duration, not the pump's extra runtime. |
 | `/cmd/queue` | "" | `/queue` | list of waiting waterings from the queue | On every push and pull from watering queue or by `cmd/queue` request. |
 | `/cmd/run` | `{"zone":3,"duration":15}` |  |  | **No special response** Response will be either adding to the queue or alert. Starts zone 3 for 15 min (or queues it if something's already running). `zone:0` = pump only. |
-| `/cmd/stop` | empty, or `all`  |  |  | **No special response** Response will be either adding to the queue or alert. Stops the current run. Plain/empty payload also pops and starts the next queued item, if any; `all` also empties the queue. |
+| `/cmd/stop` | empty, or `all`  |  |  | **No special response** Response will be either adding to the queue or alert. Stops the current run — closes the valve immediately, but a zone run's pump still gets its normal graceful-shutdown tail rather than cutting immediately (a pump-only run has no such tail). Plain/empty payload also pops and starts the next queued item, if any; `all` also empties the queue. |
 | `/cmd/scheduled` | bool | `/scheduled` | bool | Turn the schedule on/off, write the schedule state in settings.json if changed, report back true/false. | 
 | `/cmd/watering_percentage` | integer | `/watering_percentage` | integer | Sets the schedule-wide watering multiplier (0–300%), persisted to `settings.json`. |
 | `/cmd/skip_rain_until` | `"2026-07-12T06:00:00"` |  `/skip_rain_until` | `"2026-07-12T06:00:00"` | Suppresses **scheduled** runs until this UTC timestamp (manual/MQTT runs are never affected — this only gates the schedule engine). |

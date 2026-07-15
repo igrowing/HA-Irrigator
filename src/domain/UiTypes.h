@@ -24,7 +24,7 @@ enum class UiIntentType : uint8_t {
     None,
     StartWatering,
     AbortWatering,
-    ClearQueue,
+    StopAllWatering,
     ToggleScheduleActive,
     SetWateringPercentage,
     SetScheduleZone,

@@ -15,6 +15,18 @@ uint8_t UiStateMachine::stepIndex(uint8_t current, uint8_t count, bool forward) 
     return static_cast<uint8_t>((current + count - 1) % count);
 }
 
+uint8_t UiStateMachine::nextZone(uint8_t current, bool forward, const Context& ctx) {
+    uint8_t zone = current;
+    for (uint8_t attempt = 0; attempt <= board::ZONE_COUNT; ++attempt) {
+        zone = forward ? static_cast<uint8_t>((zone + 1) % (board::ZONE_COUNT + 1))
+                       : static_cast<uint8_t>((zone + board::ZONE_COUNT) % (board::ZONE_COUNT + 1));
+        if (zone == 0 || ctx.zoneEnabled[zone - 1]) {
+            return zone;
+        }
+    }
+    return 0;  // Every zone disabled: PUMP is the only reachable option left.
+}
+
 void UiStateMachine::armTimeout(uint32_t nowMs) {
     active_ = true;
     interactionDeadlineMs_ = nowMs + board::ACTIVE_INTERACTION_TIMEOUT_MS;
@@ -98,11 +110,11 @@ UiIntent UiStateMachine::handleNormal(UiInputEvent event, const Context& ctx) {
 
     switch (event) {
         case UiInputEvent::Clockwise:
-            pendingZone_ = 1;
+            pendingZone_ = nextZone(0, true, ctx);
             screen_ = UiScreen::ZonePicker;
             break;
         case UiInputEvent::CounterClockwise:
-            pendingZone_ = board::ZONE_COUNT;
+            pendingZone_ = nextZone(0, false, ctx);
             screen_ = UiScreen::ZonePicker;
             break;
         case UiInputEvent::Click:
@@ -121,11 +133,10 @@ UiIntent UiStateMachine::handleNormal(UiInputEvent event, const Context& ctx) {
 UiIntent UiStateMachine::handleZonePicker(UiInputEvent event, const Context& ctx) {
     switch (event) {
         case UiInputEvent::Clockwise:
-            pendingZone_ = static_cast<uint8_t>((pendingZone_ + 1) % (board::ZONE_COUNT + 1));
+            pendingZone_ = nextZone(pendingZone_, true, ctx);
             break;
         case UiInputEvent::CounterClockwise:
-            pendingZone_ =
-                static_cast<uint8_t>((pendingZone_ + board::ZONE_COUNT) % (board::ZONE_COUNT + 1));
+            pendingZone_ = nextZone(pendingZone_, false, ctx);
             break;
         case UiInputEvent::Click:
             pendingDuration_ = ctx.defaultManualDuration;
@@ -171,13 +182,15 @@ UiIntent UiStateMachine::handleStopConfirm(UiInputEvent event) {
             break;
         case UiInputEvent::Click:
             if (stopConfirmYes_) {
-                intent.type = UiIntentType::AbortWatering;
+                intent.type = stopAllPending_ ? UiIntentType::StopAllWatering : UiIntentType::AbortWatering;
             }
             stopConfirmYes_ = false;
+            stopAllPending_ = false;
             screen_ = UiScreen::Normal;
             break;
         case UiInputEvent::LongClick:
             stopConfirmYes_ = false;
+            stopAllPending_ = false;
             screen_ = UiScreen::Normal;
             break;
     }
@@ -227,9 +240,12 @@ UiIntent UiStateMachine::handleMenuMain(UiInputEvent event, const Context& ctx) 
             const uint8_t backIndex = static_cast<uint8_t>(ctx.wateringActive ? 5 : 3);
             if (ctx.wateringActive && selectedIndex_ == 0) {
                 stopConfirmYes_ = false;
+                stopAllPending_ = false;
                 screen_ = UiScreen::StopConfirm;
             } else if (ctx.wateringActive && selectedIndex_ == 1) {
-                intent.type = UiIntentType::ClearQueue;
+                stopConfirmYes_ = false;
+                stopAllPending_ = true;
+                screen_ = UiScreen::StopConfirm;
             } else if (selectedIndex_ == scheduleIndex) {
                 screen_ = UiScreen::MenuSchedule;
                 selectedIndex_ = 0;

@@ -56,7 +56,8 @@ const char* IrrigatorUi::zoneLabel(const RenderData& data, uint8_t zone) const {
         return "PUMP";
     }
     if (data.settings != nullptr && zone >= 1 && zone <= irrigator::board::ZONE_COUNT) {
-        return data.settings->zoneNames[zone - 1];
+        snprintf(zoneLabelBuf_, sizeof(zoneLabelBuf_), "%u.%s", zone, data.settings->zoneNames[zone - 1]);
+        return zoneLabelBuf_;
     }
     return "ZONE";
 }
@@ -75,6 +76,11 @@ const char* IrrigatorUi::dayOfWeekName(uint8_t isoDay) {
     ctx.scheduleRecordCount = data.schedule != nullptr ? data.schedule->count : 0;
     ctx.wateringPercentage = data.settings != nullptr ? data.settings->wateringPercentage : 0;
     ctx.defaultManualDuration = data.settings != nullptr ? data.settings->defaultManualDuration : 0;
+    if (data.settings != nullptr) {
+        for (uint8_t i = 0; i < irrigator::board::ZONE_COUNT; ++i) {
+            ctx.zoneEnabled[i] = data.settings->zoneEnabled[i];
+        }
+    }
 
     if (uiState_.screen() == ::irrigator::domain::UiScreen::MenuSchedule && data.schedule != nullptr) {
         const uint8_t recordIndex = static_cast<uint8_t>(
@@ -217,18 +223,25 @@ void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
     display_.setFont(u8g2_font_helvB10_tr);
     char statusText[24] = "";
     if (data.snapshot.pumpOn) {
-        const uint32_t elapsedMin = data.snapshot.elapsedMs / 60000UL;
-        const uint32_t remainingMin = data.snapshot.remainingMs / 60000UL;
+        const uint32_t elapsedSec = data.snapshot.elapsedMs / 1000UL;
+        const uint32_t remainingSec = data.snapshot.remainingMs / 1000UL;
         if ((nowMs / 3000UL) % 2 == 0) {
-            snprintf(statusText, sizeof(statusText), "WATERING %uM", static_cast<unsigned>(elapsedMin));
+            snprintf(statusText,
+                    sizeof(statusText),
+                    "Watering %u:%02u",
+                    static_cast<unsigned>(elapsedSec / 60UL),
+                    static_cast<unsigned>(elapsedSec % 60UL));
         } else {
-            snprintf(
-                statusText, sizeof(statusText), "REMAINING %uM", static_cast<unsigned>(remainingMin));
+            snprintf(statusText,
+                    sizeof(statusText),
+                    "Remaining %u:%02u",
+                    static_cast<unsigned>(remainingSec / 60UL),
+                    static_cast<unsigned>(remainingSec % 60UL));
         }
     } else if (scheduled) {
         snprintf(statusText, sizeof(statusText), "SCHEDULED");
     } else {
-        snprintf(statusText, sizeof(statusText), "IDLE");
+        snprintf(statusText, sizeof(statusText), "IDLE-READY");
     }
     drawCentered(display_, board::DISPLAY_3RD_LINE_OFFSET, statusText);
 
@@ -236,7 +249,7 @@ void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
     if (data.snapshot.pumpOn) {
         drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "LONG CLICK = MENU");
     } else {
-        drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "< DECR. o SELECT INCR. >");
+        drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "< PREV. o SELECT NEXT >");
     }
 
     display_.sendBuffer();
@@ -250,7 +263,7 @@ void IrrigatorUi::renderZonePicker(const RenderData& data) {
     display_.setFont(u8g2_font_helvB10_tr);
     drawCentered(display_, board::DISPLAY_3RD_LINE_OFFSET, "SELECT ZONE");
     display_.setFont(u8g2_font_5x7_tr);
-    drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "< DECR. o SELECT INCR. >");
+    drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "< PREV. o SELECT NEXT >");
     display_.sendBuffer();
 }
 
@@ -264,7 +277,7 @@ void IrrigatorUi::renderDurationPicker(const RenderData& data) {
     display_.setFont(u8g2_font_helvB10_tr);
     drawCentered(display_, board::DISPLAY_3RD_LINE_OFFSET, zoneLabel(data, uiState_.pendingZone()));
     display_.setFont(u8g2_font_5x7_tr);
-    drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "< DECR. o START INCR. >");
+    drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "< LESS o START MORE >");
     display_.sendBuffer();
 }
 
@@ -272,7 +285,7 @@ void IrrigatorUi::renderStopConfirm(const RenderData& data) {
     (void)data;
     display_.clearBuffer();
     display_.setFont(u8g2_font_helvB08_tr);
-    drawCentered(display_, 30, "STOP?");
+    drawCentered(display_, 30, uiState_.stopAllPending() ? "STOP ALL?" : "STOP?");
 
     const char* noText = "NO";
     const char* yesText = "YES";

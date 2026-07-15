@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "UiTypes.h"
+#include "board_config.h"
 
 namespace irrigator::domain {
 
@@ -18,11 +19,24 @@ namespace irrigator::domain {
 class UiStateMachine {
 public:
     struct Context {
+        // Defaults every zone to enabled so callers/tests that never touch this (most of them —
+        // it's only load-bearing for the manual zone picker) see the pre-existing "all zones
+        // reachable" behavior without having to fill it in themselves.
+        Context() {
+            for (bool& enabled : zoneEnabled) {
+                enabled = true;
+            }
+        }
+
         bool wateringActive = false;
         bool scheduleActive = false;
         uint8_t scheduleRecordCount = 0;
         int16_t wateringPercentage = 0;
         uint8_t defaultManualDuration = 0;
+        // Disabled zones are skipped by the manual zone picker (handleNormal/handleZonePicker) —
+        // see isZoneEnabled() in main.ino for the matching enforcement at the point of starting a
+        // run (schedule/manual/MQTT alike). Index 0 = zone 1.
+        bool zoneEnabled[board::ZONE_COUNT];
         // Only need to be valid when a MenuSchedule row is selected; the caller refreshes these
         // from the live schedule record at selectedIndex()/kScheduleFieldsPerRecord before
         // calling handleInput().
@@ -66,6 +80,9 @@ public:
     uint8_t pendingZone() const { return pendingZone_; }
     uint16_t pendingDuration() const { return pendingDuration_; }
     bool stopConfirmYesSelected() const { return stopConfirmYes_; }
+    // Which action StopConfirm is currently confirming — set when entering the screen from
+    // MenuMain's "Stop" (false) vs "Stop all" (true) item; distinguishes the two on Yes.
+    bool stopAllPending() const { return stopAllPending_; }
     int16_t pendingPercentage() const { return pendingPercentage_; }
     bool factoryResetConfirmYesSelected() const { return factoryResetConfirmYes_; }
     bool factoryResetSucceeded() const { return factoryResetSucceeded_; }
@@ -97,6 +114,11 @@ private:
 
     static uint8_t stepIndex(uint8_t current, uint8_t count, bool forward);
 
+    // Steps from `current` (0 = PUMP, 1..ZONE_COUNT = zones) to the next reachable zone in the
+    // given direction, skipping any disabled zone. PUMP is always reachable, so this always
+    // terminates — worst case (every zone disabled) it wraps all the way back to PUMP.
+    static uint8_t nextZone(uint8_t current, bool forward, const Context& ctx);
+
     static constexpr uint16_t kDefaultTestAllZonesDurationMin = 5;
 
     UiScreen screen_ = UiScreen::DisplayOff;
@@ -106,6 +128,7 @@ private:
     uint8_t pendingZone_ = 0;
     uint16_t pendingDuration_ = 0;
     bool stopConfirmYes_ = false;
+    bool stopAllPending_ = false;
     int16_t pendingPercentage_ = 0;
 
     uint8_t pendingScheduleZone_ = 0;

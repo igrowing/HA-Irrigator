@@ -84,6 +84,7 @@ private:
     ::irrigator::domain::UiScreen lastRenderedScreen_ = ::irrigator::domain::UiScreen::DisplayOff;
     uint32_t lastRenderMs_ = 0;
     static constexpr uint32_t kRenderIntervalMs = 250;
+    mutable char zoneLabelBuf_[24];
 };
 
 }  // namespace irrigator::ui

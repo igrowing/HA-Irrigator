@@ -245,8 +245,24 @@ bool startIrrigation(const WateringRequest& request, uint32_t nowMs) {
 }
 
 void stopIrrigationExplicit(uint32_t nowMs) {
+    if (!irrigation.isActive()) {
+        return;
+    }
+    // Overwritten before abort() so every report from here on — the valve-closed edge below,
+    // and the later final-stop report in loop() once the pump's graceful tail actually ends —
+    // is tagged "abort" instead of silently reverting to the run's original start reason.
+    activeRequestForReporting.reason = RunReason::Abort;
+    irrigation.abort(nowMs);
     if (irrigation.isActive()) {
-        irrigation.abort(nowMs);
+        // Zone+pump run: abort() gave the pump the same graceful-shutdown tail a natural
+        // end-of-duration completion gets (see IrrigationStateMachine::abort()), so report the
+        // valve-closed edge now — same shape/timing as reportValveClosed()'s natural-end use in
+        // loop() — and let the later reportedActive && !isActive() check there fire the final
+        // stop report once the pump actually finishes winding down.
+        reportValveClosed();
+    } else {
+        // PumpOnly, or an abort landing mid-graceful-shutdown-tail: nothing left to protect,
+        // stops immediately — report the full stop right now.
         reportStop(RunReason::Abort);
     }
 }
@@ -450,6 +466,23 @@ void publishQueueState() {
     mqtt.publishQueue(payload);
 }
 
+// Single choke point for advancing the queue: pops and starts the next request iff the
+// irrigation state machine can currently accept one (Idle, or PumpGracePeriod for a seamless
+// hand-off — see IrrigationStateMachine::canStartImmediately()). A no-op otherwise, so every
+// call site below can call this unconditionally after anything that might have freed up room —
+// a push, an abort, or a natural state transition — instead of each duplicating the
+// pop-report-start sequence itself.
+void pumpQueue(uint32_t nowMs) {
+    if (!irrigation.canStartImmediately()) {
+        return;
+    }
+    WateringRequest next;
+    if (wateringQueue.pop(next)) {
+        publishQueueState();
+        startIrrigation(next, nowMs);
+    }
+}
+
 // Every watering/pumping request — manual, scheduled, or MQTT — funnels through the queue
 // first, even when it can start immediately: push, report, then (if idle) pop it straight back
 // off and start it. That guarantees a push report and a pull report for every request, not just
@@ -476,16 +509,7 @@ void enqueueOrStart(const WateringRequest& request, uint32_t nowMs) {
         return;
     }
     publishQueueState();
-
-    // Idle, or the pump is only in its post-run graceful-shutdown tail (still spinning, nothing
-    // watering) — either way, this request can start right now.
-    if (irrigation.canStartImmediately()) {
-        WateringRequest next;
-        if (wateringQueue.pop(next)) {
-            publishQueueState();
-            startIrrigation(next, nowMs);
-        }
-    }
+    pumpQueue(nowMs);
 }
 
 void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
@@ -500,8 +524,16 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
         }
         case UiIntentType::AbortWatering:
             stopIrrigationExplicit(nowMs);
+            // Same as a plain (non-"all") MQTT cmd/stop: aborting one run hands off to whatever's
+            // next in the queue rather than leaving it stranded — "Stop all" (StopAllWatering,
+            // below) is the dedicated action for wiping the queue instead.
+            pumpQueue(nowMs);
             break;
-        case UiIntentType::ClearQueue:
+        case UiIntentType::StopAllWatering:
+            // Unlike AbortWatering above, this deliberately does not hand off to the queue
+            // afterward — the queue is empty by the time stopIrrigationExplicit() reports the
+            // stop, so there's nothing left to pump.
+            stopIrrigationExplicit(nowMs);
             wateringQueue.clear();
             publishQueueState();
             break;
@@ -701,11 +733,7 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
             wateringQueue.clear();
             publishQueueState();
         } else {
-            WateringRequest next;
-            if (wateringQueue.pop(next)) {
-                publishQueueState();
-                startIrrigation(next, nowMs);
-            }
+            pumpQueue(nowMs);
         }
         return;
     }
@@ -1039,11 +1067,7 @@ void loop() {
                 // Seamless hand-off: the pump is still running its graceful-shutdown tail, so a
                 // queued item can start right now instead of waiting for that tail to finish —
                 // this is the whole point of the pump lingering rather than shutting off.
-                WateringRequest next;
-                if (wateringQueue.pop(next)) {
-                    publishQueueState();
-                    startIrrigation(next, nowMs);
-                }
+                pumpQueue(nowMs);
             }
             previousIrrigationState = irrigation.snapshot(nowMs).state;
 
@@ -1052,11 +1076,7 @@ void loop() {
                 // Pump-only runs have no graceful-shutdown tail (no valve to protect), so this
                 // is their only hand-off point; it also acts as a safety net for the zone-chain
                 // case above if nothing was queued in time.
-                WateringRequest next;
-                if (wateringQueue.pop(next)) {
-                    publishQueueState();
-                    startIrrigation(next, nowMs);
-                }
+                pumpQueue(nowMs);
             }
             // updateCurrentMonitoring(nowMs);  // Disabled for now, until measurement circuit is tested in HW and calibrated..
             updateOutputsFromDomain();
