@@ -83,6 +83,7 @@ const char* IrrigatorUi::dayOfWeekName(uint8_t isoDay) {
     ::irrigator::domain::UiStateMachine::Context ctx;
     ctx.wateringActive = isActivelyRunning(data.snapshot);
     ctx.scheduleActive = data.scheduleActive;
+    ctx.nextScheduledZone = data.nextScheduledZone;
     ctx.scheduleRecordCount = data.schedule != nullptr ? data.schedule->count : 0;
     ctx.wateringPercentage = data.settings != nullptr ? data.settings->wateringPercentage : 0;
     ctx.defaultManualDuration = data.settings != nullptr ? data.settings->defaultManualDuration : 0;

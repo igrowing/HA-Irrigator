@@ -1097,7 +1097,8 @@ void loop() {
                     renderData.nextScheduledZone = findNextScheduledZone(wallTm);
                     snprintf(renderData.nextScheduledZoneName,
                             sizeof(renderData.nextScheduledZoneName),
-                            "%s",
+                            "%u.%s", 
+                            renderData.nextScheduledZone,
                             zoneName(renderData.nextScheduledZone));
                 }
 

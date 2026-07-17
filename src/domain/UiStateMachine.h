@@ -37,6 +37,11 @@ public:
         // see isZoneEnabled() in main.ino for the matching enforcement at the point of starting a
         // run (schedule/manual/MQTT alike). Index 0 = zone 1.
         bool zoneEnabled[board::ZONE_COUNT];
+        // Zone the Normal screen is currently showing as the upcoming pick when idle+scheduled
+        // (0 = none/PUMP) — see IrrigatorUi::renderNormal's `scheduled` branch, which is what
+        // this mirrors. handleNormal starts CW/CCW from here instead of always from PUMP, so a
+        // rotation moves relative to what's on screen rather than jumping back to PUMP first.
+        uint8_t nextScheduledZone = 0;
         // Only need to be valid when a MenuSchedule row is selected; the caller refreshes these
         // from the live schedule record at selectedIndex()/kScheduleFieldsPerRecord before
         // calling handleInput().

@@ -108,13 +108,18 @@ UiIntent UiStateMachine::handleNormal(UiInputEvent event, const Context& ctx) {
         return {};  // Ticks ignored while watering, aside from the timeout re-arm above.
     }
 
+    // Rotate relative to whatever the Normal screen is currently showing (the next scheduled
+    // zone when idle+scheduled, PUMP otherwise) rather than always starting from PUMP.
+    const bool scheduled = ctx.scheduleActive && ctx.nextScheduledZone != 0;
+    const uint8_t displayedZone = scheduled ? ctx.nextScheduledZone : 0;
+
     switch (event) {
         case UiInputEvent::Clockwise:
-            pendingZone_ = nextZone(0, true, ctx);
+            pendingZone_ = nextZone(displayedZone, true, ctx);
             screen_ = UiScreen::ZonePicker;
             break;
         case UiInputEvent::CounterClockwise:
-            pendingZone_ = nextZone(0, false, ctx);
+            pendingZone_ = nextZone(displayedZone, false, ctx);
             screen_ = UiScreen::ZonePicker;
             break;
         case UiInputEvent::Click:
