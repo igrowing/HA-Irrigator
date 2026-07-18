@@ -180,8 +180,6 @@
               perform_action: button.press
               target:
                 entity_id: button.irrigator_test_all
-            features:
-              - type: button
           - type: tile
             entity: button.irrigator_stop_all
             icon: mdi:stop-circle-outline
@@ -191,8 +189,8 @@
               perform_action: button.press
               target:
                 entity_id: button.irrigator_stop_all
-            features:
-              - type: button
+              confirmation:
+                text: "Stop watering now?"
       - type: grid
         cards:
           - type: heading
@@ -276,8 +274,6 @@
                   perform_action: button.press
                   target:
                     entity_id: button.irrigator_save_schedule_record
-                features:
-                  - type: button
               - type: tile
                 entity: button.irrigator_delete_schedule_record
                 name: Delete Record
@@ -289,8 +285,8 @@
                   perform_action: button.press
                   target:
                     entity_id: button.irrigator_delete_schedule_record
-                features:
-                  - type: button
+                  confirmation:
+                    text: "Delete the selected schedule record?"
       - type: grid
         cards:
           - type: heading
