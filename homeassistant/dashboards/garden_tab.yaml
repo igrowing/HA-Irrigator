@@ -366,40 +366,43 @@
             entities:
               - entity: input_number.irrigator_pump_zero_offset_mv
               - entity: input_number.irrigator_pump_mv_per_ma
+          - type: tile
+            entity: sensor.irrigator_address_2
+          - type: tile
+            entity: sensor.irrigator_watering_state
           - type: entities
             title: Diagnostics
             entities:
               - entity: binary_sensor.irrigator_online
-              - entity: sensor.irrigator_status
               - entity: sensor.irrigator_last_alert
               - entity: sensor.irrigator_queue
               - type: attribute
                 entity: sensor.irrigator_status
                 attribute: firmware_version
-                name: "Firmware Version"
+                name: Firmware Version
               - type: attribute
                 entity: sensor.irrigator_status
                 attribute: boot_reason
-                name: "Boot Reason"
+                name: Boot Reason
               - type: attribute
                 entity: sensor.irrigator_status
                 attribute: uptime_s
-                name: "Uptime"
+                name: Uptime
                 suffix: " s"
               - type: attribute
                 entity: sensor.irrigator_status
                 attribute: cpu_temp_c
-                name: "CPU Temp"
+                name: CPU Temp
                 suffix: " °C"
               - type: attribute
                 entity: sensor.irrigator_status
                 attribute: free_heap_bytes
-                name: "Free Heap"
+                name: Free Heap
                 suffix: " bytes"
               - type: attribute
                 entity: sensor.irrigator_status
                 attribute: free_storage_bytes
-                name: "Free Storage"
+                name: Free Storage
                 suffix: " bytes"
           - type: tile
             entity: button.irrigator_refresh_from_device
@@ -411,3 +414,6 @@
                 entity_id: button.irrigator_refresh_from_device
             features:
               - type: button
+            grid_options:
+              columns: 12
+              rows: 2
