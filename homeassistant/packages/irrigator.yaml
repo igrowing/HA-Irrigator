@@ -9,9 +9,7 @@
 #
 # Assumes the `mqtt:` integration is already configured and connected to the
 # same broker as the device - this package only adds entities, not a broker
-# connection. See ../README.md for the full setup checklist, including the
-# one-time manual step of creating 11 Local Calendar integration entries via
-# the UI (see README "Schedule tab setup" for why that can't be done in YAML).
+# connection. See ../README.md for the full setup checklist.
 # =============================================================================
 
 # `device:` and `availability:` are per-entity options (nested inside each
@@ -493,8 +491,11 @@ template:
   # and `.../download/schedule.json` (the one-shot response to the
   # virgin-deploy request in irrigator_automations.yaml). Whichever arrives
   # last wins, which is exactly "update current schedule.json on arrival".
-  # Its `records` attribute also feeds script.irrigator_populate_calendars_from_device
-  # (one-time seed of the 11 Local Calendars from the device's real schedule).
+  # Its `records` attribute also feeds the "Device Schedule" table and the
+  # schedule editor panel on the Schedule tab (see script.irrigator_schedule_save
+  # / script.irrigator_schedule_delete and the "Irrigator - rebuild schedule
+  # editor dropdown options" / "...load selected schedule record..."
+  # automations in irrigator_automations.yaml).
   - trigger:
       - trigger: mqtt
         topic: "irrigatorF4/schedule"
@@ -514,16 +515,16 @@ template:
         icon: mdi:cloud-download-outline
         press:
           - action: script.irrigator_request_downloads
-      - name: "Irrigator Publish Schedule Now"
-        unique_id: irrigator_publish_schedule_now
-        icon: mdi:cloud-upload-outline
+      - name: "Irrigator Save Schedule Record"
+        unique_id: irrigator_schedule_save_button
+        icon: mdi:content-save-outline
         press:
-          - action: script.irrigator_publish_schedule_from_calendars
-      - name: "Irrigator Populate Calendars From Device"
-        unique_id: irrigator_populate_calendars_from_device_button
-        icon: mdi:calendar-import
+          - action: script.irrigator_schedule_save
+      - name: "Irrigator Delete Schedule Record"
+        unique_id: irrigator_schedule_delete_button
+        icon: mdi:trash-can-outline
         press:
-          - action: script.irrigator_populate_calendars_from_device
+          - action: script.irrigator_schedule_delete
       - name: "Irrigator Stop All"
         unique_id: irrigator_stop_all_button
         icon: mdi:stop-circle-outline
@@ -611,6 +612,73 @@ input_number:
     mode: box
     initial: 1.0
 
+  # Schedule editor panel field (Schedule tab) - see script.irrigator_schedule_save.
+  irrigator_edit_duration_min:
+    name: "Duration"
+    icon: mdi:timer-outline
+    min: 1
+    max: 120
+    step: 1
+    mode: slider
+    unit_of_measurement: min
+    initial: 5
+
+# -----------------------------------------------------------------------
+# Schedule tab: record picker + edit fields, replacing the earlier Local
+# Calendar design (calendar.create_event has no `rrule` field - true
+# recurrence is a frontend-only capability of the calendar dialog, not
+# something a script can set - so an automation-driven calendar could only
+# ever have been a partial solution; this editor works directly against
+# schedule.json's records instead, no calendar entities involved).
+#
+# irrigator_schedule_picker's options are rebuilt on every schedule/settings
+# change (see "Irrigator - rebuild schedule editor dropdown options" in
+# irrigator_automations.yaml), one per current record plus "+ Add new",
+# formatted "[<index>] Zone <n> - <name> - <day> <time> - <dur>min" - the
+# leading "[<index>]" is the record's position in sensor.irrigator_schedule's
+# `records` list (also shown as the "#" column in the "Device Schedule"
+# table below, regardless of how that table is currently sorted), which is
+# how script.irrigator_schedule_save/_delete know which record to touch.
+# irrigator_edit_zone's options are rebuilt the same way, formatted
+# "<n> - <name>".
+# -----------------------------------------------------------------------
+input_select:
+  irrigator_schedule_picker:
+    name: "Schedule Record"
+    icon: mdi:calendar-search
+    options: ["+ Add new"]
+    initial: "+ Add new"
+
+  irrigator_edit_zone:
+    name: "Zone"
+    icon: mdi:sprinkler-variant
+    options: ["1 - #1 (no name)"]
+    initial: "1 - #1 (no name)"
+
+  irrigator_edit_day:
+    name: "Day"
+    icon: mdi:calendar-week
+    options: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    initial: "Mon"
+
+  # Purely a display-order control for the "Device Schedule" markdown table
+  # (see garden_tab.yaml) - a stock markdown card can't run JS, so a real
+  # click-the-column-header sort isn't possible; this dropdown is the native
+  # equivalent. Doesn't touch the device or any helper.
+  irrigator_schedule_sort_by:
+    name: "Sort Schedule Table By"
+    icon: mdi:sort
+    options: ["Day", "Zone", "Name", "Start", "Duration", "Active"]
+    initial: "Day"
+
+input_datetime:
+  # Schedule editor panel field (Schedule tab) - see script.irrigator_schedule_save.
+  irrigator_edit_start_time:
+    name: "Start Time"
+    icon: mdi:clock-outline
+    has_date: false
+    has_time: true
+
 # -----------------------------------------------------------------------
 # Settings tab: editable zone name + enabled checkbox. Both lack a
 # dedicated device-side merge topic, so any change here republishes the
@@ -636,20 +704,11 @@ input_text:
   irrigator_zone_11_name: {name: "Zone 11 Name", icon: mdi:label-outline, max: 15, initial: "#11 (no name)"}
 
 input_boolean:
-  # Off by default - see "Irrigator - publish schedule from calendars" in
-  # irrigator_automations.yaml. Creating the 11 calendar.irrigator_zone_N
-  # integrations for the first time (or leaving them empty while you're
-  # still copying the device's real schedule into them) must not let the
-  # periodic publish automation run - it would upload an empty schedule.json
-  # and wipe out whatever schedule is already running on the device. Turn
-  # this on only once you've confirmed the 11 calendars' contents match the
-  # device (via the "Device Schedule" table on the Schedule tab, or by
-  # running "Populate Calendars From Device" first) - or immediately, if the
-  # device has no schedule yet to lose.
-  irrigator_schedule_sync_enabled:
-    name: "Schedule Auto-Publish Armed"
-    icon: mdi:shield-sync-outline
-    initial: false
+  # Schedule editor panel field (Schedule tab) - see script.irrigator_schedule_save.
+  irrigator_edit_active:
+    name: "Active"
+    icon: mdi:check-circle-outline
+    initial: true
 
   irrigator_zone_1_enabled: {name: "Zone 1 Enabled", icon: mdi:check-circle-outline}
   irrigator_zone_2_enabled: {name: "Zone 2 Enabled", icon: mdi:check-circle-outline}
@@ -756,119 +815,89 @@ script:
             {{ base_json[:-1] ~ ',"zone_names":' ~ zn ~ '}' }}
 
   # ---------------------------------------------------------------------
-  # HA -> device: rebuild schedule.json from the 11 Local Calendar entities
-  # and publish it. VERIFY BEFORE RELYING ON: `calendar.get_events`'s exact
-  # response shape (assumed here: {"<entity_id>": {"events": [...]}}, each
-  # event with `start`/`end`/`summary` keys) couldn't be confirmed against
-  # current docs from here - open Developer Tools > Actions, pick
-  # "Calendar: Get events", target one calendar, run it, and compare the
-  # returned data shown there against the `cal_response` usage below before
-  # trusting this in production. If the shape differs, `zone_events` below
-  # will end up empty (not crash) - so a shape mismatch fails toward
-  # "publishes nothing new" rather than corrupting the schedule, but it also
-  # means edits silently stop propagating, so check it once after setup.
+  # HA -> device: create or overwrite one schedule record from the editor
+  # panel (Schedule tab) and republish the FULL schedule.json - same
+  # "read the whole list, mutate, republish the whole file" contract
+  # cmd/upload/schedule.json requires everywhere else (no partial-update
+  # topic exists for this file).
+  #
+  # Which record gets replaced: the index encoded in the picker's currently
+  # selected option, e.g. "[3] Zone 3 - Trees left - Tue 06:00 - 9min" -> 3,
+  # an index into sensor.irrigator_schedule's `records` list in its natural
+  # (unsorted) order - see "Irrigator - rebuild schedule editor dropdown
+  # options" in irrigator_automations.yaml for how that string is built, and
+  # the "#" column in the "Device Schedule" table (garden_tab.yaml) for the
+  # same index shown regardless of the table's current sort order. "+ Add
+  # new" has no leading "[", which parses to -1, meaning append a new
+  # record instead of replacing one.
   # ---------------------------------------------------------------------
-  irrigator_publish_schedule_from_calendars:
-    alias: "Irrigator: rebuild + publish schedule.json from Local Calendars"
+  irrigator_schedule_save:
+    alias: "Irrigator: save schedule record from editor panel"
     sequence:
       - variables:
-          week_start: "{{ (now() - timedelta(days=now().isoweekday() - 1)).strftime('%Y-%m-%dT00:00:00') }}"
-          week_end: "{{ (now() - timedelta(days=now().isoweekday() - 1) + timedelta(days=7)).strftime('%Y-%m-%dT00:00:00') }}"
-          schedule_parts: ""
-          schedule_count: 0
-      - repeat:
-          for_each: "{{ range(1, 12) | list }}"
-          sequence:
-            - variables:
-                current_zone: "{{ repeat.item }}"
-            - action: calendar.get_events
-              target:
-                entity_id: "calendar.irrigator_zone_{{ repeat.item }}"
-              data:
-                start_date_time: "{{ week_start }}"
-                end_date_time: "{{ week_end }}"
-              response_variable: cal_response
-            - variables:
-                zone_events: "{{ ((cal_response.values() | list | first).events if cal_response else []) | default([]) }}"
-            - repeat:
-                for_each: "{{ zone_events }}"
-                sequence:
-                  - variables:
-                      ev_start: "{{ as_datetime(repeat.item.start) }}"
-                      ev_end: "{{ as_datetime(repeat.item.end) }}"
-                  - variables:
-                      ev_raw_dur: "{{ ((ev_end - ev_start).total_seconds() / 60) | int }}"
-                  - variables:
-                      ev_dur: "{{ [1, [ev_raw_dur, 60] | min] | max }}"
-                      ev_rec: >-
-                        {{ '{"zone":' ~ current_zone ~ ',"day_of_week":' ~ ev_start.isoweekday()
-                        ~ ',"start_time":' ~ (ev_start.strftime('%H:%M') | tojson)
-                        ~ ',"duration_min":' ~ ([1, [ev_raw_dur, 60] | min] | max) ~ ',"active":true}' }}
-                  - variables:
-                      schedule_parts: "{{ schedule_parts ~ (',' if schedule_parts else '') ~ ev_rec }}"
-                      schedule_count: "{{ schedule_count + 1 }}"
+          picker: "{{ states('input_select.irrigator_schedule_picker') }}"
+          idx: "{{ (picker.split(']')[0].split('[')[1] | int) if picker.startswith('[') else -1 }}"
+          records: "{{ state_attr('sensor.irrigator_schedule', 'records') or [] }}"
+          day_names: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+          new_record:
+            zone: "{{ states('input_select.irrigator_edit_zone').split(' - ')[0] | int }}"
+            day_of_week: "{{ day_names.index(states('input_select.irrigator_edit_day')) + 1 }}"
+            start_time: "{{ states('input_datetime.irrigator_edit_start_time')[:5] }}"
+            duration_min: "{{ states('input_number.irrigator_edit_duration_min') | int(5) }}"
+            active: "{{ is_state('input_boolean.irrigator_edit_active', 'on') }}"
+      - variables:
+          new_records: >-
+            {{ (records[:idx] + [new_record] + records[idx+1:]) if 0 <= idx < (records | length) else (records + [new_record]) }}
       - if:
           - condition: template
-            value_template: "{{ schedule_count | int(0) > 32 }}"
+            value_template: "{{ (new_records | length) > 32 }}"
         then:
           - action: persistent_notification.create
             data:
-              title: "Irrigator schedule NOT published"
+              title: "Irrigator schedule NOT saved"
               message: >-
-                The combined schedule across all 11 zone calendars has
-                {{ schedule_count }} time blocks, over the device's 32-record
-                limit. Remove some events and try again (use the "Publish
-                Schedule Now" button).
+                This would put the schedule at {{ new_records | length }}
+                time blocks, over the device's 32-record limit. Delete an
+                existing record first.
         else:
           - action: mqtt.publish
             data:
               topic: "irrigatorF4/cmd/upload/schedule.json"
-              payload: "[{{ schedule_parts }}]"
+              payload: "{{ new_records | tojson }}"
+          - action: input_select.select_option
+            target:
+              entity_id: input_select.irrigator_schedule_picker
+            data:
+              option: "+ Add new"
 
-  # ---------------------------------------------------------------------
-  # Device -> HA, ONE-TIME convenience only: seed the 11 Local Calendars
-  # from whatever schedule.json the device currently has, so you don't have
-  # to hand-re-enter an existing schedule after creating the calendars.
-  # Run via the "Populate Calendars From Device" button, right after
-  # creating the 11 calendar integrations, BEFORE arming
-  # input_boolean.irrigator_schedule_sync_enabled. Re-running this after
-  # calendars already have events will create DUPLICATES - there's no
-  # dedup/idempotency check, since `calendar.create_event` has no documented
-  # "only if it doesn't already exist" mode. If you need to re-run it,
-  # delete the existing events for that zone first.
-  #
-  # VERIFY BEFORE RELYING ON: `calendar.create_event`'s exact field names
-  # (assumed here: `summary`, `start_date_time`, `end_date_time`, `rrule`)
-  # couldn't be confirmed against current docs from here either - check
-  # Developer Tools > Actions > "Calendar: Create event" for the exact
-  # field list your HA version expects before running this for real.
-  # ---------------------------------------------------------------------
-  irrigator_populate_calendars_from_device:
-    alias: "Irrigator: one-time seed Local Calendars from device schedule.json"
+  # HA -> device: remove the record currently selected in the editor panel
+  # and republish the full schedule.json, same contract as the save script
+  # above. No-op (with a notification) if "+ Add new" is selected, since
+  # there's nothing to delete.
+  irrigator_schedule_delete:
+    alias: "Irrigator: delete schedule record selected in editor panel"
     sequence:
       - variables:
+          picker: "{{ states('input_select.irrigator_schedule_picker') }}"
+          idx: "{{ (picker.split(']')[0].split('[')[1] | int) if picker.startswith('[') else -1 }}"
           records: "{{ state_attr('sensor.irrigator_schedule', 'records') or [] }}"
-          rrule_days: ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
-      - repeat:
-          for_each: "{{ records }}"
-          sequence:
-            - variables:
-                rec: "{{ repeat.item }}"
-                today_iso: "{{ now().isoweekday() }}"
-            - variables:
-                days_ahead: "{{ (rec.day_of_week - today_iso) % 7 }}"
-                event_date: "{{ (now() + timedelta(days=days_ahead)).strftime('%Y-%m-%d') }}"
-            - variables:
-                start_dt: "{{ event_date ~ 'T' ~ rec.start_time ~ ':00' }}"
-                end_dt: >-
-                  {{ (as_datetime(event_date ~ 'T' ~ rec.start_time ~ ':00') + timedelta(minutes=rec.duration_min)).strftime('%Y-%m-%dT%H:%M:00') }}
-                zone_name: >-
-                  {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get(rec.zone | string, {}).get('name', '#' ~ rec.zone ~ ' (no name)') }}
-            - action: calendar.create_event
-              target:
-                entity_id: "calendar.irrigator_zone_{{ rec.zone }}"
-              data:
-                summary: "{{ zone_name }}"
-                start_date_time: "{{ start_dt }}"
-                end_date_time: "{{ end_dt }}"
-                rrule: "FREQ=WEEKLY;BYDAY={{ rrule_days[rec.day_of_week - 1] }}"
+      - if:
+          - condition: template
+            value_template: "{{ idx < 0 }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              title: "Irrigator: nothing to delete"
+              message: >-
+                Pick an existing record from "Schedule Record" first -
+                "+ Add new" has nothing to delete.
+        else:
+          - action: mqtt.publish
+            data:
+              topic: "irrigatorF4/cmd/upload/schedule.json"
+              payload: "{{ (records[:idx] + records[idx+1:]) | tojson }}"
+          - action: input_select.select_option
+            target:
+              entity_id: input_select.irrigator_schedule_picker
+            data:
+              option: "+ Add new"

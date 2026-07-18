@@ -42,59 +42,10 @@ device's serial log / display at boot.
 4. Restart Home Assistant (packages, template entities, input helpers, and
    automations all need a full restart to pick up for the first time).
 
-## 3. Create 11 Local Calendar integration entries (one-time, manual, UI only)
-
-Local Calendar is a config-entry integration - it has no YAML schema at all
-(confirmed against the current integration docs), so these can't be
-provisioned by this package the way everything else is. This is a real,
-unavoidable one-time manual step, once per zone:
-
-For each zone 1-11: **Settings > Devices & Services > Add Integration >
-Local Calendar**. Name it so you'll recognize it (e.g. "Irrigator Zone 1 -
-Front Lawn") - the calendar file name it asks for doesn't matter, but the
-resulting **entity ID** does; open the new entry's entity and set it
-explicitly to:
-
-```
-calendar.irrigator_zone_1
-calendar.irrigator_zone_2
-...
-calendar.irrigator_zone_11
-```
-
-These exact entity IDs are what `packages/irrigator.yaml`,
-`packages/irrigator_automations.yaml`, and `dashboards/garden_tab.yaml`
-reference - if they don't match, the schedule tab and the publish-to-device
-automation silently do nothing.
-
-## 4. Add the Lovelace tab
+## 3. Add the Lovelace tab
 
 Paste the contents of `dashboards/garden_tab.yaml` in place of the existing
 empty "Garden" tab (`sections: - type: grid cards: []`) in your dashboard.
-
-## 5. Before you touch the Schedule tab: populate or check, then arm it
-
-The 11 calendars you just created in step 3 are empty. Auto-publish to the
-device is deliberately **off by default** (`input_boolean.irrigator_schedule_sync_enabled`,
-the "Schedule Auto-Publish Armed" tile at the top of the Schedule section) -
-arming it while the calendars are still empty would publish an empty
-`schedule.json` and erase whatever schedule is already running on the
-device. Before turning it on, do ONE of:
-
-- Press **"Populate Calendars From Device"** once - it seeds all 11
-  calendars from the device's current `schedule.json` automatically (see
-  `script.irrigator_populate_calendars_from_device` in `irrigator.yaml` for
-  what it assumes about the `calendar.create_event` service - worth a quick
-  glance at Developer Tools > Actions to confirm those field names match
-  your HA version before relying on it), **or**
-- Manually re-create each block from the "Device Schedule (last known)"
-  table at the bottom of the Schedule section into the matching zone's
-  calendar.
-
-Only then, turn on "Schedule Auto-Publish Armed". If the device has no
-schedule yet, there's nothing to lose - arm it immediately. The "Publish
-Schedule Now" button always works regardless of this toggle, since pressing
-it is itself a deliberate, explicit action.
 
 ## What each section does
 
@@ -120,9 +71,10 @@ it is itself a deliberate, explicit action.
    referencing the switches directly - their name is live-templated (see
    #1), and history-graph shows an entity's current registered name
    automatically, so no dashboard-side templating is needed here.
-3. **Schedule** - a `type: calendar` card showing all 11
-   `calendar.irrigator_zone_N` entities together (each auto-colored) - see
-   "How the schedule sync works" below.
+3. **Schedule** - a read-only "Device Schedule" table plus a small editor
+   panel (pick a record, edit its fields, Save or Delete) - see "How the
+   schedule editor works" below for why this replaced an earlier
+   Local-Calendar-based design.
 4. **Settings** - schedule-active toggle and watering-percentage number are
    live MQTT entities (direct topic round-trip). Zone name/enabled,
    default-manual-duration, and calibration all republish the *entire*
@@ -160,51 +112,67 @@ re-render (once real names arrive, moments later) only updates the
 should only ever see "Irrigator Zone N" flash briefly right after the very
 first deploy, then never again.
 
-## How the schedule sync works, and its limitations
+## How the schedule editor works
 
-- **HA -> device**: every 2 minutes (`time_pattern` automation, not a
-  reactive trigger - `calendar` entities don't fire a state-changed signal
-  for every event add/edit/delete the way the old `schedule.*` helper did),
-  `script.irrigator_publish_schedule_from_calendars` queries all 11
-  calendars for the current week via `calendar.get_events`, rebuilds the
-  full `schedule.json` array, and publishes it to `cmd/upload/schedule.json`
-  - but only while `input_boolean.irrigator_schedule_sync_enabled` is on
-  (see step 5 above). A "Publish Schedule Now" button forces this
-  immediately regardless of that toggle.
-- **Device -> HA**: `sensor.irrigator_schedule` mirrors whatever the device
-  currently has loaded (shown as a read-only table at the bottom of the
-  Schedule section), fed automatically. **"Populate Calendars From Device"**
-  (step 5) is a *one-time* convenience that reads that same data and calls
-  `calendar.create_event` on each of the 11 calendars to seed them - unlike
-  the earlier Schedule-helper design, this direction is *not* fundamentally
-  blocked, since `calendar.create_event`/`delete_event` are real callable
-  services. Re-running it after calendars already have events will create
-  duplicates (there's no "only if it doesn't already exist" check), so treat
-  it as a one-shot action right after creating the 11 calendars, not
-  something to run repeatedly.
-- **Per-record "active" pause/resume isn't preserved 1:1.** The original
-  `schedule.json` record shape has a per-entry `active` boolean for pausing
-  one row without deleting it. This design has no equivalent - an event
-  either exists or doesn't. Records built from HA always publish with
-  `active: true`; to pause an entire zone, use its "Enabled" checkbox in
-  Settings (which the firmware already gates all activity on, independent
-  of the schedule).
-- **32-record cap.** The firmware whole-file-rejects `cmd/upload/schedule.json`
-  if the combined array (all 11 zones, this week's occurrences) exceeds
-  `SCHEDULE_MAX_RECORDS` (32). `script.irrigator_publish_schedule_from_calendars`
-  checks this before publishing and raises a persistent notification instead
-  of sending an oversized array that would otherwise wipe the device's
-  schedule with a rejected upload.
-- **Per-event duration is clamped to 1-60 min** to match
-  `SCHEDULE_DURATION_MIN/MAX_MINUTES` - an event outside that range gets
-  clamped rather than rejecting the whole publish.
-- **Field names need a one-time check.** I could not confirm the exact
-  `calendar.get_events` response shape or `calendar.create_event` field
-  names (`summary`/`start_date_time`/`end_date_time`/`rrule`) against
-  current HA documentation from outside a running instance - both scripts
-  in `irrigator.yaml` say exactly what to check in Developer Tools >
-  Actions and what happens if the assumption is wrong (publish fails toward
-  "does nothing", not toward corrupting data, but do check once).
+This section was originally built on Home Assistant's Local Calendar
+integration (`calendar.irrigator_zone_1`..`_11`, one event per schedule
+block, edited via the calendar's own dialog). That design turned out to be
+fundamentally blocked: `calendar.create_event` accepts `summary`,
+`description`, `start_date_time`/`end_date_time` (or `start_date`/`end_date`/
+`in`), and `location` - **no `rrule` field at all**. True weekly recurrence
+is a capability of the calendar dialog's own frontend code, not something
+exposed through any callable service, so no automation could ever have
+created a genuinely-recurring event, and a schedule made of only
+non-recurring single events would have silently gone stale the next time
+`calendar.get_events` scanned "this calendar week" and found nothing. If you
+still have the 11 Local Calendar integration entries from an earlier version
+of this setup, they're no longer referenced anywhere in this package and can
+be deleted (Settings > Devices & Services > Local Calendar).
+
+The replacement edits `schedule.json`'s records directly - no calendar
+entities involved:
+
+- **`sensor.irrigator_schedule`** mirrors whatever schedule the device
+  currently has loaded (its `records` attribute is a plain list of
+  `{zone, day_of_week, start_time, duration_min, active}` objects, same
+  shape as `ha.md`'s Schedule JSON example) - shown as the read-only
+  "Device Schedule" table at the top of the Schedule section, sortable via
+  the "Sort Schedule Table By" dropdown (see below for why that's a dropdown
+  and not a clickable column header).
+- **The editor panel** (`input_select.irrigator_schedule_picker` down to
+  `input_boolean.irrigator_edit_active`) lets you pick an existing record or
+  "+ Add new", edit zone/day/start time/duration/active, then press **"Save
+  Schedule Record"** or **"Delete Schedule Record"**. Both scripts
+  (`script.irrigator_schedule_save`/`_delete` in `irrigator.yaml`) read the
+  *entire* current record list, apply one change (replace/append/remove),
+  and republish the whole array to `cmd/upload/schedule.json` - same
+  whole-file-replace contract every other write to this device uses. The
+  picker's `[<index>]` prefix and the table's `#` column both refer to the
+  same position in `sensor.irrigator_schedule`'s `records` list, so you can
+  match a table row to its editor entry at a glance; two automations in
+  `irrigator_automations.yaml` ("...rebuild schedule editor dropdown
+  options" / "...load selected schedule record...") keep the picker's
+  options and the panel's fields in sync with real device data.
+- **Per-record "active" pause/resume is preserved directly** - unlike the
+  calendar design, `active` is just a checkbox in the editor panel, matching
+  the field's real meaning in `schedule.json`.
+- **32-record cap.** `script.irrigator_schedule_save` checks the resulting
+  record count against the firmware's `SCHEDULE_MAX_RECORDS` (32) before
+  publishing, and raises a persistent notification instead of sending an
+  oversized array that the firmware would whole-file-reject anyway.
+- **No true click-a-column-header-to-sort.** A stock `markdown` card can't
+  run JavaScript (HA sanitizes it out), so a real clickable sort isn't
+  buildable without a custom/HACS card. `input_select.irrigator_schedule_sort_by`
+  is the native equivalent - it only reorders the table's Jinja rendering,
+  never touches `sensor.irrigator_schedule` or the device.
+- **Dropdown options are built via Jinja's native-type list rendering**
+  (a `namespace()` accumulator ending in a single bare `{{ ns.items }}`
+  expression, which HA's template engine returns as an actual list rather
+  than a stringified one) - this is a standard, common HA automation
+  pattern, but if either `input_select.irrigator_schedule_picker` or
+  `input_select.irrigator_edit_zone` ever shows one garbled option instead
+  of several clean ones, check "Irrigator - rebuild schedule editor dropdown
+  options" in `irrigator_automations.yaml` first.
 
 ## How the download/sync model works
 
@@ -224,8 +192,7 @@ not on a recurring poll:
   "Irrigator - republish settings on local helper change" (the automation
   that calls that script) is itself guarded on this sensor already holding
   real data, which is what closes the settings-side virgin-deploy race
-  automatically, with no manual arm toggle needed (unlike the schedule tab -
-  see step 5 above): the 15 Settings-tab helpers are created fresh at their
+  automatically: the 15 Settings-tab helpers are created fresh at their
   YAML `initial:` placeholder values on a virgin deploy, and that creation
   fires a state-changed event just like a real edit would. This same sync
   automation also "self-sets" `switch.irrigator_schedule_active` and
@@ -345,16 +312,25 @@ zone names, calibration, and other settings-derived fields silently stay at
 their defaults, not a separate bug.
 
 **Your editor/IDE flags things like `Device '*irrigator_device' does not
-exist`, `Device 'variables:' does not exist`, or `Device 'action:
-calendar.create_event' does not exist`:** these are not from Home Assistant
-- check **Settings > System > Logs**; if it's clean, the package loaded and
-parsed successfully, which wouldn't be possible if these were real errors.
-This is almost certainly a VS Code HA extension (or similar YAML-linting
-tool) misreading constructs it doesn't fully support: the `device: *irrigator_device`
-YAML *anchor alias* (resolved by the YAML parser before HA ever sees it,
-which some lightweight linters don't do), and the nested `variables:`/
-`action: calendar.create_event` steps inside a `repeat:` block. Safe to
-ignore as long as the real HA log is clean.
+exist` or `Device 'variables:' does not exist`:** these are not from Home
+Assistant - check **Settings > System > Logs**; if it's clean, the package
+loaded and parsed successfully, which wouldn't be possible if these were
+real errors. This is almost certainly a VS Code HA extension (or similar
+YAML-linting tool) misreading constructs it doesn't fully support: the
+`device: *irrigator_device` YAML *anchor alias* (resolved by the YAML parser
+before HA ever sees it, which some lightweight linters don't do), and nested
+`variables:` steps inside a `repeat:` block. Safe to ignore as long as the
+real HA log is clean.
+
+**A schedule dropdown (`input_select.irrigator_schedule_picker` or
+`input_select.irrigator_edit_zone`) shows one long garbled option instead of
+several clean ones:** the automation that builds its option list relies on
+HA's Jinja native-type rendering returning an actual list from a
+`namespace()` accumulator (see "How the schedule editor works" above) -
+check "Irrigator - rebuild schedule editor dropdown options" in
+`irrigator_automations.yaml` and confirm via Developer Tools > Actions >
+"Input select: Set options" that a plain list, not a string, is what's being
+sent.
 
 ## Entity naming reference
 
@@ -375,13 +351,16 @@ ignore as long as the real HA log is clean.
 - `input_number.irrigator_valve_zero_offset_mv` / `_valve_mv_per_ma` /
   `_pump_zero_offset_mv` / `_pump_mv_per_ma` - current-sensor calibration,
   also folded into the full `settings.json` republish (see above).
-- `calendar.irrigator_zone_1`..`_11` - created manually per step 3 above.
-- `input_boolean.irrigator_schedule_sync_enabled` - "Schedule Auto-Publish
-  Armed" toggle, off by default - see step 5 above.
-- `button.irrigator_refresh_from_device`, `button.irrigator_publish_schedule_now`,
-  `button.irrigator_populate_calendars_from_device_button`,
-  `button.irrigator_stop_all_button` - manual triggers for the corresponding
-  scripts.
+- `input_select.irrigator_schedule_picker`, `input_select.irrigator_edit_zone`,
+  `input_select.irrigator_edit_day`, `input_datetime.irrigator_edit_start_time`,
+  `input_number.irrigator_edit_duration_min`, `input_boolean.irrigator_edit_active`
+  - the schedule editor panel's fields - see "How the schedule editor works"
+  above.
+- `input_select.irrigator_schedule_sort_by` - display-only sort order for
+  the "Device Schedule" table.
+- `button.irrigator_refresh_from_device`, `button.irrigator_save_schedule_record`,
+  `button.irrigator_delete_schedule_record`, `button.irrigator_stop_all` -
+  manual triggers for the corresponding scripts.
 - `sensor.irrigator_status`, `sensor.irrigator_watering_state`,
   `sensor.irrigator_last_alert`, `sensor.irrigator_queue`,
   `sensor.irrigator_schedule`, `binary_sensor.irrigator_online` - read-only

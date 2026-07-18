@@ -206,94 +206,77 @@
         cards:
           - type: heading
             heading: Schedule
-          - type: markdown
-            content: >-
-              Tap an event to see its details with Edit/Delete; tap an empty
-              slot to add a watering block. While "Schedule Auto-Publish Armed"
-              below is on, edits publish to the device automatically (checked
-              every 2 minutes - calendars don't have an instant change signal
-              the way the old Schedule helper did) - use "Publish Schedule Now"
-              to force it immediately regardless of that toggle. **Leave it off
-              until you've either run "Populate Calendars From Device" once, or
-              manually checked the "Device Schedule" table further down matches
-              what you're about to enter** - it starts off specifically so that
-              creating these 11 calendars for the first time can't blank out a
-              schedule that's already running on the device.
           - type: tile
-            entity: input_boolean.irrigator_schedule_sync_enabled
-            icon: mdi:shield-sync-outline
-          - type: calendar
-            entities:
-              - calendar.irrigator_zone_1
-              - calendar.irrigator_zone_2
-              - calendar.irrigator_zone_3
-              - calendar.irrigator_zone_4
-              - calendar.irrigator_zone_5
-              - calendar.irrigator_zone_6
-              - calendar.irrigator_zone_7
-              - calendar.irrigator_zone_8
-              - calendar.irrigator_zone_9
-              - calendar.irrigator_zone_10
-              - calendar.irrigator_zone_11
-            initial_view: dayGridWeek
-          - type: horizontal-stack
-            cards:
-              - type: tile
-                entity: button.irrigator_publish_schedule_now
-                icon: mdi:cloud-upload-outline
-                tap_action:
-                  action: perform-action
-                  perform_action: button.press
-                  target:
-                    entity_id: button.irrigator_publish_schedule_now
-                features:
-                  - type: button
-              - type: tile
-                entity: button.irrigator_populate_calendars_from_device
-                icon: mdi:calendar-import
-                vertical: false
-                features_position: bottom
-                tap_action:
-                  action: perform-action
-                  perform_action: button.press
-                  target:
-                    entity_id: button.irrigator_populate_calendars_from_device
-                features:
-                  - type: button
-              - type: tile
-                entity: button.irrigator_refresh_from_device
-                icon: mdi:cloud-download-outline
-                tap_action:
-                  action: perform-action
-                  perform_action: button.press
-                  target:
-                    entity_id: button.irrigator_refresh_from_device
-                features:
-                  - type: button
+            entity: input_select.irrigator_schedule_sort_by
+            icon: mdi:sort
+          - type: tile
+            entity: switch.irrigator_schedule_active
           - type: markdown
             title: Device Schedule (last known)
             content: >-
-              {%- set recs = state_attr('sensor.irrigator_schedule', 'records')
-              or [] -%}
-
-              {%- if recs | length == 0 -%}
-
+              {%- set day_names = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] -%}
+              {%- set zone_names = state_attr('sensor.irrigator_settings', 'zone_names') or {} -%}
+              {%- set recs = state_attr('sensor.irrigator_schedule', 'records') or [] -%}
+              {%- set sort_key = states('input_select.irrigator_schedule_sort_by') -%}
+              {%- set ns = namespace(items=[]) -%}
+              {%- for r in recs -%} {%- set zname = zone_names.get(r.zone | string, {}).get('name', '#' ~ r.zone ~ ' (no name)') -%} {%- set tagged = r | combine({'_idx': loop.index0, '_name': zname, '_day': day_names[r.day_of_week - 1]}) -%} {%- set ns.items = ns.items + [tagged] -%} {%- endfor -%}
+              {%- if sort_key == 'Zone' -%} {%- set sorted_items = ns.items | sort(attribute='zone') -%} {%- elif sort_key == 'Name' -%} {%- set sorted_items = ns.items | sort(attribute='_name') -%} {%- elif sort_key == 'Start' -%} {%- set sorted_items = ns.items | sort(attribute='start_time') -%} {%- elif sort_key == 'Duration' -%} {%- set sorted_items = ns.items | sort(attribute='duration_min') -%} {%- elif sort_key == 'Active' -%} {%- set sorted_items = ns.items | sort(attribute='active') -%} {%- else -%} {%- set sorted_items = ns.items | sort(attribute='day_of_week') -%} {%- endif -%}
+              {%- if sorted_items | length == 0 -%}
               No schedule currently loaded on the device.
-
               {%- else -%}
-
-              | Zone | Name | Day | Start | Duration | Active |
-              |---|---|---|---|---|---|
-              {%- for r in recs | sort(attribute='zone') %}
-              | {{ r.zone }} | {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get(r.zone | string, {}).get('name', '#' ~ r.zone ~ ' (no name)') }} | {{ ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][r.day_of_week - 1] }} | {{ r.start_time }} | {{ r.duration_min }} min | {{ 'yes' if r.active else 'no' }} |
-              {%- endfor -%}
+              | Num | Zone | Name | Day | Start | Duration | Active |
+              |---|---|---|---|---|---|---| 
+              {%- for r in sorted_items %} 
+                | {{ r._idx }} | {{ r.zone }} | {{ r._name }} | {{ r._day }} | {{ r.start_time }} | {{ r.duration_min }} min | {{ 'yes' if r.active else 'no' }} | 
+              {%- endfor -%} 
               {%- endif %}
+          - type: entities
+            title: Edit Schedule Record
+            entities:
+              - entity: input_select.irrigator_schedule_picker
+                name: "Schedule Record"
+              - entity: input_select.irrigator_edit_zone
+                name: "Zone"
+              - entity: input_select.irrigator_edit_day
+                name: "Day"
+              - entity: input_datetime.irrigator_edit_start_time
+                name: "Start Time"
+              - entity: input_number.irrigator_edit_duration_min
+                name: "Duration (min)"
+              - entity: input_boolean.irrigator_edit_active
+                name: "Active"
+          - type: horizontal-stack
+            cards:
+              - type: tile
+                entity: button.irrigator_save_schedule_record
+                name: Save Record
+                icon: mdi:content-save-outline
+                color: green
+                vertical: false
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.irrigator_save_schedule_record
+                features:
+                  - type: button
+              - type: tile
+                entity: button.irrigator_delete_schedule_record
+                name: Delete Record
+                icon: mdi:trash-can-outline
+                color: red
+                vertical: false
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.irrigator_delete_schedule_record
+                features:
+                  - type: button
       - type: grid
         cards:
           - type: heading
             heading: Settings
-          - type: tile
-            entity: switch.irrigator_schedule_active
           - type: tile
             entity: number.irrigator_watering_percentage
             features:
@@ -304,11 +287,6 @@
             features:
               - type: numeric-input
                 style: buttons
-          # Each zone is two adjacent cards (not one wrapped stack) so the
-          # section's own grid can place them side by side per their
-          # grid_options.columns - name field wider (4) than the enabled
-          # checkbox (2). The checkbox's row `name: ""` suppresses its
-          # label text (shows just the toggle).
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_1_name

@@ -198,31 +198,134 @@ automation:
     actions:
       - action: script.irrigator_publish_settings
 
-  # HA -> device: periodic poll-and-republish of the 11 Local Calendars,
-  # NOT a reactive trigger - unlike the old schedule.* helper this replaced,
-  # a `calendar` entity's state only reflects its current/next event, so
-  # there's no reliable state-changed signal for "an event was added/edited/
-  # deleted anywhere in this calendar". Every 2 minutes is a practical
-  # compromise between prompt propagation and load; use the "Publish
-  # Schedule Now" button for an immediate forced push after an edit.
-  #
-  # Gated on input_boolean.irrigator_schedule_sync_enabled (off by default -
-  # see its comment in irrigator.yaml) for the same reason as the settings
-  # guard above, except there's no automatic signal to detect "the 11
-  # calendars now correctly reflect the device" the way sensor.irrigator_settings
-  # does for settings - only a human confirming it by hand (or running
-  # "Populate Calendars From Device" once) can safely arm this. Also
-  # requires sensor.irrigator_schedule to have received at least one value,
-  # so arming early can't publish before HA has even heard from the device.
-  - alias: "Irrigator - publish schedule from calendars"
+  # Keeps the Schedule tab's two dropdowns in sync with real data:
+  # - input_select.irrigator_schedule_picker: one option per current record
+  #   ("[<index>] Zone <n> - <name> - <day> <time> - <dur>min", index being
+  #   the record's position in sensor.irrigator_schedule's `records` list),
+  #   plus "+ Add new". script.irrigator_schedule_save/_delete parse the
+  #   leading "[<index>]" back out to know which record to touch.
+  # - input_select.irrigator_edit_zone: "<n> - <name>" per zone, so the
+  #   editor panel's zone picker always shows live names too.
+  # Triggers on both sensors since either a schedule change (new/edited/
+  # deleted record) or a settings change (renamed zone) affects the labels.
+  # Built via a namespace accumulator + a single trailing `{{ ns.items }}`
+  # expression so HA's native-type template rendering hands `set_options`
+  # an actual list, not a stringified one - if either dropdown ever shows
+  # one garbled option instead of several clean ones, check this first.
+  - alias: "Irrigator - rebuild schedule editor dropdown options"
     triggers:
-      - trigger: time_pattern
-        minutes: "/2"
-    conditions:
-      - condition: state
-        entity_id: input_boolean.irrigator_schedule_sync_enabled
-        state: "on"
-      - condition: template
-        value_template: "{{ states('sensor.irrigator_schedule') not in ['unknown', 'none'] }}"
+      - trigger: state
+        entity_id: sensor.irrigator_schedule
+      - trigger: state
+        entity_id: sensor.irrigator_settings
     actions:
-      - action: script.irrigator_publish_schedule_from_calendars
+      - variables:
+          zone_names: "{{ state_attr('sensor.irrigator_settings', 'zone_names') or {} }}"
+          day_names: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+          records: "{{ state_attr('sensor.irrigator_schedule', 'records') or [] }}"
+      - variables:
+          zone_options: >-
+            {%- set ns = namespace(items=[]) -%}
+            {%- for z in range(1, 12) -%}
+              {%- set zn = zone_names.get(z | string, {}).get('name', '#' ~ z ~ ' (no name)') -%}
+              {%- set ns.items = ns.items + [z ~ ' - ' ~ zn] -%}
+            {%- endfor -%}
+            {{ ns.items }}
+          picker_options: >-
+            {%- set ns2 = namespace(items=['+ Add new']) -%}
+            {%- for r in records -%}
+              {%- set zn = zone_names.get(r.zone | string, {}).get('name', '#' ~ r.zone ~ ' (no name)') -%}
+              {%- set label = '[' ~ loop.index0 ~ '] Zone ' ~ r.zone ~ ' - ' ~ zn ~ ' - ' ~ day_names[r.day_of_week - 1] ~ ' ' ~ r.start_time ~ ' - ' ~ r.duration_min ~ 'min' ~ ('' if r.active else ' (paused)') -%}
+              {%- set ns2.items = ns2.items + [label] -%}
+            {%- endfor -%}
+            {{ ns2.items }}
+      - action: input_select.set_options
+        target:
+          entity_id: input_select.irrigator_edit_zone
+        data:
+          options: "{{ zone_options }}"
+      - action: input_select.set_options
+        target:
+          entity_id: input_select.irrigator_schedule_picker
+        data:
+          options: "{{ picker_options }}"
+
+  # Loads the record selected in input_select.irrigator_schedule_picker into
+  # the editor panel's fields (or resets them to sensible defaults when
+  # "+ Add new" is selected, e.g. right after a save/delete resets the
+  # picker there). Fires on every picker change, including the automatic
+  # reset script.irrigator_schedule_save/_delete does after publishing.
+  - alias: "Irrigator - load selected schedule record into editor panel"
+    triggers:
+      - trigger: state
+        entity_id: input_select.irrigator_schedule_picker
+    actions:
+      - variables:
+          picker: "{{ trigger.to_state.state }}"
+          idx: "{{ (picker.split(']')[0].split('[')[1] | int) if picker.startswith('[') else -1 }}"
+          records: "{{ state_attr('sensor.irrigator_schedule', 'records') or [] }}"
+          zone_names: "{{ state_attr('sensor.irrigator_settings', 'zone_names') or {} }}"
+          day_names: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+      - if:
+          - condition: template
+            value_template: "{{ 0 <= idx < (records | length) }}"
+        then:
+          - variables:
+              rec: "{{ records[idx] }}"
+          - action: input_select.select_option
+            target:
+              entity_id: input_select.irrigator_edit_zone
+            data:
+              option: >-
+                {{ rec.zone ~ ' - ' ~ zone_names.get(rec.zone | string, {}).get('name', '#' ~ rec.zone ~ ' (no name)') }}
+          - action: input_select.select_option
+            target:
+              entity_id: input_select.irrigator_edit_day
+            data:
+              option: "{{ day_names[rec.day_of_week - 1] }}"
+          - action: input_datetime.set_value
+            target:
+              entity_id: input_datetime.irrigator_edit_start_time
+            data:
+              time: "{{ rec.start_time }}:00"
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.irrigator_edit_duration_min
+            data:
+              value: "{{ rec.duration_min }}"
+          - if:
+              - condition: template
+                value_template: "{{ rec.active }}"
+            then:
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.irrigator_edit_active
+            else:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.irrigator_edit_active
+        else:
+          - action: input_select.select_option
+            target:
+              entity_id: input_select.irrigator_edit_zone
+            data:
+              option: >-
+                1 - {{ zone_names.get('1', {}).get('name', '#1 (no name)') }}
+          - action: input_select.select_option
+            target:
+              entity_id: input_select.irrigator_edit_day
+            data:
+              option: "Mon"
+          - action: input_datetime.set_value
+            target:
+              entity_id: input_datetime.irrigator_edit_start_time
+            data:
+              time: "06:00:00"
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.irrigator_edit_duration_min
+            data:
+              value: 5
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.irrigator_edit_active
