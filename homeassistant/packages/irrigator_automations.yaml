@@ -61,12 +61,20 @@ automation:
       - repeat:
           for_each: "{{ range(1, 12) | list }}"
           sequence:
+            # `| truncate(15, True, '', 0)` is defensive, not expected to ever
+            # trigger: input_text.irrigator_zone_N_name has `max: 15` (the
+            # firmware's zoneNames buffer is 16 bytes), but nothing upstream
+            # actually enforces that on the device-reported name. Without
+            # this, a real name >15 chars would throw here and silently
+            # abort the rest of this automation run - every zone after it,
+            # plus default-duration/calibration/schedule-active/percentage
+            # below, would never get synced either.
             - action: input_text.set_value
               target:
                 entity_id: "input_text.irrigator_zone_{{ repeat.item }}_name"
               data:
                 value: >-
-                  {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get(repeat.item | string, {}).get('name', '#' ~ repeat.item ~ ' (no name)') }}
+                  {{ ((state_attr('sensor.irrigator_settings', 'zone_names') or {}).get(repeat.item | string, {}).get('name', '#' ~ repeat.item ~ ' (no name)')) | truncate(15, True, '', 0) }}
             - choose:
                 - conditions:
                     - condition: template

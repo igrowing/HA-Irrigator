@@ -176,6 +176,13 @@
             icon: mdi:stop-circle-outline
             vertical: false
             features_position: bottom
+            tap_action:
+              action: perform-action
+              perform_action: button.press
+              target:
+                entity_id: button.irrigator_stop_all
+            features:
+              - type: button
       - type: grid
         cards:
           - type: heading
@@ -234,14 +241,35 @@
               - type: tile
                 entity: button.irrigator_publish_schedule_now
                 icon: mdi:cloud-upload-outline
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.irrigator_publish_schedule_now
+                features:
+                  - type: button
               - type: tile
                 entity: button.irrigator_populate_calendars_from_device
                 icon: mdi:calendar-import
                 vertical: false
                 features_position: bottom
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.irrigator_populate_calendars_from_device
+                features:
+                  - type: button
               - type: tile
                 entity: button.irrigator_refresh_from_device
                 icon: mdi:cloud-download-outline
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.irrigator_refresh_from_device
+                features:
+                  - type: button
           - type: markdown
             title: Device Schedule (last known)
             content: >-
@@ -254,19 +282,11 @@
 
               {%- else -%}
 
-              | Zone | Day | Start | Duration | Active |
-
-              |---|---|---|---|---|
-
+              | Zone | Name | Day | Start | Duration | Active |
+              |---|---|---|---|---|---|
               {%- for r in recs | sort(attribute='zone') %}
-
-              | {{ r.zone }} | {{
-              ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][r.day_of_week - 1] }}
-              | {{ r.start_time }} | {{ r.duration_min }} min | {{ 'yes' if
-              r.active else 'no' }} |
-
+              | {{ r.zone }} | {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get(r.zone | string, {}).get('name', '#' ~ r.zone ~ ' (no name)') }} | {{ ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][r.day_of_week - 1] }} | {{ r.start_time }} | {{ r.duration_min }} min | {{ 'yes' if r.active else 'no' }} |
               {%- endfor -%}
-
               {%- endif %}
       - type: grid
         cards:
@@ -274,14 +294,16 @@
             heading: Settings
           - type: tile
             entity: switch.irrigator_schedule_active
-            vertical: false
-            features_position: bottom
           - type: tile
             entity: number.irrigator_watering_percentage
-            vertical: false
-            features_position: bottom
+            features:
+              - type: numeric-input
+                style: buttons
           - type: tile
             entity: input_number.irrigator_default_manual_duration
+            features:
+              - type: numeric-input
+                style: buttons
           # Each zone is two adjacent cards (not one wrapped stack) so the
           # section's own grid can place them side by side per their
           # grid_options.columns - name field wider (4) than the enabled
@@ -290,124 +312,58 @@
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_1_name
-            grid_options:
-              columns: 9
-          - type: entities
-            entities:
               - entity: input_boolean.irrigator_zone_1_enabled
-                name: ""
-            grid_options:
-              columns: 2
+                name: "Enabled"
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_2_name
-            grid_options:
-              columns: 9
-          - type: entities
-            entities:
               - entity: input_boolean.irrigator_zone_2_enabled
-                name: ""
-            grid_options:
-              columns: 2
+                name: "Enabled"
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_3_name
-            grid_options:
-              columns: 9
-          - type: entities
-            entities:
               - entity: input_boolean.irrigator_zone_3_enabled
-                name: ""
-            grid_options:
-              columns: 2
+                name: "Enabled"
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_4_name
-            grid_options:
-              columns: 9
-          - type: entities
-            entities:
               - entity: input_boolean.irrigator_zone_4_enabled
-                name: ""
-            grid_options:
-              columns: 2
+                name: "Enabled"
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_5_name
-            grid_options:
-              columns: 9
-          - type: entities
-            entities:
               - entity: input_boolean.irrigator_zone_5_enabled
-                name: ""
-            grid_options:
-              columns: 2
+                name: "Enabled"
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_6_name
-            grid_options:
-              columns: 9
-          - type: entities
-            entities:
               - entity: input_boolean.irrigator_zone_6_enabled
-                name: ""
-            grid_options:
-              columns: 2
+                name: "Enabled"
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_7_name
-            grid_options:
-              columns: 9
-          - type: entities
-            entities:
               - entity: input_boolean.irrigator_zone_7_enabled
-                name: ""
-            grid_options:
-              columns: 2
+                name: "Enabled"
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_8_name
-            grid_options:
-              columns: 9
-          - type: entities
-            entities:
               - entity: input_boolean.irrigator_zone_8_enabled
-                name: ""
-            grid_options:
-              columns: 2
+                name: "Enabled"
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_9_name
-            grid_options:
-              columns: 9
-          - type: entities
-            entities:
               - entity: input_boolean.irrigator_zone_9_enabled
-                name: ""
-            grid_options:
-              columns: 2
+                name: "Enabled"
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_10_name
-            grid_options:
-              columns: 9
-          - type: entities
-            entities:
               - entity: input_boolean.irrigator_zone_10_enabled
-                name: ""
-            grid_options:
-              columns: 2
+                name: "Enabled"
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_11_name
-            grid_options:
-              columns: 9
-          - type: entities
-            entities:
               - entity: input_boolean.irrigator_zone_11_enabled
-                name: ""
-            grid_options:
-              columns: 2
+                name: "Enabled"
           - type: entities
             title: Valve Current Calibration
             entities:
@@ -428,3 +384,10 @@
           - type: tile
             entity: button.irrigator_refresh_from_device
             icon: mdi:cloud-download-outline
+            tap_action:
+              action: perform-action
+              perform_action: button.press
+              target:
+                entity_id: button.irrigator_refresh_from_device
+            features:
+              - type: button
