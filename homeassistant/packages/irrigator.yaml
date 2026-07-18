@@ -411,79 +411,197 @@ template:
   # sensors. 0 unless this zone/pump is the one /state currently reports as
   # active (the device only ever runs one thing at a time, so at most one of
   # these 12 is ever non-zero).
+  #
+  # Deliberately NOT re-synced from the device every tick: the device only
+  # publishes /state on start/stop edges (see MqttService::publishState call
+  # sites in main.ino), and polling it more often just to keep this number
+  # fresh would mean extra MQTT traffic/device wake-ups for a number nobody
+  # needs to the second. Instead each sensor free-runs locally: it takes the
+  # `remaining_min` and `datetime` attributes from the *last* /state message
+  # (the values at the moment the run started) and counts down from there
+  # using HA's own clock - `elapsed_min` below. Referencing `now()` in the
+  # template makes HA's template engine re-evaluate it once a minute on its
+  # own (a built-in effect of any template that calls now()/utcnow() - see
+  # helpers/template.py's time-tracking in HA core), so this ticks down
+  # without any additional automation, MQTT traffic, or recorder writes
+  # beyond one state change per minute while active. The two clocks (device
+  # and HA) drifting apart over a run of up to ~120 min (see the manual-run
+  # duration sliders) is not worth worrying about - see ha.md.
+  #
+  # The `+00:00` appended before `as_datetime` matters: formatIso8601Utc()
+  # (CalendarMath.cpp) emits a bare "2026-07-12T06:00:00" with no zone
+  # suffix even though the value is always UTC, so without forcing an
+  # offset, `as_datetime` returns a naive datetime that can't be subtracted
+  # from HA's tz-aware `now()`.
   - sensor:
       - name: "Irrigator Pump Remaining"
         unique_id: irrigator_pump_remaining_sensor
         default_entity_id: sensor.irrigator_pump_remaining
         icon: mdi:timer-sand
         unit_of_measurement: min
-        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if state_attr('sensor.irrigator_watering_state', 'pump') else 0 }}"
+        state: >-
+          {% set active = state_attr('sensor.irrigator_watering_state', 'pump') | default(false) %}
+          {% if active %}
+            {% set started = (state_attr('sensor.irrigator_watering_state', 'datetime') ~ '+00:00') | as_datetime %}
+            {% set elapsed_min = ((now() - started).total_seconds() / 60) | int(0) %}
+            {{ [state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) - elapsed_min, 0] | max }}
+          {% else %}
+            0
+          {% endif %}
       - name: "Irrigator Zone 1 Remaining"
         unique_id: irrigator_zone_1_remaining_sensor
         default_entity_id: sensor.irrigator_zone_1_remaining
         icon: mdi:timer-sand
         unit_of_measurement: min
-        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 1 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+        state: >-
+          {% set active = state_attr('sensor.irrigator_watering_state', 'zone') == 1 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) %}
+          {% if active %}
+            {% set started = (state_attr('sensor.irrigator_watering_state', 'datetime') ~ '+00:00') | as_datetime %}
+            {% set elapsed_min = ((now() - started).total_seconds() / 60) | int(0) %}
+            {{ [state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) - elapsed_min, 0] | max }}
+          {% else %}
+            0
+          {% endif %}
       - name: "Irrigator Zone 2 Remaining"
         unique_id: irrigator_zone_2_remaining_sensor
         default_entity_id: sensor.irrigator_zone_2_remaining
         icon: mdi:timer-sand
         unit_of_measurement: min
-        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 2 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+        state: >-
+          {% set active = state_attr('sensor.irrigator_watering_state', 'zone') == 2 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) %}
+          {% if active %}
+            {% set started = (state_attr('sensor.irrigator_watering_state', 'datetime') ~ '+00:00') | as_datetime %}
+            {% set elapsed_min = ((now() - started).total_seconds() / 60) | int(0) %}
+            {{ [state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) - elapsed_min, 0] | max }}
+          {% else %}
+            0
+          {% endif %}
       - name: "Irrigator Zone 3 Remaining"
         unique_id: irrigator_zone_3_remaining_sensor
         default_entity_id: sensor.irrigator_zone_3_remaining
         icon: mdi:timer-sand
         unit_of_measurement: min
-        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 3 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+        state: >-
+          {% set active = state_attr('sensor.irrigator_watering_state', 'zone') == 3 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) %}
+          {% if active %}
+            {% set started = (state_attr('sensor.irrigator_watering_state', 'datetime') ~ '+00:00') | as_datetime %}
+            {% set elapsed_min = ((now() - started).total_seconds() / 60) | int(0) %}
+            {{ [state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) - elapsed_min, 0] | max }}
+          {% else %}
+            0
+          {% endif %}
       - name: "Irrigator Zone 4 Remaining"
         unique_id: irrigator_zone_4_remaining_sensor
         default_entity_id: sensor.irrigator_zone_4_remaining
         icon: mdi:timer-sand
         unit_of_measurement: min
-        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 4 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+        state: >-
+          {% set active = state_attr('sensor.irrigator_watering_state', 'zone') == 4 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) %}
+          {% if active %}
+            {% set started = (state_attr('sensor.irrigator_watering_state', 'datetime') ~ '+00:00') | as_datetime %}
+            {% set elapsed_min = ((now() - started).total_seconds() / 60) | int(0) %}
+            {{ [state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) - elapsed_min, 0] | max }}
+          {% else %}
+            0
+          {% endif %}
       - name: "Irrigator Zone 5 Remaining"
         unique_id: irrigator_zone_5_remaining_sensor
         default_entity_id: sensor.irrigator_zone_5_remaining
         icon: mdi:timer-sand
         unit_of_measurement: min
-        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 5 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+        state: >-
+          {% set active = state_attr('sensor.irrigator_watering_state', 'zone') == 5 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) %}
+          {% if active %}
+            {% set started = (state_attr('sensor.irrigator_watering_state', 'datetime') ~ '+00:00') | as_datetime %}
+            {% set elapsed_min = ((now() - started).total_seconds() / 60) | int(0) %}
+            {{ [state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) - elapsed_min, 0] | max }}
+          {% else %}
+            0
+          {% endif %}
       - name: "Irrigator Zone 6 Remaining"
         unique_id: irrigator_zone_6_remaining_sensor
         default_entity_id: sensor.irrigator_zone_6_remaining
         icon: mdi:timer-sand
         unit_of_measurement: min
-        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 6 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+        state: >-
+          {% set active = state_attr('sensor.irrigator_watering_state', 'zone') == 6 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) %}
+          {% if active %}
+            {% set started = (state_attr('sensor.irrigator_watering_state', 'datetime') ~ '+00:00') | as_datetime %}
+            {% set elapsed_min = ((now() - started).total_seconds() / 60) | int(0) %}
+            {{ [state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) - elapsed_min, 0] | max }}
+          {% else %}
+            0
+          {% endif %}
       - name: "Irrigator Zone 7 Remaining"
         unique_id: irrigator_zone_7_remaining_sensor
         default_entity_id: sensor.irrigator_zone_7_remaining
         icon: mdi:timer-sand
         unit_of_measurement: min
-        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 7 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+        state: >-
+          {% set active = state_attr('sensor.irrigator_watering_state', 'zone') == 7 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) %}
+          {% if active %}
+            {% set started = (state_attr('sensor.irrigator_watering_state', 'datetime') ~ '+00:00') | as_datetime %}
+            {% set elapsed_min = ((now() - started).total_seconds() / 60) | int(0) %}
+            {{ [state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) - elapsed_min, 0] | max }}
+          {% else %}
+            0
+          {% endif %}
       - name: "Irrigator Zone 8 Remaining"
         unique_id: irrigator_zone_8_remaining_sensor
         default_entity_id: sensor.irrigator_zone_8_remaining
         icon: mdi:timer-sand
         unit_of_measurement: min
-        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 8 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+        state: >-
+          {% set active = state_attr('sensor.irrigator_watering_state', 'zone') == 8 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) %}
+          {% if active %}
+            {% set started = (state_attr('sensor.irrigator_watering_state', 'datetime') ~ '+00:00') | as_datetime %}
+            {% set elapsed_min = ((now() - started).total_seconds() / 60) | int(0) %}
+            {{ [state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) - elapsed_min, 0] | max }}
+          {% else %}
+            0
+          {% endif %}
       - name: "Irrigator Zone 9 Remaining"
         unique_id: irrigator_zone_9_remaining_sensor
         default_entity_id: sensor.irrigator_zone_9_remaining
         icon: mdi:timer-sand
         unit_of_measurement: min
-        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 9 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+        state: >-
+          {% set active = state_attr('sensor.irrigator_watering_state', 'zone') == 9 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) %}
+          {% if active %}
+            {% set started = (state_attr('sensor.irrigator_watering_state', 'datetime') ~ '+00:00') | as_datetime %}
+            {% set elapsed_min = ((now() - started).total_seconds() / 60) | int(0) %}
+            {{ [state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) - elapsed_min, 0] | max }}
+          {% else %}
+            0
+          {% endif %}
       - name: "Irrigator Zone 10 Remaining"
         unique_id: irrigator_zone_10_remaining_sensor
         default_entity_id: sensor.irrigator_zone_10_remaining
         icon: mdi:timer-sand
         unit_of_measurement: min
-        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 10 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+        state: >-
+          {% set active = state_attr('sensor.irrigator_watering_state', 'zone') == 10 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) %}
+          {% if active %}
+            {% set started = (state_attr('sensor.irrigator_watering_state', 'datetime') ~ '+00:00') | as_datetime %}
+            {% set elapsed_min = ((now() - started).total_seconds() / 60) | int(0) %}
+            {{ [state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) - elapsed_min, 0] | max }}
+          {% else %}
+            0
+          {% endif %}
       - name: "Irrigator Zone 11 Remaining"
         unique_id: irrigator_zone_11_remaining_sensor
         default_entity_id: sensor.irrigator_zone_11_remaining
         icon: mdi:timer-sand
         unit_of_measurement: min
-        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 11 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+        state: >-
+          {% set active = state_attr('sensor.irrigator_watering_state', 'zone') == 11 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) %}
+          {% if active %}
+            {% set started = (state_attr('sensor.irrigator_watering_state', 'datetime') ~ '+00:00') | as_datetime %}
+            {% set elapsed_min = ((now() - started).total_seconds() / 60) | int(0) %}
+            {{ [state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) - elapsed_min, 0] | max }}
+          {% else %}
+            0
+          {% endif %}
 
   # Current schedule.json representation. Fed by two topics so it's always
   # up to date regardless of source: `.../schedule` (the device pushes this
