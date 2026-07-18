@@ -525,6 +525,11 @@ template:
         icon: mdi:trash-can-outline
         press:
           - action: script.irrigator_schedule_delete
+      - name: "Irrigator Test All"
+        unique_id: irrigator_test_all_button
+        icon: mdi:play-circle-outline
+        press:
+          - action: script.irrigator_test_all
       - name: "Irrigator Stop All"
         unique_id: irrigator_stop_all_button
         icon: mdi:stop-circle-outline
@@ -758,6 +763,30 @@ script:
         data:
           topic: "irrigatorF4/cmd/stop"
           payload: "all"
+
+  # Queues a short manual run on every zone the settings.json zone_names map
+  # marks enabled (same "enabled" flag the binary_sensor.irrigator_zone_N_enabled_sensor
+  # entities above read) - a quick way to confirm all real zones are wired up
+  # without opening each switch by hand. The device itself serializes these
+  # (see queue/state topics), so publishing all of them back-to-back just
+  # fills the queue rather than running zones concurrently.
+  irrigator_test_all:
+    alias: "Irrigator: test all active zones"
+    sequence:
+      - variables:
+          duration: "{{ states('input_number.irrigator_default_manual_duration') | int(5) }}"
+      - repeat:
+          for_each: "{{ range(1, 12) | list }}"
+          sequence:
+            - if:
+                - condition: template
+                  value_template: >-
+                    {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get(repeat.item | string, {}).get('enabled', true) }}
+              then:
+                - action: mqtt.publish
+                  data:
+                    topic: "irrigatorF4/cmd/run"
+                    payload: "{{ {'zone': repeat.item, 'duration': duration} | tojson }}"
 
   irrigator_request_downloads:
     alias: "Irrigator: request status + settings.json + schedule.json"

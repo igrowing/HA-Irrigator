@@ -6,26 +6,30 @@
 # =============================================================================
 
 automation:
-  # Per ha.md preface: settings.json / schedule.json are requested from the
-  # device via MQTT. Rather than polling on a schedule, this only fires the
-  # request when HA doesn't have a representation yet (a virgin package
-  # install, or an entity that's genuinely never received a value) - once a
-  # representation exists, sensor.irrigator_settings and sensor.irrigator_schedule
-  # stay current on their own: settings.json only ever changes via HA (see
-  # "republish settings on local helper change" below, since the local
-  # rotary/display menu has no settings-editing screens), and schedule.json
-  # pushes a fresh copy to `.../schedule` on every change from any source,
-  # which sensor.irrigator_schedule is already listening to.
+  # Per ha.md preface: settings.json / schedule.json / status are requested
+  # from the device via MQTT. Rather than polling on a schedule, this only
+  # fires the request when HA doesn't have a representation yet (a virgin
+  # package install, or an entity that's genuinely never received a value) -
+  # once a representation exists, sensor.irrigator_settings and
+  # sensor.irrigator_schedule stay current on their own: settings.json only
+  # ever changes via HA (see "republish settings on local helper change"
+  # below, since the local rotary/display menu has no settings-editing
+  # screens), and schedule.json pushes a fresh copy to `.../schedule` on
+  # every change from any source, which sensor.irrigator_schedule is already
+  # listening to. sensor.irrigator_status is different - the device only
+  # ever pushes to `/status` ~15s after ITS OWN boot or in response to
+  # `cmd/status` (not retained), so an HA-only restart while the device
+  # stays up would otherwise leave it stuck unavailable/unknown forever.
   #
   # Two triggers, not one: `homeassistant: start` alone misses the case
   # where HA comes up before the device has (re)joined the broker - the
   # check would run, find nothing, and then never run again since it's a
   # one-shot trigger. Also firing on binary_sensor.irrigator_online turning
-  # "on" covers that reconnect-after-restart window. Each of the two file
+  # "on" covers that reconnect-after-restart window. Each of the three
   # checks is independent, so a restart that only lost one of them (e.g. a
   # fresh install of just this package's schedule sensor) only re-requests
   # that one.
-  - alias: "Irrigator - request initial data on virgin deploy"
+  - alias: "Irrigator - request data"
     triggers:
       - trigger: homeassistant
         event: start
@@ -33,18 +37,12 @@ automation:
         entity_id: binary_sensor.irrigator_online
         to: "on"
     actions:
-      - if:
-          - condition: template
-            value_template: "{{ states('sensor.irrigator_settings') in ['unknown', 'none'] }}"
-        then:
-          - action: mqtt.publish
-            data: {topic: "irrigatorF4/cmd/download/settings.json", payload: ""}
-      - if:
-          - condition: template
-            value_template: "{{ states('sensor.irrigator_schedule') in ['unknown', 'none'] }}"
-        then:
-          - action: mqtt.publish
-            data: {topic: "irrigatorF4/cmd/download/schedule.json", payload: ""}
+      - action: mqtt.publish
+        data: {topic: "irrigatorF4/cmd/download/settings.json", payload: ""}
+      - action: mqtt.publish
+        data: {topic: "irrigatorF4/cmd/download/schedule.json", payload: ""}
+      - action: mqtt.publish
+        data: {topic: "irrigatorF4/cmd/status", payload: ""}
 
   # Device -> HA: seeds the Settings-tab helpers from the last settings.json
   # download so the UI reflects reality after a restart. Only fires when a
@@ -194,7 +192,7 @@ automation:
           - input_number.irrigator_pump_mv_per_ma
     conditions:
       - condition: template
-        value_template: "{{ states('sensor.irrigator_settings') not in ['unknown', 'none'] }}"
+        value_template: "{{ states('sensor.irrigator_settings') not in ['unknown', 'unavailable'] }}"
     actions:
       - action: script.irrigator_publish_settings
 
@@ -283,7 +281,7 @@ automation:
               entity_id: input_select.irrigator_edit_day
             data:
               option: "{{ day_names[rec.day_of_week - 1] }}"
-          - action: input_datetime.set_value
+          - action: input_datetime.set_datetime
             target:
               entity_id: input_datetime.irrigator_edit_start_time
             data:
@@ -316,7 +314,7 @@ automation:
               entity_id: input_select.irrigator_edit_day
             data:
               option: "Mon"
-          - action: input_datetime.set_value
+          - action: input_datetime.set_datetime
             target:
               entity_id: input_datetime.irrigator_edit_start_time
             data:
