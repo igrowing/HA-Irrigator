@@ -1,0 +1,430 @@
+  - type: sections
+    max_columns: 4
+    title: Garden
+    path: garden
+    icon: mdi:sprinkler-variant
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Status & Manual Control
+          - type: entities
+            title: Pump
+            entities:
+              - entity: switch.irrigator_pump
+              - entity: sensor.irrigator_pump_remaining
+                name: Remaining
+              - entity: input_number.irrigator_pump_duration
+                name: Duration (min)
+            show_header_toggle: false
+            state_color: true
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_1_enabled_sensor
+                state: "on"
+            card:
+              type: entities
+              entities:
+                - entity: switch.irrigator_zone_1
+                - entity: sensor.irrigator_zone_1_remaining
+                  name: Remaining
+                - entity: input_number.irrigator_zone_1_duration
+                  name: Duration (min)
+              state_color: true
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_2_enabled_sensor
+                state: "on"
+            card:
+              type: entities
+              entities:
+                - entity: switch.irrigator_zone_2
+                - entity: sensor.irrigator_zone_2_remaining
+                  name: Remaining
+                - entity: input_number.irrigator_zone_2_duration
+                  name: Duration (min)
+              state_color: true
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_3_enabled_sensor
+                state: "on"
+            card:
+              type: entities
+              entities:
+                - entity: switch.irrigator_zone_3
+                - entity: sensor.irrigator_zone_3_remaining
+                  name: Remaining
+                - entity: input_number.irrigator_zone_3_duration
+                  name: Duration (min)
+              state_color: true
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_4_enabled_sensor
+                state: "on"
+            card:
+              type: entities
+              entities:
+                - entity: switch.irrigator_zone_4
+                - entity: sensor.irrigator_zone_4_remaining
+                  name: Remaining
+                - entity: input_number.irrigator_zone_4_duration
+                  name: Duration (min)
+              state_color: true
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_5_enabled_sensor
+                state: "on"
+            card:
+              type: entities
+              entities:
+                - entity: switch.irrigator_zone_5
+                - entity: sensor.irrigator_zone_5_remaining
+                  name: Remaining
+                - entity: input_number.irrigator_zone_5_duration
+                  name: Duration (min)
+              state_color: true
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_6_enabled_sensor
+                state: "on"
+            card:
+              type: entities
+              entities:
+                - entity: switch.irrigator_zone_6
+                - entity: sensor.irrigator_zone_6_remaining
+                  name: Remaining
+                - entity: input_number.irrigator_zone_6_duration
+                  name: Duration (min)
+              state_color: true
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_7_enabled_sensor
+                state: "on"
+            card:
+              type: entities
+              entities:
+                - entity: switch.irrigator_zone_7
+                - entity: sensor.irrigator_zone_7_remaining
+                  name: Remaining
+                - entity: input_number.irrigator_zone_7_duration
+                  name: Duration (min)
+              state_color: true
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_8_enabled_sensor
+                state: "on"
+            card:
+              type: entities
+              entities:
+                - entity: switch.irrigator_zone_8
+                - entity: sensor.irrigator_zone_8_remaining
+                  name: Remaining
+                - entity: input_number.irrigator_zone_8_duration
+                  name: Duration (min)
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_9_enabled_sensor
+                state: "on"
+            card:
+              type: entities
+              entities:
+                - entity: switch.irrigator_zone_9
+                - entity: sensor.irrigator_zone_9_remaining
+                  name: Remaining
+                - entity: input_number.irrigator_zone_9_duration
+                  name: Duration (min)
+              state_color: true
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_10_enabled_sensor
+                state: "on"
+            card:
+              type: entities
+              entities:
+                - entity: switch.irrigator_zone_10
+                - entity: sensor.irrigator_zone_10_remaining
+                  name: Remaining
+                - entity: input_number.irrigator_zone_10_duration
+                  name: Duration (min)
+              state_color: true
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_11_enabled_sensor
+                state: "on"
+            card:
+              type: entities
+              entities:
+                - entity: switch.irrigator_zone_11
+                - entity: sensor.irrigator_zone_11_remaining
+                  name: Remaining
+                - entity: input_number.irrigator_zone_11_duration
+                  name: Duration (min)
+              state_color: true
+          - type: tile
+            entity: button.irrigator_stop_all
+            icon: mdi:stop-circle-outline
+            vertical: false
+            features_position: bottom
+      - type: grid
+        cards:
+          - type: heading
+            heading: Watering History (7 days)
+          - type: history-graph
+            title: Watering History
+            hours_to_show: 168
+            entities:
+              - entity: switch.irrigator_pump
+              - entity: switch.irrigator_zone_1
+              - entity: switch.irrigator_zone_2
+              - entity: switch.irrigator_zone_3
+              - entity: switch.irrigator_zone_4
+              - entity: switch.irrigator_zone_5
+              - entity: switch.irrigator_zone_6
+              - entity: switch.irrigator_zone_7
+              - entity: switch.irrigator_zone_8
+              - entity: switch.irrigator_zone_9
+              - entity: switch.irrigator_zone_10
+      - type: grid
+        cards:
+          - type: heading
+            heading: Schedule
+          - type: markdown
+            content: >-
+              Tap an event to see its details with Edit/Delete; tap an empty
+              slot to add a watering block. While "Schedule Auto-Publish Armed"
+              below is on, edits publish to the device automatically (checked
+              every 2 minutes - calendars don't have an instant change signal
+              the way the old Schedule helper did) - use "Publish Schedule Now"
+              to force it immediately regardless of that toggle. **Leave it off
+              until you've either run "Populate Calendars From Device" once, or
+              manually checked the "Device Schedule" table further down matches
+              what you're about to enter** - it starts off specifically so that
+              creating these 11 calendars for the first time can't blank out a
+              schedule that's already running on the device.
+          - type: tile
+            entity: input_boolean.irrigator_schedule_sync_enabled
+            icon: mdi:shield-sync-outline
+          - type: calendar
+            entities:
+              - calendar.irrigator_zone_1
+              - calendar.irrigator_zone_2
+              - calendar.irrigator_zone_3
+              - calendar.irrigator_zone_4
+              - calendar.irrigator_zone_5
+              - calendar.irrigator_zone_6
+              - calendar.irrigator_zone_7
+              - calendar.irrigator_zone_8
+              - calendar.irrigator_zone_9
+              - calendar.irrigator_zone_10
+              - calendar.irrigator_zone_11
+            initial_view: dayGridWeek
+          - type: horizontal-stack
+            cards:
+              - type: tile
+                entity: button.irrigator_publish_schedule_now
+                icon: mdi:cloud-upload-outline
+              - type: tile
+                entity: button.irrigator_populate_calendars_from_device
+                icon: mdi:calendar-import
+                vertical: false
+                features_position: bottom
+              - type: tile
+                entity: button.irrigator_refresh_from_device
+                icon: mdi:cloud-download-outline
+          - type: markdown
+            title: Device Schedule (last known)
+            content: >-
+              {%- set recs = state_attr('sensor.irrigator_schedule', 'records')
+              or [] -%}
+
+              {%- if recs | length == 0 -%}
+
+              No schedule currently loaded on the device.
+
+              {%- else -%}
+
+              | Zone | Day | Start | Duration | Active |
+
+              |---|---|---|---|---|
+
+              {%- for r in recs | sort(attribute='zone') %}
+
+              | {{ r.zone }} | {{
+              ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][r.day_of_week - 1] }}
+              | {{ r.start_time }} | {{ r.duration_min }} min | {{ 'yes' if
+              r.active else 'no' }} |
+
+              {%- endfor -%}
+
+              {%- endif %}
+      - type: grid
+        cards:
+          - type: heading
+            heading: Settings
+          - type: tile
+            entity: switch.irrigator_schedule_active
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: number.irrigator_watering_percentage
+            vertical: false
+            features_position: bottom
+          - type: tile
+            entity: input_number.irrigator_default_manual_duration
+          # Each zone is two adjacent cards (not one wrapped stack) so the
+          # section's own grid can place them side by side per their
+          # grid_options.columns - name field wider (4) than the enabled
+          # checkbox (2). The checkbox's row `name: ""` suppresses its
+          # label text (shows just the toggle).
+          - type: entities
+            entities:
+              - entity: input_text.irrigator_zone_1_name
+            grid_options:
+              columns: 4
+          - type: entities
+            entities:
+              - entity: input_boolean.irrigator_zone_1_enabled
+                name: ""
+            grid_options:
+              columns: 2
+          - type: entities
+            entities:
+              - entity: input_text.irrigator_zone_2_name
+            grid_options:
+              columns: 4
+          - type: entities
+            entities:
+              - entity: input_boolean.irrigator_zone_2_enabled
+                name: ""
+            grid_options:
+              columns: 2
+          - type: entities
+            entities:
+              - entity: input_text.irrigator_zone_3_name
+            grid_options:
+              columns: 4
+          - type: entities
+            entities:
+              - entity: input_boolean.irrigator_zone_3_enabled
+                name: ""
+            grid_options:
+              columns: 2
+          - type: entities
+            entities:
+              - entity: input_text.irrigator_zone_4_name
+            grid_options:
+              columns: 4
+          - type: entities
+            entities:
+              - entity: input_boolean.irrigator_zone_4_enabled
+                name: ""
+            grid_options:
+              columns: 2
+          - type: entities
+            entities:
+              - entity: input_text.irrigator_zone_5_name
+            grid_options:
+              columns: 4
+          - type: entities
+            entities:
+              - entity: input_boolean.irrigator_zone_5_enabled
+                name: ""
+            grid_options:
+              columns: 2
+          - type: entities
+            entities:
+              - entity: input_text.irrigator_zone_6_name
+            grid_options:
+              columns: 4
+          - type: entities
+            entities:
+              - entity: input_boolean.irrigator_zone_6_enabled
+                name: ""
+            grid_options:
+              columns: 2
+          - type: entities
+            entities:
+              - entity: input_text.irrigator_zone_7_name
+            grid_options:
+              columns: 4
+          - type: entities
+            entities:
+              - entity: input_boolean.irrigator_zone_7_enabled
+                name: ""
+            grid_options:
+              columns: 2
+          - type: entities
+            entities:
+              - entity: input_text.irrigator_zone_8_name
+            grid_options:
+              columns: 4
+          - type: entities
+            entities:
+              - entity: input_boolean.irrigator_zone_8_enabled
+                name: ""
+            grid_options:
+              columns: 2
+          - type: entities
+            entities:
+              - entity: input_text.irrigator_zone_9_name
+            grid_options:
+              columns: 4
+          - type: entities
+            entities:
+              - entity: input_boolean.irrigator_zone_9_enabled
+                name: ""
+            grid_options:
+              columns: 2
+          - type: entities
+            entities:
+              - entity: input_text.irrigator_zone_10_name
+            grid_options:
+              columns: 4
+          - type: entities
+            entities:
+              - entity: input_boolean.irrigator_zone_10_enabled
+                name: ""
+            grid_options:
+              columns: 2
+          - type: entities
+            entities:
+              - entity: input_text.irrigator_zone_11_name
+            grid_options:
+              columns: 4
+          - type: entities
+            entities:
+              - entity: input_boolean.irrigator_zone_11_enabled
+                name: ""
+            grid_options:
+              columns: 2
+          - type: entities
+            title: Valve Current Calibration
+            entities:
+              - entity: input_number.irrigator_valve_zero_offset_mv
+              - entity: input_number.irrigator_valve_mv_per_ma
+          - type: entities
+            title: Pump Current Calibration
+            entities:
+              - entity: input_number.irrigator_pump_zero_offset_mv
+              - entity: input_number.irrigator_pump_mv_per_ma
+          - type: entities
+            title: Diagnostics
+            entities:
+              - entity: binary_sensor.irrigator_online
+              - entity: sensor.irrigator_status
+              - entity: sensor.irrigator_last_alert
+              - entity: sensor.irrigator_queue
+          - type: tile
+            entity: button.irrigator_refresh_from_device
+            icon: mdi:cloud-download-outline

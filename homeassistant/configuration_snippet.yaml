@@ -1,0 +1,13 @@
+# =============================================================================
+# Merge these into your existing configuration.yaml (don't overwrite it -
+# your instance almost certainly already has a `homeassistant:` block and
+# possibly a `recorder:` block; merge keys into what's already there).
+# =============================================================================
+
+homeassistant:
+  packages: !include_dir_named packages
+
+# Recorder default (purge_keep_days: 10) already covers the 7-day history
+# chart. Only add this if you've overridden purge_keep_days below 7 elsewhere.
+# recorder:
+#   purge_keep_days: 10

@@ -1,0 +1,220 @@
+# =============================================================================
+# Irrigator - Home Assistant package (automations)
+# =============================================================================
+# Replace `irrigatorF4` below with your device's real MQTT prefix if you
+# haven't already done so in packages/irrigator.yaml.
+# =============================================================================
+
+automation:
+  # Per ha.md preface: settings.json / schedule.json are requested from the
+  # device via MQTT. Rather than polling on a schedule, this only fires the
+  # request when HA doesn't have a representation yet (a virgin package
+  # install, or an entity that's genuinely never received a value) - once a
+  # representation exists, sensor.irrigator_settings and sensor.irrigator_schedule
+  # stay current on their own: settings.json only ever changes via HA (see
+  # "republish settings on local helper change" below, since the local
+  # rotary/display menu has no settings-editing screens), and schedule.json
+  # pushes a fresh copy to `.../schedule` on every change from any source,
+  # which sensor.irrigator_schedule is already listening to.
+  #
+  # Two triggers, not one: `homeassistant: start` alone misses the case
+  # where HA comes up before the device has (re)joined the broker - the
+  # check would run, find nothing, and then never run again since it's a
+  # one-shot trigger. Also firing on binary_sensor.irrigator_online turning
+  # "on" covers that reconnect-after-restart window. Each of the two file
+  # checks is independent, so a restart that only lost one of them (e.g. a
+  # fresh install of just this package's schedule sensor) only re-requests
+  # that one.
+  - alias: "Irrigator - request initial data on virgin deploy"
+    triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: state
+        entity_id: binary_sensor.irrigator_online
+        to: "on"
+    actions:
+      - if:
+          - condition: template
+            value_template: "{{ states('sensor.irrigator_settings') in ['unknown', 'none'] }}"
+        then:
+          - action: mqtt.publish
+            data: {topic: "irrigatorF4/cmd/download/settings.json", payload: ""}
+      - if:
+          - condition: template
+            value_template: "{{ states('sensor.irrigator_schedule') in ['unknown', 'none'] }}"
+        then:
+          - action: mqtt.publish
+            data: {topic: "irrigatorF4/cmd/download/schedule.json", payload: ""}
+
+  # Device -> HA: seeds the Settings-tab helpers from the last settings.json
+  # download so the UI reflects reality after a restart. Only fires when a
+  # fresh download lands (virgin deploy, or a manual "Refresh From Device"
+  # press), so it won't fight an in-progress edit except in that narrow window.
+  - alias: "Irrigator - sync device settings to local helpers"
+    triggers:
+      - trigger: state
+        entity_id: sensor.irrigator_settings
+    conditions:
+      - condition: template
+        value_template: "{{ trigger.to_state.attributes.zone_names is defined }}"
+    actions:
+      - repeat:
+          for_each: "{{ range(1, 12) | list }}"
+          sequence:
+            - action: input_text.set_value
+              target:
+                entity_id: "input_text.irrigator_zone_{{ repeat.item }}_name"
+              data:
+                value: >-
+                  {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get(repeat.item | string, {}).get('name', '#' ~ repeat.item ~ ' (no name)') }}
+            - choose:
+                - conditions:
+                    - condition: template
+                      value_template: >-
+                        {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get(repeat.item | string, {}).get('enabled', true) }}
+                  sequence:
+                    - action: input_boolean.turn_on
+                      target:
+                        entity_id: "input_boolean.irrigator_zone_{{ repeat.item }}_enabled"
+              default:
+                - action: input_boolean.turn_off
+                  target:
+                    entity_id: "input_boolean.irrigator_zone_{{ repeat.item }}_enabled"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.irrigator_default_manual_duration
+        data:
+          value: "{{ state_attr('sensor.irrigator_settings', 'default_manual_duration') | int(5) }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.irrigator_valve_zero_offset_mv
+        data:
+          value: "{{ state_attr('sensor.irrigator_settings', 'valve_current_zero_offset_mv') | int(1650) }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.irrigator_valve_mv_per_ma
+        data:
+          value: "{{ state_attr('sensor.irrigator_settings', 'valve_current_mv_per_ma') | float(1.0) }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.irrigator_pump_zero_offset_mv
+        data:
+          value: "{{ state_attr('sensor.irrigator_settings', 'pump_current_zero_offset_mv') | int(1650) }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.irrigator_pump_mv_per_ma
+        data:
+          value: "{{ state_attr('sensor.irrigator_settings', 'pump_current_mv_per_ma') | float(1.0) }}"
+      # switch.irrigator_schedule_active and number.irrigator_watering_percentage
+      # are direct MQTT entities (not input helpers) whose state_topics
+      # (/scheduled, /watering_percentage) only ever get a value when
+      # someone actively changes them via cmd/scheduled / cmd/watering_percentage
+      # - the device does NOT spontaneously publish either as part of
+      # /status or a settings.json download. So on a fresh boot/deploy, both
+      # would otherwise sit blank/unknown forever until manually touched.
+      # Calling turn_on/off and set_value with the value settings.json
+      # ALREADY has publishes that same value back to the device (harmless,
+      # idempotent - the device just re-validates and re-persists the same
+      # number/bool), and the device's own echo on /scheduled or
+      # /watering_percentage is what actually updates these entities'
+      # displayed state. A little redundant MQTT traffic + a flash write on
+      # the device per sync, but simpler and lower-risk than rebuilding
+      # these as trigger-based template entities just to avoid it.
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ state_attr('sensor.irrigator_settings', 'schedule_active') | default(true) }}"
+            sequence:
+              - action: switch.turn_on
+                target:
+                  entity_id: switch.irrigator_schedule_active
+        default:
+          - action: switch.turn_off
+            target:
+              entity_id: switch.irrigator_schedule_active
+      - action: number.set_value
+        target:
+          entity_id: number.irrigator_watering_percentage
+        data:
+          value: "{{ state_attr('sensor.irrigator_settings', 'watering_percentage') | int(100) }}"
+
+  # HA -> device: any zone-name / enabled / default-duration / calibration
+  # edit republishes the FULL settings.json (see script.irrigator_publish_settings
+  # for why these fields have no dedicated partial-update MQTT topic, and
+  # why calibration is folded in here too rather than using its own
+  # cmd/set_calibration script+automation).
+  #
+  # Guarded on sensor.irrigator_settings already holding real device data:
+  # these 15 helpers are created fresh (at their YAML `initial:` placeholder
+  # values) on a virgin deploy, and that creation fires a state-changed
+  # event just like a real edit would - without this guard, package install
+  # would immediately publish those placeholders over the device's real
+  # settings, seconds before "sync device settings to local helpers" (above)
+  # would have corrected them. Once sensor.irrigator_settings has ever held
+  # real data, this condition is always true (both it and these helpers
+  # persist their state across restarts), so it never blocks a genuine edit.
+  - alias: "Irrigator - republish settings on local helper change"
+    triggers:
+      - trigger: state
+        entity_id:
+          - input_text.irrigator_zone_1_name
+          - input_text.irrigator_zone_2_name
+          - input_text.irrigator_zone_3_name
+          - input_text.irrigator_zone_4_name
+          - input_text.irrigator_zone_5_name
+          - input_text.irrigator_zone_6_name
+          - input_text.irrigator_zone_7_name
+          - input_text.irrigator_zone_8_name
+          - input_text.irrigator_zone_9_name
+          - input_text.irrigator_zone_10_name
+          - input_text.irrigator_zone_11_name
+          - input_boolean.irrigator_zone_1_enabled
+          - input_boolean.irrigator_zone_2_enabled
+          - input_boolean.irrigator_zone_3_enabled
+          - input_boolean.irrigator_zone_4_enabled
+          - input_boolean.irrigator_zone_5_enabled
+          - input_boolean.irrigator_zone_6_enabled
+          - input_boolean.irrigator_zone_7_enabled
+          - input_boolean.irrigator_zone_8_enabled
+          - input_boolean.irrigator_zone_9_enabled
+          - input_boolean.irrigator_zone_10_enabled
+          - input_boolean.irrigator_zone_11_enabled
+          - input_number.irrigator_default_manual_duration
+          - input_number.irrigator_valve_zero_offset_mv
+          - input_number.irrigator_valve_mv_per_ma
+          - input_number.irrigator_pump_zero_offset_mv
+          - input_number.irrigator_pump_mv_per_ma
+    conditions:
+      - condition: template
+        value_template: "{{ states('sensor.irrigator_settings') not in ['unknown', 'none'] }}"
+    actions:
+      - action: script.irrigator_publish_settings
+
+  # HA -> device: periodic poll-and-republish of the 11 Local Calendars,
+  # NOT a reactive trigger - unlike the old schedule.* helper this replaced,
+  # a `calendar` entity's state only reflects its current/next event, so
+  # there's no reliable state-changed signal for "an event was added/edited/
+  # deleted anywhere in this calendar". Every 2 minutes is a practical
+  # compromise between prompt propagation and load; use the "Publish
+  # Schedule Now" button for an immediate forced push after an edit.
+  #
+  # Gated on input_boolean.irrigator_schedule_sync_enabled (off by default -
+  # see its comment in irrigator.yaml) for the same reason as the settings
+  # guard above, except there's no automatic signal to detect "the 11
+  # calendars now correctly reflect the device" the way sensor.irrigator_settings
+  # does for settings - only a human confirming it by hand (or running
+  # "Populate Calendars From Device" once) can safely arm this. Also
+  # requires sensor.irrigator_schedule to have received at least one value,
+  # so arming early can't publish before HA has even heard from the device.
+  - alias: "Irrigator - publish schedule from calendars"
+    triggers:
+      - trigger: time_pattern
+        minutes: "/2"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.irrigator_schedule_sync_enabled
+        state: "on"
+      - condition: template
+        value_template: "{{ states('sensor.irrigator_schedule') not in ['unknown', 'none'] }}"
+    actions:
+      - action: script.irrigator_publish_schedule_from_calendars

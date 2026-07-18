@@ -1,0 +1,874 @@
+# =============================================================================
+# Irrigator - Home Assistant package (entities)
+# =============================================================================
+# BEFORE USE: replace every occurrence of `irrigatorF4` in this file (and in
+# irrigator_automations.yaml / dashboards/garden_tab.yaml) with your device's
+# real MQTT prefix: "irrigator" + the last 2 hex chars of its MAC address.
+# Find it by watching `<something>/online` retained messages on your broker,
+# or by publishing to `irrigator??/cmd/status` and seeing what answers.
+#
+# Assumes the `mqtt:` integration is already configured and connected to the
+# same broker as the device - this package only adds entities, not a broker
+# connection. See ../README.md for the full setup checklist, including the
+# one-time manual step of creating 11 Local Calendar integration entries via
+# the UI (see README "Schedule tab setup" for why that can't be done in YAML).
+# =============================================================================
+
+# `device:` and `availability:` are per-entity options (nested inside each
+# entity's own config dict, alongside name/state_topic/etc.) - NOT siblings
+# of the domain key at the mqtt: list-item level. Every entity below aliases
+# the same &irrigator_device / &irrigator_availability anchors (defined once,
+# on the first entity that needs each) so there's still only one place to
+# edit device metadata (e.g. "model") or the availability topic.
+mqtt:
+  # Device name is "Irrigator" (NOT "HA-Irrigator" or anything with
+  # "Irrigator" repeated) *on purpose*, and every entity below that links to
+  # this device drops the redundant leading "Irrigator " from its own
+  # `name:` for the same reason: when an MQTT entity is linked to a
+  # `device:`, HA generates its entity_id as
+  # `slugify(device_name) + "_" + slugify(entity_name)` - "Irrigator" +
+  # "Status" gives exactly `sensor.irrigator_status` (what everything else
+  # in this package already references), whereas the earlier "HA-Irrigator"
+  # device name + "Irrigator Status" entity name doubled up into
+  # `sensor.ha_irrigator_irrigator_status` (confirmed on a live instance).
+  binary_sensor:
+    - name: "Online"
+      unique_id: irrigator_online
+      device_class: connectivity
+      state_topic: "irrigatorF4/online"
+      payload_on: "true"
+      payload_off: "false"
+      device: &irrigator_device
+        identifiers: ["irrigatorF4"]
+        name: "Irrigator"
+        manufacturer: "DIY"
+        model: "ESP32 Irrigation Controller"
+
+  sensor:
+    # Renamed to "Address" (not "Status") since its state is the device's
+    # IP - this only changes the displayed friendly name, not entity_id
+    # (already frozen as sensor.irrigator_status from first creation; see
+    # the entity_id-freezing notes elsewhere in this file/README).
+    - name: "Address"
+      unique_id: irrigator_status
+      icon: mdi:information-outline
+      state_topic: "irrigatorF4/status"
+      value_template: "{{ value_json.ip }}"
+      json_attributes_topic: "irrigatorF4/status"
+      device: *irrigator_device
+      availability: &irrigator_availability
+        - topic: "irrigatorF4/online"
+          payload_available: "true"
+          payload_not_available: "false"
+
+    # Live watering/pump status, per ha.md #1 ("update the status of cards
+    # from the messages coming on topic <prefix>/state"). json_attributes_topic
+    # makes every top-level key of the /state payload (zone, name, on, pump,
+    # reason, scheduled, remaining_min) available via state_attr() - the
+    # manual-control switches below read this, not a separate parse. If
+    # toggles never reflect real device state, check (in this order):
+    # (1) Developer Tools > States > sensor.irrigator_watering_state - does
+    # it show attributes at all, or none/unknown? (2) if none, is the MQTT
+    # integration actually connected to the same broker as the device, and
+    # is `irrigatorF4` really this device's prefix (see header note)? use
+    # Developer Tools > MQTT > Listen to a topic, subscribe to
+    # `irrigatorF4/#`, and trigger a manual run to confirm the device
+    # publishes at all. (3) if attributes DO show real data but a specific
+    # switch still won't reflect it, check that switch's `state:` template
+    # in the `template:` block below for a typo against the exact attribute
+    # names here.
+    - name: "Watering State"
+      unique_id: irrigator_watering_state
+      icon: mdi:sprinkler-variant
+      state_topic: "irrigatorF4/state"
+      value_template: "{{ 'watering' if (value_json.on or value_json.pump) else 'idle' }}"
+      json_attributes_topic: "irrigatorF4/state"
+      device: *irrigator_device
+      availability: *irrigator_availability
+
+    - name: "Last Alert"
+      unique_id: irrigator_last_alert
+      icon: mdi:alert-circle-outline
+      state_topic: "irrigatorF4/alert"
+      value_template: >-
+        {{ value_json.message if value_json.message is defined else (value_json | tojson) }}
+      json_attributes_topic: "irrigatorF4/alert"
+      device: *irrigator_device
+      availability: *irrigator_availability
+
+    - name: "Queue"
+      unique_id: irrigator_queue
+      icon: mdi:format-list-numbered
+      state_topic: "irrigatorF4/queue"
+      value_template: "{{ value_json | length }}"
+      json_attributes_topic: "irrigatorF4/queue"
+      json_attributes_template: "{{ {'items': value_json} | tojson }}"
+      device: *irrigator_device
+      availability: *irrigator_availability
+
+    # Full settings.json snapshot - the ONLY source for zone names anywhere
+    # in this dashboard (Terminology section of ha.md: never hardcode "Zone
+    # N" as if it were a real name). Requested via cmd/download/settings.json
+    # whenever HA doesn't have a value yet (on startup, AND whenever the
+    # device (re)connects - see "Irrigator - request initial data on virgin
+    # deploy" in irrigator_automations.yaml) and thereafter simply reflects
+    # whatever last arrived on this topic. If zone names show as "#N (no
+    # name)" (the explicit not-a-real-name placeholder used everywhere
+    # below) instead of real names, check Developer Tools > States >
+    # sensor.irrigator_settings - if its `zone_names` attribute is missing
+    # entirely, this sensor has never received a payload; press "Refresh
+    # From Device" and confirm via Developer Tools > MQTT > Listen to a
+    # topic on `irrigatorF4/download/settings.json` that a reply actually
+    # arrives.
+    - name: "Settings"
+      unique_id: irrigator_settings
+      icon: mdi:cog-outline
+      state_topic: "irrigatorF4/download/settings.json"
+      value_template: "{{ value_json.watering_percentage }}"
+      unit_of_measurement: "%"
+      json_attributes_topic: "irrigatorF4/download/settings.json"
+      device: *irrigator_device
+      availability: *irrigator_availability
+
+  # NOTE: the device-side mirror of schedule.json is a trigger-based template
+  # sensor (sensor.irrigator_schedule, further down under `template:`), not a
+  # plain `mqtt: sensor:` here - it needs to listen on two different topics
+  # (the live push on every change, and the one-shot virgin-deploy download
+  # response) and merge them into one entity, which a single `state_topic`
+  # can't do.
+
+  switch:
+    - name: "Schedule Active"
+      unique_id: irrigator_schedule_active
+      icon: mdi:calendar-check
+      state_topic: "irrigatorF4/scheduled"
+      command_topic: "irrigatorF4/cmd/scheduled"
+      state_on: "true"
+      state_off: "false"
+      payload_on: "true"
+      payload_off: "false"
+      device: *irrigator_device
+      availability: *irrigator_availability
+
+  number:
+    # No `mode:` - dropped after HA reported it as a DisallowedExtraPropWarning
+    # on this entity (conflicting with what the docs say elsewhere, but the
+    # live instance is ground truth). No functional loss: `mode` was only a
+    # slider-vs-box display hint, HA picks a reasonable default without it.
+    - name: "Watering Percentage"
+      unique_id: irrigator_watering_percentage
+      icon: mdi:water-percent
+      state_topic: "irrigatorF4/watering_percentage"
+      command_topic: "irrigatorF4/cmd/watering_percentage"
+      min: 0
+      max: 300
+      step: 5
+      unit_of_measurement: "%"
+      device: *irrigator_device
+      availability: *irrigator_availability
+
+# -----------------------------------------------------------------------
+# Manual-control switches (part 1 of the Garden tab): one per pump/zone,
+# reflecting the live `state` topic and starting/stopping via the scripts
+# below (cmd/run needs a JSON body with a duration, which a plain MQTT
+# switch payload_on can't provide - hence template switches + scripts
+# instead of plain `mqtt: switch:` entries here).
+#
+# `name:` IS templated to the live zone name (same "#N (no name)"-style
+# fallback pattern as everywhere else)... except the fallback text below is
+# NOT "#N (no name)" like elsewhere - it's "Irrigator Zone N". Reason:
+# template `switch` doesn't support `default_entity_id` (confirmed via a
+# live DisallowedExtraPropWarning), so nothing pins entity_id directly - but
+# entity_id is only ever auto-generated ONCE, at the entity's first-ever
+# creation, from whatever `name:` renders to AT THAT MOMENT; every later
+# re-render (once real zone names arrive) only updates the displayed name,
+# never the frozen entity_id. On a fresh deploy, sensor.irrigator_settings
+# has no data yet at that first moment, so the fallback text is what
+# actually gets slugified into the permanent switch.irrigator_zone_N -
+# hence a fallback chosen to slug to exactly that ("Irrigator Zone 1" ->
+# "irrigator_zone_1"), not the generic "#N (no name)" placeholder used
+# elsewhere (which would slug to something unrelated and permanently wrong).
+# One edge case this doesn't cover: if sensor.irrigator_settings already
+# holds real cached data the very first time these specific switch configs
+# are ever loaded (e.g. added to an installation that's had this package
+# running for a while under a different entity set), the real name would be
+# used for that first slug instead, and entity_id could come out as
+# something other than switch.irrigator_zone_N. Not a concern for a fresh
+# deploy (the normal case), but worth knowing if this file is ever
+# restructured later on a long-running instance.
+# `remaining_min` still can't live on the switch as `attributes:` (same
+# restriction, unrelated to naming) - see the dedicated sensor.irrigator_*_remaining
+# entities further down for that.
+# -----------------------------------------------------------------------
+template:
+  - switch:
+      - name: "Irrigator Pump"
+        unique_id: irrigator_switch_pump
+        icon: mdi:pump
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'pump') | default(false) }}"
+        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
+        turn_on:
+          - action: script.irrigator_start
+            data:
+              zone: 0
+              duration: "{{ states('input_number.irrigator_pump_duration') | int(5) }}"
+        turn_off:
+          - action: script.irrigator_stop
+
+      - name: >-
+          {{ ('1. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('1', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('1', {}).get('name') else 'Irrigator Zone 1' }}
+        unique_id: irrigator_switch_zone_1
+        icon: mdi:sprinkler-variant
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 1 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
+        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
+        turn_on:
+          - action: script.irrigator_start
+            data: {zone: 1, duration: "{{ states('input_number.irrigator_zone_1_duration') | int(5) }}"}
+        turn_off:
+          - action: script.irrigator_stop
+
+      - name: >-
+          {{ ('2. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('2', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('2', {}).get('name') else 'Irrigator Zone 2' }}
+        unique_id: irrigator_switch_zone_2
+        icon: mdi:sprinkler-variant
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 2 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
+        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
+        turn_on:
+          - action: script.irrigator_start
+            data: {zone: 2, duration: "{{ states('input_number.irrigator_zone_2_duration') | int(5) }}"}
+        turn_off:
+          - action: script.irrigator_stop
+
+      - name: >-
+          {{ ('3. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('3', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('3', {}).get('name') else 'Irrigator Zone 3' }}
+        unique_id: irrigator_switch_zone_3
+        icon: mdi:sprinkler-variant
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 3 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
+        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
+        turn_on:
+          - action: script.irrigator_start
+            data: {zone: 3, duration: "{{ states('input_number.irrigator_zone_3_duration') | int(5) }}"}
+        turn_off:
+          - action: script.irrigator_stop
+
+      - name: >-
+          {{ ('4. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('4', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('4', {}).get('name') else 'Irrigator Zone 4' }}
+        unique_id: irrigator_switch_zone_4
+        icon: mdi:sprinkler-variant
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 4 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
+        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
+        turn_on:
+          - action: script.irrigator_start
+            data: {zone: 4, duration: "{{ states('input_number.irrigator_zone_4_duration') | int(5) }}"}
+        turn_off:
+          - action: script.irrigator_stop
+
+      - name: >-
+          {{ ('5. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('5', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('5', {}).get('name') else 'Irrigator Zone 5' }}
+        unique_id: irrigator_switch_zone_5
+        icon: mdi:sprinkler-variant
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 5 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
+        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
+        turn_on:
+          - action: script.irrigator_start
+            data: {zone: 5, duration: "{{ states('input_number.irrigator_zone_5_duration') | int(5) }}"}
+        turn_off:
+          - action: script.irrigator_stop
+
+      - name: >-
+          {{ ('6. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('6', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('6', {}).get('name') else 'Irrigator Zone 6' }}
+        unique_id: irrigator_switch_zone_6
+        icon: mdi:sprinkler-variant
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 6 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
+        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
+        turn_on:
+          - action: script.irrigator_start
+            data: {zone: 6, duration: "{{ states('input_number.irrigator_zone_6_duration') | int(5) }}"}
+        turn_off:
+          - action: script.irrigator_stop
+
+      - name: >-
+          {{ ('7. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('7', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('7', {}).get('name') else 'Irrigator Zone 7' }}
+        unique_id: irrigator_switch_zone_7
+        icon: mdi:sprinkler-variant
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 7 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
+        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
+        turn_on:
+          - action: script.irrigator_start
+            data: {zone: 7, duration: "{{ states('input_number.irrigator_zone_7_duration') | int(5) }}"}
+        turn_off:
+          - action: script.irrigator_stop
+
+      - name: >-
+          {{ ('8. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('8', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('8', {}).get('name') else 'Irrigator Zone 8' }}
+        unique_id: irrigator_switch_zone_8
+        icon: mdi:sprinkler-variant
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 8 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
+        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
+        turn_on:
+          - action: script.irrigator_start
+            data: {zone: 8, duration: "{{ states('input_number.irrigator_zone_8_duration') | int(5) }}"}
+        turn_off:
+          - action: script.irrigator_stop
+
+      - name: >-
+          {{ ('9. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('9', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('9', {}).get('name') else 'Irrigator Zone 9' }}
+        unique_id: irrigator_switch_zone_9
+        icon: mdi:sprinkler-variant
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 9 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
+        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
+        turn_on:
+          - action: script.irrigator_start
+            data: {zone: 9, duration: "{{ states('input_number.irrigator_zone_9_duration') | int(5) }}"}
+        turn_off:
+          - action: script.irrigator_stop
+
+      - name: >-
+          {{ ('10. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('10', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('10', {}).get('name') else 'Irrigator Zone 10' }}
+        unique_id: irrigator_switch_zone_10
+        icon: mdi:sprinkler-variant
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 10 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
+        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
+        turn_on:
+          - action: script.irrigator_start
+            data: {zone: 10, duration: "{{ states('input_number.irrigator_zone_10_duration') | int(5) }}"}
+        turn_off:
+          - action: script.irrigator_stop
+
+      - name: >-
+          {{ ('11. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('11', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('11', {}).get('name') else 'Irrigator Zone 11' }}
+        unique_id: irrigator_switch_zone_11
+        icon: mdi:sprinkler-variant
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 11 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
+        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
+        turn_on:
+          - action: script.irrigator_start
+            data: {zone: 11, duration: "{{ states('input_number.irrigator_zone_11_duration') | int(5) }}"}
+        turn_off:
+          - action: script.irrigator_stop
+
+  - binary_sensor:
+      # Zone-enabled flags (unrelated to watering activity, which the
+      # switches above already cover live). default_entity_id/attributes
+      # here are unaffected by the switch-specific restriction discussed
+      # above.
+      - name: >-
+          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('1', {}).get('name', '#1 (no name)') }} Enabled
+        unique_id: irrigator_zone_1_enabled_sensor
+        default_entity_id: binary_sensor.irrigator_zone_1_enabled_sensor
+        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('1', {}).get('enabled', true) }}"
+      - name: >-
+          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('2', {}).get('name', '#2 (no name)') }} Enabled
+        unique_id: irrigator_zone_2_enabled_sensor
+        default_entity_id: binary_sensor.irrigator_zone_2_enabled_sensor
+        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('2', {}).get('enabled', true) }}"
+      - name: >-
+          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('3', {}).get('name', '#3 (no name)') }} Enabled
+        unique_id: irrigator_zone_3_enabled_sensor
+        default_entity_id: binary_sensor.irrigator_zone_3_enabled_sensor
+        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('3', {}).get('enabled', true) }}"
+      - name: >-
+          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('4', {}).get('name', '#4 (no name)') }} Enabled
+        unique_id: irrigator_zone_4_enabled_sensor
+        default_entity_id: binary_sensor.irrigator_zone_4_enabled_sensor
+        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('4', {}).get('enabled', true) }}"
+      - name: >-
+          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('5', {}).get('name', '#5 (no name)') }} Enabled
+        unique_id: irrigator_zone_5_enabled_sensor
+        default_entity_id: binary_sensor.irrigator_zone_5_enabled_sensor
+        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('5', {}).get('enabled', true) }}"
+      - name: >-
+          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('6', {}).get('name', '#6 (no name)') }} Enabled
+        unique_id: irrigator_zone_6_enabled_sensor
+        default_entity_id: binary_sensor.irrigator_zone_6_enabled_sensor
+        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('6', {}).get('enabled', true) }}"
+      - name: >-
+          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('7', {}).get('name', '#7 (no name)') }} Enabled
+        unique_id: irrigator_zone_7_enabled_sensor
+        default_entity_id: binary_sensor.irrigator_zone_7_enabled_sensor
+        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('7', {}).get('enabled', true) }}"
+      - name: >-
+          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('8', {}).get('name', '#8 (no name)') }} Enabled
+        unique_id: irrigator_zone_8_enabled_sensor
+        default_entity_id: binary_sensor.irrigator_zone_8_enabled_sensor
+        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('8', {}).get('enabled', true) }}"
+      - name: >-
+          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('9', {}).get('name', '#9 (no name)') }} Enabled
+        unique_id: irrigator_zone_9_enabled_sensor
+        default_entity_id: binary_sensor.irrigator_zone_9_enabled_sensor
+        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('9', {}).get('enabled', true) }}"
+      - name: >-
+          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('10', {}).get('name', '#10 (no name)') }} Enabled
+        unique_id: irrigator_zone_10_enabled_sensor
+        default_entity_id: binary_sensor.irrigator_zone_10_enabled_sensor
+        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('10', {}).get('enabled', true) }}"
+      - name: >-
+          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('11', {}).get('name', '#11 (no name)') }} Enabled
+        unique_id: irrigator_zone_11_enabled_sensor
+        default_entity_id: binary_sensor.irrigator_zone_11_enabled_sensor
+        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('11', {}).get('enabled', true) }}"
+
+  # Remaining-minutes counters, one per pump/zone - moved out of the
+  # switches' `attributes:` (switch doesn't support that key) into their own
+  # sensors. 0 unless this zone/pump is the one /state currently reports as
+  # active (the device only ever runs one thing at a time, so at most one of
+  # these 12 is ever non-zero).
+  - sensor:
+      - name: "Irrigator Pump Remaining"
+        unique_id: irrigator_pump_remaining_sensor
+        default_entity_id: sensor.irrigator_pump_remaining
+        icon: mdi:timer-sand
+        unit_of_measurement: min
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if state_attr('sensor.irrigator_watering_state', 'pump') else 0 }}"
+      - name: "Irrigator Zone 1 Remaining"
+        unique_id: irrigator_zone_1_remaining_sensor
+        default_entity_id: sensor.irrigator_zone_1_remaining
+        icon: mdi:timer-sand
+        unit_of_measurement: min
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 1 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+      - name: "Irrigator Zone 2 Remaining"
+        unique_id: irrigator_zone_2_remaining_sensor
+        default_entity_id: sensor.irrigator_zone_2_remaining
+        icon: mdi:timer-sand
+        unit_of_measurement: min
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 2 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+      - name: "Irrigator Zone 3 Remaining"
+        unique_id: irrigator_zone_3_remaining_sensor
+        default_entity_id: sensor.irrigator_zone_3_remaining
+        icon: mdi:timer-sand
+        unit_of_measurement: min
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 3 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+      - name: "Irrigator Zone 4 Remaining"
+        unique_id: irrigator_zone_4_remaining_sensor
+        default_entity_id: sensor.irrigator_zone_4_remaining
+        icon: mdi:timer-sand
+        unit_of_measurement: min
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 4 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+      - name: "Irrigator Zone 5 Remaining"
+        unique_id: irrigator_zone_5_remaining_sensor
+        default_entity_id: sensor.irrigator_zone_5_remaining
+        icon: mdi:timer-sand
+        unit_of_measurement: min
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 5 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+      - name: "Irrigator Zone 6 Remaining"
+        unique_id: irrigator_zone_6_remaining_sensor
+        default_entity_id: sensor.irrigator_zone_6_remaining
+        icon: mdi:timer-sand
+        unit_of_measurement: min
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 6 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+      - name: "Irrigator Zone 7 Remaining"
+        unique_id: irrigator_zone_7_remaining_sensor
+        default_entity_id: sensor.irrigator_zone_7_remaining
+        icon: mdi:timer-sand
+        unit_of_measurement: min
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 7 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+      - name: "Irrigator Zone 8 Remaining"
+        unique_id: irrigator_zone_8_remaining_sensor
+        default_entity_id: sensor.irrigator_zone_8_remaining
+        icon: mdi:timer-sand
+        unit_of_measurement: min
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 8 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+      - name: "Irrigator Zone 9 Remaining"
+        unique_id: irrigator_zone_9_remaining_sensor
+        default_entity_id: sensor.irrigator_zone_9_remaining
+        icon: mdi:timer-sand
+        unit_of_measurement: min
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 9 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+      - name: "Irrigator Zone 10 Remaining"
+        unique_id: irrigator_zone_10_remaining_sensor
+        default_entity_id: sensor.irrigator_zone_10_remaining
+        icon: mdi:timer-sand
+        unit_of_measurement: min
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 10 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+      - name: "Irrigator Zone 11 Remaining"
+        unique_id: irrigator_zone_11_remaining_sensor
+        default_entity_id: sensor.irrigator_zone_11_remaining
+        icon: mdi:timer-sand
+        unit_of_measurement: min
+        state: "{{ state_attr('sensor.irrigator_watering_state', 'remaining_min') | int(0) if (state_attr('sensor.irrigator_watering_state', 'zone') == 11 and state_attr('sensor.irrigator_watering_state', 'on')) else 0 }}"
+
+  # Current schedule.json representation. Fed by two topics so it's always
+  # up to date regardless of source: `.../schedule` (the device pushes this
+  # on every change - HA upload, or the device's own rotary/display menu)
+  # and `.../download/schedule.json` (the one-shot response to the
+  # virgin-deploy request in irrigator_automations.yaml). Whichever arrives
+  # last wins, which is exactly "update current schedule.json on arrival".
+  # Its `records` attribute also feeds script.irrigator_populate_calendars_from_device
+  # (one-time seed of the 11 Local Calendars from the device's real schedule).
+  - trigger:
+      - trigger: mqtt
+        topic: "irrigatorF4/schedule"
+      - trigger: mqtt
+        topic: "irrigatorF4/download/schedule.json"
+    sensor:
+      - name: "Irrigator Schedule"
+        unique_id: irrigator_schedule
+        icon: mdi:calendar-sync
+        state: "{{ trigger.payload_json | length }} records"
+        attributes:
+          records: "{{ trigger.payload_json }}"
+
+  - button:
+      - name: "Irrigator Refresh From Device"
+        unique_id: irrigator_refresh_from_device
+        icon: mdi:cloud-download-outline
+        press:
+          - action: script.irrigator_request_downloads
+      - name: "Irrigator Publish Schedule Now"
+        unique_id: irrigator_publish_schedule_now
+        icon: mdi:cloud-upload-outline
+        press:
+          - action: script.irrigator_publish_schedule_from_calendars
+      - name: "Irrigator Populate Calendars From Device"
+        unique_id: irrigator_populate_calendars_from_device_button
+        icon: mdi:calendar-import
+        press:
+          - action: script.irrigator_populate_calendars_from_device
+      - name: "Irrigator Stop All"
+        unique_id: irrigator_stop_all_button
+        icon: mdi:stop-circle-outline
+        press:
+          - action: script.irrigator_stop_all
+
+# -----------------------------------------------------------------------
+# Manual-run duration sliders (1-120 min), one per pump/zone card.
+# -----------------------------------------------------------------------
+input_number:
+  irrigator_pump_duration:
+    name: "Pump Duration"
+    icon: mdi:timer-outline
+    min: 1
+    max: 120
+    step: 1
+    mode: slider
+    unit_of_measurement: min
+    initial: 5
+  irrigator_zone_1_duration: &zone_duration_helper
+    name: "Duration"
+    icon: mdi:timer-outline
+    min: 1
+    max: 120
+    step: 1
+    mode: slider
+    unit_of_measurement: min
+    initial: 5
+  irrigator_zone_2_duration: *zone_duration_helper
+  irrigator_zone_3_duration: *zone_duration_helper
+  irrigator_zone_4_duration: *zone_duration_helper
+  irrigator_zone_5_duration: *zone_duration_helper
+  irrigator_zone_6_duration: *zone_duration_helper
+  irrigator_zone_7_duration: *zone_duration_helper
+  irrigator_zone_8_duration: *zone_duration_helper
+  irrigator_zone_9_duration: *zone_duration_helper
+  irrigator_zone_10_duration: *zone_duration_helper
+  irrigator_zone_11_duration: *zone_duration_helper
+
+  # Settings tab: default_manual_duration (1-60 per ha.md) + current-sensor
+  # calibration. All of these go out via the full-settings republish script
+  # (script.irrigator_publish_settings) - see irrigator_automations.yaml.
+  irrigator_default_manual_duration:
+    name: "Default Manual Duration"
+    icon: mdi:timer-cog-outline
+    min: 1
+    max: 60
+    step: 1
+    mode: slider
+    unit_of_measurement: min
+    initial: 5
+
+  irrigator_valve_zero_offset_mv:
+    name: "Valve Current Zero Offset"
+    icon: mdi:current-ac
+    min: 0
+    max: 3300
+    step: 1
+    mode: box
+    unit_of_measurement: mV
+    initial: 1650
+  irrigator_valve_mv_per_ma:
+    name: "Valve Current mV/mA"
+    icon: mdi:sine-wave
+    min: 0.01
+    max: 20
+    step: 0.01
+    mode: box
+    initial: 1.0
+  irrigator_pump_zero_offset_mv:
+    name: "Pump Current Zero Offset"
+    icon: mdi:current-ac
+    min: 0
+    max: 3300
+    step: 1
+    mode: box
+    unit_of_measurement: mV
+    initial: 1650
+  irrigator_pump_mv_per_ma:
+    name: "Pump Current mV/mA"
+    icon: mdi:sine-wave
+    min: 0.01
+    max: 20
+    step: 0.01
+    mode: box
+    initial: 1.0
+
+# -----------------------------------------------------------------------
+# Settings tab: editable zone name + enabled checkbox. Both lack a
+# dedicated device-side merge topic, so any change here republishes the
+# FULL settings.json (see script.irrigator_publish_settings) - the
+# firmware's cmd/upload/settings.json replaces the whole object and fills
+# missing fields with factory defaults, so a partial payload would silently
+# reset everything else. `initial:` here is only what's shown before the
+# first device sync ever completes - "Irrigator - sync device settings to
+# local helpers" (irrigator_automations.yaml) overwrites it with the real
+# name/flag from the device the moment sensor.irrigator_settings gets data.
+# -----------------------------------------------------------------------
+input_text:
+  irrigator_zone_1_name: {name: "Zone 1 Name", icon: mdi:label-outline, max: 15, initial: "#1 (no name)"}
+  irrigator_zone_2_name: {name: "Zone 2 Name", icon: mdi:label-outline, max: 15, initial: "#2 (no name)"}
+  irrigator_zone_3_name: {name: "Zone 3 Name", icon: mdi:label-outline, max: 15, initial: "#3 (no name)"}
+  irrigator_zone_4_name: {name: "Zone 4 Name", icon: mdi:label-outline, max: 15, initial: "#4 (no name)"}
+  irrigator_zone_5_name: {name: "Zone 5 Name", icon: mdi:label-outline, max: 15, initial: "#5 (no name)"}
+  irrigator_zone_6_name: {name: "Zone 6 Name", icon: mdi:label-outline, max: 15, initial: "#6 (no name)"}
+  irrigator_zone_7_name: {name: "Zone 7 Name", icon: mdi:label-outline, max: 15, initial: "#7 (no name)"}
+  irrigator_zone_8_name: {name: "Zone 8 Name", icon: mdi:label-outline, max: 15, initial: "#8 (no name)"}
+  irrigator_zone_9_name: {name: "Zone 9 Name", icon: mdi:label-outline, max: 15, initial: "#9 (no name)"}
+  irrigator_zone_10_name: {name: "Zone 10 Name", icon: mdi:label-outline, max: 15, initial: "#10 (no name)"}
+  irrigator_zone_11_name: {name: "Zone 11 Name", icon: mdi:label-outline, max: 15, initial: "#11 (no name)"}
+
+input_boolean:
+  # Off by default - see "Irrigator - publish schedule from calendars" in
+  # irrigator_automations.yaml. Creating the 11 calendar.irrigator_zone_N
+  # integrations for the first time (or leaving them empty while you're
+  # still copying the device's real schedule into them) must not let the
+  # periodic publish automation run - it would upload an empty schedule.json
+  # and wipe out whatever schedule is already running on the device. Turn
+  # this on only once you've confirmed the 11 calendars' contents match the
+  # device (via the "Device Schedule" table on the Schedule tab, or by
+  # running "Populate Calendars From Device" first) - or immediately, if the
+  # device has no schedule yet to lose.
+  irrigator_schedule_sync_enabled:
+    name: "Schedule Auto-Publish Armed"
+    icon: mdi:shield-sync-outline
+    initial: false
+
+  irrigator_zone_1_enabled: {name: "Zone 1 Enabled", icon: mdi:check-circle-outline}
+  irrigator_zone_2_enabled: {name: "Zone 2 Enabled", icon: mdi:check-circle-outline}
+  irrigator_zone_3_enabled: {name: "Zone 3 Enabled", icon: mdi:check-circle-outline}
+  irrigator_zone_4_enabled: {name: "Zone 4 Enabled", icon: mdi:check-circle-outline}
+  irrigator_zone_5_enabled: {name: "Zone 5 Enabled", icon: mdi:check-circle-outline}
+  irrigator_zone_6_enabled: {name: "Zone 6 Enabled", icon: mdi:check-circle-outline}
+  irrigator_zone_7_enabled: {name: "Zone 7 Enabled", icon: mdi:check-circle-outline}
+  irrigator_zone_8_enabled: {name: "Zone 8 Enabled", icon: mdi:check-circle-outline}
+  irrigator_zone_9_enabled: {name: "Zone 9 Enabled", icon: mdi:check-circle-outline}
+  irrigator_zone_10_enabled: {name: "Zone 10 Enabled", icon: mdi:check-circle-outline}
+  irrigator_zone_11_enabled: {name: "Zone 11 Enabled", icon: mdi:check-circle-outline}
+
+# -----------------------------------------------------------------------
+# Scripts - all device writes funnel through these so the JSON contract
+# (see src/network/MqttService.cpp / src/main.ino handleMqttCommand) is
+# built in exactly one place each.
+# -----------------------------------------------------------------------
+script:
+  irrigator_start:
+    alias: "Irrigator: start zone or pump"
+    fields:
+      zone:
+        selector:
+          number: {min: 0, max: 11, step: 1}
+      duration:
+        selector:
+          number: {min: 1, max: 120, step: 1}
+    sequence:
+      - action: mqtt.publish
+        data:
+          topic: "irrigatorF4/cmd/run"
+          payload: "{{ {'zone': zone, 'duration': duration} | tojson }}"
+
+  irrigator_stop:
+    alias: "Irrigator: stop current watering"
+    sequence:
+      - action: mqtt.publish
+        data:
+          topic: "irrigatorF4/cmd/stop"
+          payload: ""
+
+  irrigator_stop_all:
+    alias: "Irrigator: stop and clear queue"
+    sequence:
+      - action: mqtt.publish
+        data:
+          topic: "irrigatorF4/cmd/stop"
+          payload: "all"
+
+  irrigator_request_downloads:
+    alias: "Irrigator: request status + settings.json + schedule.json"
+    sequence:
+      - action: mqtt.publish
+        data: {topic: "irrigatorF4/cmd/status", payload: ""}
+      - action: mqtt.publish
+        data: {topic: "irrigatorF4/cmd/download/settings.json", payload: ""}
+      - action: mqtt.publish
+        data: {topic: "irrigatorF4/cmd/download/schedule.json", payload: ""}
+
+  # Full settings.json replace. Must include every field every time - the
+  # firmware fills anything missing with factory defaults (parseSettings()),
+  # it does not merge against what's currently on flash. This is the ONLY
+  # settings-writing script: the firmware also exposes a narrower
+  # cmd/set_calibration topic that merges just the 4 calibration fields
+  # server-side, but since this script already has to build a full
+  # settings.json for the fields that have no dedicated topic (zone names/
+  # enabled, default_manual_duration), routing calibration changes through
+  # it too - instead of a second script + a second automation for
+  # cmd/set_calibration - is one less thing to maintain for no real loss:
+  # both paths depend equally on the local input_number helpers being
+  # correct, so the "narrower topic" isn't actually a safety win here.
+  irrigator_publish_settings:
+    alias: "Irrigator: republish full settings.json"
+    sequence:
+      - variables:
+          zn: >-
+            {% set ns = namespace(parts=[]) %}
+            {% for z in range(1, 12) %}
+              {% set nm = states('input_text.irrigator_zone_' ~ z ~ '_name') | tojson %}
+              {% set en = is_state('input_boolean.irrigator_zone_' ~ z ~ '_enabled', 'on') | tojson %}
+              {% set ns.parts = ns.parts + ['"' ~ z ~ '":{"name":' ~ nm ~ ',"enabled":' ~ en ~ '}'] %}
+            {% endfor %}
+            {{ '{' ~ (ns.parts | join(',')) ~ '}' }}
+      # zn is already a JSON-object string, not a Python dict, so it can't be
+      # embedded via the dict-literal-then-tojson pattern used for the other
+      # fields (that would double-encode it as a quoted string). Instead the
+      # dict of scalar fields is rendered with tojson, then its closing brace
+      # is sliced off and the zone_names text spliced in directly.
+      - action: mqtt.publish
+        data:
+          topic: "irrigatorF4/cmd/upload/settings.json"
+          payload: >-
+            {% set base = {
+              'watering_percentage': states('number.irrigator_watering_percentage') | int(100),
+              'schedule_active': is_state('switch.irrigator_schedule_active', 'on'),
+              'default_manual_duration': states('input_number.irrigator_default_manual_duration') | int(5),
+              'valve_current_zero_offset_mv': states('input_number.irrigator_valve_zero_offset_mv') | int(1650),
+              'valve_current_mv_per_ma': states('input_number.irrigator_valve_mv_per_ma') | float(1.0),
+              'pump_current_zero_offset_mv': states('input_number.irrigator_pump_zero_offset_mv') | int(1650),
+              'pump_current_mv_per_ma': states('input_number.irrigator_pump_mv_per_ma') | float(1.0)
+            } %}
+            {% set base_json = (base | tojson) %}
+            {{ base_json[:-1] ~ ',"zone_names":' ~ zn ~ '}' }}
+
+  # ---------------------------------------------------------------------
+  # HA -> device: rebuild schedule.json from the 11 Local Calendar entities
+  # and publish it. VERIFY BEFORE RELYING ON: `calendar.get_events`'s exact
+  # response shape (assumed here: {"<entity_id>": {"events": [...]}}, each
+  # event with `start`/`end`/`summary` keys) couldn't be confirmed against
+  # current docs from here - open Developer Tools > Actions, pick
+  # "Calendar: Get events", target one calendar, run it, and compare the
+  # returned data shown there against the `cal_response` usage below before
+  # trusting this in production. If the shape differs, `zone_events` below
+  # will end up empty (not crash) - so a shape mismatch fails toward
+  # "publishes nothing new" rather than corrupting the schedule, but it also
+  # means edits silently stop propagating, so check it once after setup.
+  # ---------------------------------------------------------------------
+  irrigator_publish_schedule_from_calendars:
+    alias: "Irrigator: rebuild + publish schedule.json from Local Calendars"
+    sequence:
+      - variables:
+          week_start: "{{ (now() - timedelta(days=now().isoweekday() - 1)).strftime('%Y-%m-%dT00:00:00') }}"
+          week_end: "{{ (now() - timedelta(days=now().isoweekday() - 1) + timedelta(days=7)).strftime('%Y-%m-%dT00:00:00') }}"
+          schedule_parts: ""
+          schedule_count: 0
+      - repeat:
+          for_each: "{{ range(1, 12) | list }}"
+          sequence:
+            - variables:
+                current_zone: "{{ repeat.item }}"
+            - action: calendar.get_events
+              target:
+                entity_id: "calendar.irrigator_zone_{{ repeat.item }}"
+              data:
+                start_date_time: "{{ week_start }}"
+                end_date_time: "{{ week_end }}"
+              response_variable: cal_response
+            - variables:
+                zone_events: "{{ ((cal_response.values() | list | first).events if cal_response else []) | default([]) }}"
+            - repeat:
+                for_each: "{{ zone_events }}"
+                sequence:
+                  - variables:
+                      ev_start: "{{ as_datetime(repeat.item.start) }}"
+                      ev_end: "{{ as_datetime(repeat.item.end) }}"
+                  - variables:
+                      ev_raw_dur: "{{ ((ev_end - ev_start).total_seconds() / 60) | int }}"
+                  - variables:
+                      ev_dur: "{{ [1, [ev_raw_dur, 60] | min] | max }}"
+                      ev_rec: >-
+                        {{ '{"zone":' ~ current_zone ~ ',"day_of_week":' ~ ev_start.isoweekday()
+                        ~ ',"start_time":' ~ (ev_start.strftime('%H:%M') | tojson)
+                        ~ ',"duration_min":' ~ ([1, [ev_raw_dur, 60] | min] | max) ~ ',"active":true}' }}
+                  - variables:
+                      schedule_parts: "{{ schedule_parts ~ (',' if schedule_parts else '') ~ ev_rec }}"
+                      schedule_count: "{{ schedule_count + 1 }}"
+      - if:
+          - condition: template
+            value_template: "{{ schedule_count | int(0) > 32 }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              title: "Irrigator schedule NOT published"
+              message: >-
+                The combined schedule across all 11 zone calendars has
+                {{ schedule_count }} time blocks, over the device's 32-record
+                limit. Remove some events and try again (use the "Publish
+                Schedule Now" button).
+        else:
+          - action: mqtt.publish
+            data:
+              topic: "irrigatorF4/cmd/upload/schedule.json"
+              payload: "[{{ schedule_parts }}]"
+
+  # ---------------------------------------------------------------------
+  # Device -> HA, ONE-TIME convenience only: seed the 11 Local Calendars
+  # from whatever schedule.json the device currently has, so you don't have
+  # to hand-re-enter an existing schedule after creating the calendars.
+  # Run via the "Populate Calendars From Device" button, right after
+  # creating the 11 calendar integrations, BEFORE arming
+  # input_boolean.irrigator_schedule_sync_enabled. Re-running this after
+  # calendars already have events will create DUPLICATES - there's no
+  # dedup/idempotency check, since `calendar.create_event` has no documented
+  # "only if it doesn't already exist" mode. If you need to re-run it,
+  # delete the existing events for that zone first.
+  #
+  # VERIFY BEFORE RELYING ON: `calendar.create_event`'s exact field names
+  # (assumed here: `summary`, `start_date_time`, `end_date_time`, `rrule`)
+  # couldn't be confirmed against current docs from here either - check
+  # Developer Tools > Actions > "Calendar: Create event" for the exact
+  # field list your HA version expects before running this for real.
+  # ---------------------------------------------------------------------
+  irrigator_populate_calendars_from_device:
+    alias: "Irrigator: one-time seed Local Calendars from device schedule.json"
+    sequence:
+      - variables:
+          records: "{{ state_attr('sensor.irrigator_schedule', 'records') or [] }}"
+          rrule_days: ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+      - repeat:
+          for_each: "{{ records }}"
+          sequence:
+            - variables:
+                rec: "{{ repeat.item }}"
+                today_iso: "{{ now().isoweekday() }}"
+            - variables:
+                days_ahead: "{{ (rec.day_of_week - today_iso) % 7 }}"
+                event_date: "{{ (now() + timedelta(days=days_ahead)).strftime('%Y-%m-%d') }}"
+            - variables:
+                start_dt: "{{ event_date ~ 'T' ~ rec.start_time ~ ':00' }}"
+                end_dt: >-
+                  {{ (as_datetime(event_date ~ 'T' ~ rec.start_time ~ ':00') + timedelta(minutes=rec.duration_min)).strftime('%Y-%m-%dT%H:%M:00') }}
+                zone_name: >-
+                  {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get(rec.zone | string, {}).get('name', '#' ~ rec.zone ~ ' (no name)') }}
+            - action: calendar.create_event
+              target:
+                entity_id: "calendar.irrigator_zone_{{ rec.zone }}"
+              data:
+                summary: "{{ zone_name }}"
+                start_date_time: "{{ start_dt }}"
+                end_date_time: "{{ end_dt }}"
+                rrule: "FREQ=WEEKLY;BYDAY={{ rrule_days[rec.day_of_week - 1] }}"
