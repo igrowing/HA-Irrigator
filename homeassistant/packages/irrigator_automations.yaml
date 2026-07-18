@@ -56,6 +56,21 @@ automation:
       - condition: template
         value_template: "{{ trigger.to_state.attributes.zone_names is defined }}"
     actions:
+      # Held for the whole sync below - see "Irrigator - republish settings
+      # on local helper change" further down, whose trigger list is exactly
+      # the input_number/input_text/input_boolean helpers this automation is
+      # about to write. Without this guard, the first of those writes (the
+      # zone-name loop, or the calibration input_numbers right after it)
+      # fires that automation mid-sync, which reads switch.irrigator_schedule_active
+      # and number.irrigator_watering_percentage for its upload - but this
+      # automation only gets to those two LAST, so the race uploads their
+      # still-stale pre-sync values and overwrites the device's real
+      # settings with them (confirmed live: a reboot with the device's real
+      # schedule_active:true got a cmd/upload/settings.json with
+      # schedule_active:false moments later).
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.irrigator_syncing_from_device
       - repeat:
           for_each: "{{ range(1, 12) | list }}"
           sequence:
@@ -143,6 +158,9 @@ automation:
           entity_id: number.irrigator_watering_percentage
         data:
           value: "{{ state_attr('sensor.irrigator_settings', 'watering_percentage') | int(100) }}"
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.irrigator_syncing_from_device
 
   # HA -> device: any zone-name / enabled / default-duration / calibration
   # edit republishes the FULL settings.json (see script.irrigator_publish_settings
@@ -193,6 +211,14 @@ automation:
     conditions:
       - condition: template
         value_template: "{{ states('sensor.irrigator_settings') not in ['unknown', 'unavailable'] }}"
+      # Skip while "Irrigator - sync device settings to local helpers" (above)
+      # is still writing these same helpers from a fresh download - see the
+      # guard comment on that automation's first action for why: firing here
+      # mid-sync would upload switch.irrigator_schedule_active / number.irrigator_watering_percentage's
+      # stale pre-sync values and clobber the device's real settings.
+      - condition: state
+        entity_id: input_boolean.irrigator_syncing_from_device
+        state: "off"
     actions:
       - action: script.irrigator_publish_settings
 

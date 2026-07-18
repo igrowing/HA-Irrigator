@@ -833,6 +833,14 @@ input_boolean:
     icon: mdi:check-circle-outline
     initial: true
 
+  # Internal guard, not on any dashboard - see the "Irrigator - sync device
+  # settings to local helpers" / "Irrigator - republish settings on local
+  # helper change" automations in irrigator_automations.yaml for what it
+  # prevents (a boot-time race that re-uploads stale settings to the device).
+  irrigator_syncing_from_device:
+    name: "Irrigator Syncing From Device"
+    icon: mdi:sync
+
   irrigator_zone_1_enabled: {name: "Zone 1 Enabled", icon: mdi:check-circle-outline}
   irrigator_zone_2_enabled: {name: "Zone 2 Enabled", icon: mdi:check-circle-outline}
   irrigator_zone_3_enabled: {name: "Zone 3 Enabled", icon: mdi:check-circle-outline}
