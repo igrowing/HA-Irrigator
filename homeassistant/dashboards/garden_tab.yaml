@@ -291,7 +291,7 @@
             entities:
               - entity: input_text.irrigator_zone_1_name
             grid_options:
-              columns: 4
+              columns: 9
           - type: entities
             entities:
               - entity: input_boolean.irrigator_zone_1_enabled
@@ -302,7 +302,7 @@
             entities:
               - entity: input_text.irrigator_zone_2_name
             grid_options:
-              columns: 4
+              columns: 9
           - type: entities
             entities:
               - entity: input_boolean.irrigator_zone_2_enabled
@@ -313,7 +313,7 @@
             entities:
               - entity: input_text.irrigator_zone_3_name
             grid_options:
-              columns: 4
+              columns: 9
           - type: entities
             entities:
               - entity: input_boolean.irrigator_zone_3_enabled
@@ -324,7 +324,7 @@
             entities:
               - entity: input_text.irrigator_zone_4_name
             grid_options:
-              columns: 4
+              columns: 9
           - type: entities
             entities:
               - entity: input_boolean.irrigator_zone_4_enabled
@@ -335,7 +335,7 @@
             entities:
               - entity: input_text.irrigator_zone_5_name
             grid_options:
-              columns: 4
+              columns: 9
           - type: entities
             entities:
               - entity: input_boolean.irrigator_zone_5_enabled
@@ -346,7 +346,7 @@
             entities:
               - entity: input_text.irrigator_zone_6_name
             grid_options:
-              columns: 4
+              columns: 9
           - type: entities
             entities:
               - entity: input_boolean.irrigator_zone_6_enabled
@@ -357,7 +357,7 @@
             entities:
               - entity: input_text.irrigator_zone_7_name
             grid_options:
-              columns: 4
+              columns: 9
           - type: entities
             entities:
               - entity: input_boolean.irrigator_zone_7_enabled
@@ -368,7 +368,7 @@
             entities:
               - entity: input_text.irrigator_zone_8_name
             grid_options:
-              columns: 4
+              columns: 9
           - type: entities
             entities:
               - entity: input_boolean.irrigator_zone_8_enabled
@@ -379,7 +379,7 @@
             entities:
               - entity: input_text.irrigator_zone_9_name
             grid_options:
-              columns: 4
+              columns: 9
           - type: entities
             entities:
               - entity: input_boolean.irrigator_zone_9_enabled
@@ -390,7 +390,7 @@
             entities:
               - entity: input_text.irrigator_zone_10_name
             grid_options:
-              columns: 4
+              columns: 9
           - type: entities
             entities:
               - entity: input_boolean.irrigator_zone_10_enabled
@@ -401,7 +401,7 @@
             entities:
               - entity: input_text.irrigator_zone_11_name
             grid_options:
-              columns: 4
+              columns: 9
           - type: entities
             entities:
               - entity: input_boolean.irrigator_zone_11_enabled
