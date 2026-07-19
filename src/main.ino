@@ -165,12 +165,28 @@ const char* bootReasonString(esp_reset_reason_t reason) {
     }
 }
 
+const char* wifiQualityString(int32_t rssi) {
+    if (rssi >= -55) {
+        return "excellent";
+    } else if (rssi >= -65) {
+        return "good";
+    } else if (rssi >= -75) {
+        return "fair";
+    } else if (rssi >= -85) {
+        return "poor";
+    }
+    return "miserable";
+}
+
 String buildStatusJson(uint32_t nowMs) {
     JsonDocument doc;
     doc["firmware_version"] = irrigator::board::FIRMWARE_VERSION;
     doc["boot_reason"] = bootReasonString(esp_reset_reason());
     doc["ip"] = WiFi.localIP().toString();
     doc["uptime_s"] = nowMs / 1000UL;
+    const int32_t rssi = WiFi.RSSI();
+    doc["rssi_db"] = rssi;
+    doc["wifi_quality"] = wifiQualityString(rssi);
     doc["free_heap_bytes"] = ESP.getFreeHeap();
     doc["free_storage_bytes"] = static_cast<uint32_t>(fileStore.freeBytes());
     doc["cpu_temp_c"] = temperatureRead();

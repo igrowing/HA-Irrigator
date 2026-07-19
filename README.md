@@ -225,6 +225,68 @@ conversion. The zero-offset and sensitivity are **placeholders** in firmware
 3. Push the result via `/cmd/set_calibration`; it's saved to `settings.json` and survives
    reboots (and re-applied on every boot before anything reads current).
 
+## Building and uploading firmware (OTA)
+
+`scripts/ota.py` builds the firmware with PlatformIO and pushes it to the device over the
+`/cmd/ota` protocol documented above, instead of you having to build, host, and publish the URL
+by hand each time:
+
+1. Runs `pio run -e <env>` (skip with `--skip-build` to just re-serve an existing
+   `.pio/build/<env>/firmware.bin`).
+2. Serves that `firmware.bin` from a throwaway HTTP server bound to this machine's real LAN
+   NIC (it deliberately skips VPN/virtual adapters — see the script for why).
+3. Publishes that URL to `<prefix>/cmd/ota` (QoS 1, so a broker ACK proves it was actually
+   accepted) and waits for the device's `/ota_completed` or `/alert` response.
+
+Requires the `pio` CLI on `PATH` (or under `~/.platformio/penv`) and the `paho-mqtt` and
+`psutil` Python packages. Basic usage:
+
+```
+python scripts/ota.py --host 192.168.178.45 --user mqtt_user --password <pw>
+```
+
+Useful flags: `--port` (MQTT broker port, default 1883), `--topic-prefix` (device prefix, e.g.
+`irrigatorF4`, default `irrigatorF4`), `--env` (PlatformIO environment, default `esp32dev`),
+`--http-port` (local port serving `firmware.bin`, default 8000), `--skip-build`, `--timeout`
+(seconds to wait for OTA confirmation, default 180).
+
+### VS Code status bar button
+
+The repo's `.vscode/tasks.json` already wires this up as a one-click status bar button, using
+the recommended `actboy168.tasks` extension (see `.vscode/extensions.json`) which renders any
+task's `options.statusbar` as a clickable item in VS Code's status bar. To add your own (e.g.
+for a different broker or device prefix), add a task like this to `.vscode/tasks.json`:
+
+```json
+{
+    "type": "shell",
+    "command": "python",
+    "args": [
+        "scripts/ota.py",
+        "--host", "ha.local",
+        "--user", "mqtt_user",
+        "--password", "<pw>",
+        "--topic-prefix", "irrigatorF4"
+    ],
+    "problemMatcher": [],
+    "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+    },
+    "label": "OTA: Flash irrigator",
+    "options": {
+        "statusbar": {
+            "label": "$(cloud-upload) OTA Flash",
+            "tooltip": "Build firmware and push it to the irrigator over MQTT OTA"
+        }
+    }
+}
+```
+
+Reload the window (or the extension picks it up automatically) and the label appears as a
+clickable button in the status bar — no need to open the Command Palette or a terminal to
+flash a new build.
+
 ## Home Assistant integration
 
 There's no MQTT auto-discovery yet, so entities are defined manually — either in
