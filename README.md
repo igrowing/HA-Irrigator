@@ -144,7 +144,7 @@ MENU
     5 on reboot, not persisted to flash).
   - **BACK**: returns to the main menu.
 - **Settings**: `Adjust: 100 %` (±10%/tick, click to edit, click to confirm), `Schedule:
-  active/paused` (click toggles), `IP: ...`, `MQTT: ...`, `Topic: irrigator4f` (the MQTT prefix —
+  active/paused` (click toggles), `IP: ...`, `MQTT: ...`, `Topic: irrigatorF4` (the MQTT prefix —
   see [MQTT](#mqtt) below), and `FW: v.<version>` (display only, not clickable), `BACK`.
 
 ### Reset to factory defaults
@@ -162,7 +162,7 @@ wakes the screen back to normal without acting on that input.
 ## MQTT
 
 Every topic is prefixed `irrigator<xx>` where `<xx>` is the last two hex digits of the device's
-MAC address (e.g. `irrigator4f`). Substitute your device's actual prefix below.
+MAC address (e.g. `irrigatorF4`). Substitute your device's actual prefix below.
 
 ### Command/response
 
@@ -189,7 +189,7 @@ MAC address (e.g. `irrigator4f`). Substitute your device's actual prefix below.
 Every command above rejects malformed or out-of-range input rather than guessing at intent
 (e.g. clamping a duration, defaulting a missing field) — invalid input is reported, not
 silently dropped or coerced. A malformed payload, an out-of-range value, an unrecognized
-`cmd/<name>`, or a `download` for a file that doesn't exist all publish to `irrigator4f/alert`
+`cmd/<name>`, or a `download` for a file that doesn't exist all publish to `irrigatorF4/alert`
 (each also carries a `datetime` field, omitted below for brevity):
 
 ```json
@@ -206,10 +206,10 @@ silently dropped or coerced. A malformed payload, an out-of-range value, an unre
 
 ```
 # Round-trip: fetch the current schedule, edit it locally, push it back.
-mosquitto_sub -t irrigator4f/download/schedule.json -C 1 > schedule.json
-mosquitto_pub -t irrigator4f/cmd/download/schedule.json -m ""
+mosquitto_sub -t irrigatorF4/download/schedule.json -C 1 > schedule.json
+mosquitto_pub -t irrigatorF4/cmd/download/schedule.json -m ""
 # ...edit schedule.json...
-mosquitto_pub -t irrigator4f/cmd/upload/schedule.json -f schedule.json
+mosquitto_pub -t irrigatorF4/cmd/upload/schedule.json -f schedule.json
 ```
 
 ### Current-sensor calibration
@@ -235,33 +235,33 @@ MQTT → Add entity** in the UI. A minimal starting set:
 mqtt:
   binary_sensor:
     - name: "Irrigator Online"
-      state_topic: "irrigator4f/online"
+      state_topic: "irrigatorF4/online"
       payload_on: true
       payload_off: false
 
   sensor:
     - name: "Irrigator Free Heap"
-      state_topic: "irrigator4f/status"
+      state_topic: "irrigatorF4/status"
       value_template: "{{ value_json.free_heap_bytes }}"
       unit_of_measurement: "B"
     - name: "Irrigator Active Zone"
-      state_topic: "irrigator4f/state"
+      state_topic: "irrigatorF4/state"
       value_template: "{{ value_json.name if value_json.on else 'idle' }}"
 
   # "Run zone 3 for 15 minutes" as a button — duration is fixed per button; add one per
   # zone/duration combo you actually use, or drive cmd/run from a script/automation instead.
   button:
     - name: "Water Back Lawn (15 min)"
-      command_topic: "irrigator4f/cmd/run"
+      command_topic: "irrigatorF4/cmd/run"
       payload_press: '{"zone":3,"duration":15}'
     - name: "Stop Irrigation"
-      command_topic: "irrigator4f/cmd/stop"
+      command_topic: "irrigatorF4/cmd/stop"
       payload_press: ""
 
   number:
     - name: "Irrigator Watering %"
-      command_topic: "irrigator4f/cmd/watering_percentage"
-      state_topic: "irrigator4f/status"
+      command_topic: "irrigatorF4/cmd/watering_percentage"
+      state_topic: "irrigatorF4/status"
       min: 0
       max: 300
       step: 10
@@ -281,11 +281,11 @@ automation:
     action:
       - service: mqtt.publish
         data:
-          topic: "irrigator4f/cmd/skip_rain_until"
+          topic: "irrigatorF4/cmd/skip_rain_until"
           payload: "{{ (now() + timedelta(hours=24)).strftime('%Y-%m-%dT%H:%M:%S') }}"
 ```
 
-Alerts (`irrigator4f/alert`) are free-form JSON/text and not retained — a generic MQTT trigger
+Alerts (`irrigatorF4/alert`) are free-form JSON/text and not retained — a generic MQTT trigger
 automation that notifies you on any message to that topic is the simplest way to surface them:
 
 ```yaml
@@ -293,7 +293,7 @@ automation:
   - alias: "Irrigator alert notification"
     trigger:
       - platform: mqtt
-        topic: "irrigator4f/alert"
+        topic: "irrigatorF4/alert"
     action:
       - service: notify.mobile_app
         data:
