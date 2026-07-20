@@ -9,6 +9,7 @@
 #include "../domain/Schedule.h"
 #include "../domain/Settings.h"
 #include "../domain/UiStateMachine.h"
+#include "../domain/WifiQuality.h"
 #include "../drivers/RotaryInput.h"
 
 namespace irrigator::ui {
@@ -28,6 +29,9 @@ struct RenderData {
     struct tm wallClockLocal {};
     uint8_t nextScheduledZone = 0;  // 0 = none upcoming
     char nextScheduledZoneName[16] = "";
+    // Sampled at most every 5s by the caller (see main.ino's cachedWifiRssi), not read live —
+    // RSSI jitters several dB reading-to-reading, so a live read would just flicker the display.
+    int32_t wifiRssi = -127;
 };
 
 class IrrigatorUi {

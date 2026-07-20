@@ -14,6 +14,7 @@
 #include "../../src/domain/Settings.h"
 #include "../../src/domain/UiStateMachine.h"
 #include "../../src/domain/WateringQueue.h"
+#include "../../src/domain/WifiQuality.h"
 #include "board_config.h"
 
 using irrigator::domain::RotationDirection;
@@ -748,6 +749,33 @@ void test_dst_rules_matches_known_2024_eu_transitions() {
     TEST_ASSERT_FALSE(isEuDstActive(epochFromUtc(2024, 1, 15, 12, 0, 0)));
 }
 
+void test_wifi_quality_thresholds_and_bar_count() {
+    using irrigator::domain::toString;
+    using irrigator::domain::wifiQualityBarCount;
+    using irrigator::domain::wifiQualityFromRssi;
+    using irrigator::domain::WifiQuality;
+
+    TEST_ASSERT_TRUE(WifiQuality::Excellent == wifiQualityFromRssi(-40));
+    TEST_ASSERT_TRUE(WifiQuality::Excellent == wifiQualityFromRssi(-55));
+    TEST_ASSERT_TRUE(WifiQuality::Good == wifiQualityFromRssi(-56));
+    TEST_ASSERT_TRUE(WifiQuality::Good == wifiQualityFromRssi(-65));
+    TEST_ASSERT_TRUE(WifiQuality::Fair == wifiQualityFromRssi(-66));
+    TEST_ASSERT_TRUE(WifiQuality::Fair == wifiQualityFromRssi(-75));
+    TEST_ASSERT_TRUE(WifiQuality::Poor == wifiQualityFromRssi(-76));
+    TEST_ASSERT_TRUE(WifiQuality::Poor == wifiQualityFromRssi(-85));
+    TEST_ASSERT_TRUE(WifiQuality::Miserable == wifiQualityFromRssi(-86));
+    TEST_ASSERT_TRUE(WifiQuality::Miserable == wifiQualityFromRssi(-127));
+
+    TEST_ASSERT_EQUAL_STRING("excellent", toString(WifiQuality::Excellent));
+    TEST_ASSERT_EQUAL_STRING("good", toString(WifiQuality::Good));
+    TEST_ASSERT_EQUAL_STRING("fair", toString(WifiQuality::Fair));
+    TEST_ASSERT_EQUAL_STRING("poor", toString(WifiQuality::Poor));
+    TEST_ASSERT_EQUAL_STRING("miserable", toString(WifiQuality::Miserable));
+
+    TEST_ASSERT_EQUAL_UINT8(4, wifiQualityBarCount(WifiQuality::Excellent));
+    TEST_ASSERT_EQUAL_UINT8(0, wifiQualityBarCount(WifiQuality::Miserable));
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -796,6 +824,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_schedule_day_edit_wraps);
     RUN_TEST(test_ui_state_machine_schedule_time_edit_hour_then_minute);
     RUN_TEST(test_calendar_math_round_trips_and_weekday);
+    RUN_TEST(test_wifi_quality_thresholds_and_bar_count);
     RUN_TEST(test_dst_rules_matches_known_2024_eu_transitions);
     return UNITY_END();
 }

@@ -17,6 +17,7 @@
 #include "domain/ScheduleEngine.h"
 #include "domain/Settings.h"
 #include "domain/WateringQueue.h"
+#include "domain/WifiQuality.h"
 #include "drivers/Clock.h"
 #include "drivers/CurrentSensor.h"
 #include "drivers/FactoryResetButton.h"
@@ -75,6 +76,16 @@ WateringRequest activeRequestForReporting;
 bool reportedActive = false;
 bool mqttBreathPlayed = false;
 uint32_t lastWifiRetryMs = 0;
+
+// Sampled at most every kWifiRssiSampleIntervalMs rather than read live from the WiFi driver on
+// every loop() iteration/UI render — RSSI jitters several dB reading-to-reading from multipath
+// fading even on a stationary device, so a live read would just flicker the on-screen quality
+// indicator. -127dBm is below the "miserable" floor, so the local UI reads as no-signal until
+// the first real sample lands rather than falsely showing "excellent" from an unsampled 0.
+constexpr uint32_t kWifiRssiSampleIntervalMs = 5000;
+int32_t cachedWifiRssi = -127;
+uint32_t lastWifiRssiSampleMs = 0;
+bool wifiRssiSampled = false;
 irrigator::domain::IrrigationState previousIrrigationState = irrigator::domain::IrrigationState::Idle;
 
 bool valveWindowOpen = false;
@@ -165,17 +176,18 @@ const char* bootReasonString(esp_reset_reason_t reason) {
     }
 }
 
-const char* wifiQualityString(int32_t rssi) {
-    if (rssi >= -55) {
-        return "excellent";
-    } else if (rssi >= -65) {
-        return "good";
-    } else if (rssi >= -75) {
-        return "fair";
-    } else if (rssi >= -85) {
-        return "poor";
+// Throttled to kWifiRssiSampleIntervalMs (see cachedWifiRssi above) — cheap to call every loop()
+// iteration regardless, but there's no value in sampling faster than the UI needs.
+void sampleWifiRssiIfDue(uint32_t nowMs) {
+    if (wifiRssiSampled && nowMs - lastWifiRssiSampleMs < kWifiRssiSampleIntervalMs) {
+        return;
     }
-    return "miserable";
+    wifiRssiSampled = true;
+    lastWifiRssiSampleMs = nowMs;
+    // WiFi.RSSI() returns 0 (not a negative dBm) when there's no active association — reading
+    // that through the normal thresholds would misreport "no signal" as Excellent instead of
+    // Miserable, so fall back to the no-signal sentinel explicitly rather than trusting it.
+    cachedWifiRssi = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : -127;
 }
 
 String buildStatusJson(uint32_t nowMs) {
@@ -184,9 +196,9 @@ String buildStatusJson(uint32_t nowMs) {
     doc["boot_reason"] = bootReasonString(esp_reset_reason());
     doc["ip"] = WiFi.localIP().toString();
     doc["uptime_s"] = nowMs / 1000UL;
-    const int32_t rssi = WiFi.RSSI();
-    doc["rssi_db"] = rssi;
-    doc["wifi_quality"] = wifiQualityString(rssi);
+    doc["rssi_db"] = cachedWifiRssi;
+    doc["wifi_quality"] =
+        irrigator::domain::toString(irrigator::domain::wifiQualityFromRssi(cachedWifiRssi));
     doc["free_heap_bytes"] = ESP.getFreeHeap();
     doc["free_storage_bytes"] = static_cast<uint32_t>(fileStore.freeBytes());
     doc["cpu_temp_c"] = temperatureRead();
@@ -1095,6 +1107,7 @@ void loop() {
             }
             // updateCurrentMonitoring(nowMs);  // Disabled for now, until measurement circuit is tested in HW and calibrated..
             updateOutputsFromDomain();
+            sampleWifiRssiIfDue(nowMs);
 
             {
                 irrigator::ui::RenderData renderData;
@@ -1105,6 +1118,7 @@ void loop() {
                 renderData.deviceIp = WiFi.localIP();
                 renderData.mqttBrokerText = deviceConfig.mqttBroker;
                 renderData.mqttTopicText = mqtt.prefix();
+                renderData.wifiRssi = cachedWifiRssi;
 
                 struct tm wallTm;
                 renderData.hasWallClock = clockService.now(wallTm);

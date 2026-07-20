@@ -191,7 +191,7 @@ void IrrigatorUi::render(uint32_t nowMs, const RenderData& data) {
 
 void IrrigatorUi::drawTopStatusLine(const RenderData& data) {
     display_.setFont(u8g2_font_5x7_tr);
-    char upperLeft[16] = "";
+    char upperLeft[16] = "NOSIG";
     if (data.deviceIp != IPAddress(0, 0, 0, 0)) {
         snprintf(upperLeft, sizeof(upperLeft), "IP.%u", data.deviceIp[3]);
     }
@@ -211,6 +211,18 @@ void IrrigatorUi::drawTopStatusLine(const RenderData& data) {
     }
     const uint16_t rightWidth = display_.getStrWidth(upperRight);
     display_.drawStr(128 - static_cast<int16_t>(rightWidth), board::DISPLAY_1ST_LINE_OFFSET, upperRight);
+
+    // Signal-quality dashes under the IP: 0 (miserable/no signal yet) to 4 (excellent), one dash
+    // per irrigator::domain::WifiQuality step — deliberately just dashes, no numeric dB, so it
+    // reads at a glance without competing with the rest of this already-packed line.
+    char bars[5] = "";
+    const uint8_t barCount = ::irrigator::domain::wifiQualityBarCount(
+        ::irrigator::domain::wifiQualityFromRssi(data.wifiRssi));
+    for (uint8_t i = 0; i < barCount; ++i) {
+        bars[i] = '-';
+    }
+    bars[barCount] = '\0';
+    display_.drawStr(0, board::DISPLAY_1ST_LINE_OFFSET + 4, bars);
 }
 
 void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
@@ -438,7 +450,7 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                                    : (data.settings != nullptr ? data.settings->wateringPercentage : 0);
 
     drawMenuList(
-        "SETTINGS", 7, uiState_.selectedIndex(), [this, &data, percentage](uint8_t index, char* buffer, size_t size) {
+        "SETTINGS", 8, uiState_.selectedIndex(), [this, &data, percentage](uint8_t index, char* buffer, size_t size) {
             switch (index) {
                 case 0:
                     snprintf(buffer, size, "Adjust: %d %%", percentage);
@@ -446,19 +458,28 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                 case 1:
                     snprintf(buffer, size, "Schedule: %s", data.scheduleActive ? "active" : "paused");
                     break;
-                case 2:
+                case 2: {
+                    const auto quality = ::irrigator::domain::wifiQualityFromRssi(data.wifiRssi);
+                    snprintf(buffer,
+                            size,
+                            "WiFi: %s (%ddB)",
+                            ::irrigator::domain::toString(quality),
+                            static_cast<int>(data.wifiRssi));
+                    break;
+                }
+                case 3:
                     snprintf(buffer, size, "IP: %s", data.deviceIp.toString().c_str());
                     break;
-                case 3:
+                case 4:
                     snprintf(buffer, size, "MQTT: %s", data.mqttBrokerText.c_str());
                     break;
-                case 4:
+                case 5:
                     snprintf(buffer, size, "Topic: %s", data.mqttTopicText.c_str());
                     break;
-                case 5:
+                case 6:
                     snprintf(buffer, size, "FW: v.%s", irrigator::board::FIRMWARE_VERSION);
                     break;
-                case 6:
+                case 7:
                     snprintf(buffer, size, "BACK");
                     break;
                 default:

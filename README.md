@@ -65,6 +65,7 @@ rules if you're contributing code, not just using the device).
 
 ```
 IP.42    2026-07-11 14:32:07
+----
            ZONE 3
       WATERING 4:32
      LONG CLICK = MENU
@@ -72,7 +73,10 @@ IP.42    2026-07-11 14:32:07
 
 Four lines: IP (last octet) + date/time top, the big status line (zone name / remaining-minutes
 during a manual pick), a status line (`IDLE-READY` / `SCHEDULED` / `WATERING m:ss` /
-`REMAINING m:ss`, the last two alternating every 3s), and a help line.
+`REMAINING m:ss`, the last two alternating every 3s), and a help line. A row of 0–4 dashes under
+the IP shows WiFi signal quality at a glance — no dashes is miserable/no signal, four is
+excellent. RSSI is sampled every 5s (not read live), so it won't visibly flicker; the number and
+verbal quality (`WiFi: good (-62dB)`) are also in **Settings** (below) for the exact reading.
 
 - **Idle, nothing scheduled**: status line reads `IDLE-READY`.
 - **Idle, schedule active**: status line reads `SCHEDULED`, main line shows the next zone due to
@@ -144,8 +148,10 @@ MENU
     5 on reboot, not persisted to flash).
   - **BACK**: returns to the main menu.
 - **Settings**: `Adjust: 100 %` (±10%/tick, click to edit, click to confirm), `Schedule:
-  active/paused` (click toggles), `IP: ...`, `MQTT: ...`, `Topic: irrigatorF4` (the MQTT prefix —
-  see [MQTT](#mqtt) below), and `FW: v.<version>` (display only, not clickable), `BACK`.
+  active/paused` (click toggles), `WiFi: good (-62dB)` (verbal quality + RSSI, display only, same
+  5s-sampled reading as the normal screen's dashes), `IP: ...`, `MQTT: ...`, `Topic: irrigatorF4`
+  (the MQTT prefix — see [MQTT](#mqtt) below), and `FW: v.<version>` (display only, not
+  clickable), `BACK`.
 
 ### Reset to factory defaults
 
@@ -176,7 +182,7 @@ MAC address (e.g. `irrigatorF4`). Substitute your device's actual prefix below.
 | `/cmd/watering_percentage` | integer | `/watering_percentage` | integer | Sets the schedule-wide watering multiplier (0–300%), persisted to `settings.json`. |
 | `/cmd/skip_rain_until` | `"2026-07-12T06:00:00"` |  `/skip_rain_until` | `"2026-07-12T06:00:00"` | Suppresses **scheduled** runs until this UTC timestamp (manual/MQTT runs are never affected — this only gates the schedule engine). |
 |  |  | `/online` |  boolean (LWT on ungraceful disconnect, or explicitly before a deliberate restart). | **Retained message**. Matches Home Assistant's default MQTT `availability_topic` convention. |
-| `/cmd/status` | "" | `/status`  | JSON: `datetime`, `firmware_version`, `boot_reason`, `ip`, `uptime_s`, `free_heap_bytes`, `free_storage_bytes`, `cpu_temp_c`, `outputs` (only lists zones/pump that are currently on, each with `current_ma`). | ~15s after boot and on request.  |
+| `/cmd/status` | "" | `/status`  | JSON: `datetime`, `firmware_version`, `boot_reason`, `ip`, `uptime_s`, `rssi_db`, `wifi_quality` (verbal, `miserable`/`poor`/`fair`/`good`/`excellent`), `free_heap_bytes`, `free_storage_bytes`, `cpu_temp_c`, `outputs` (only lists zones/pump that are currently on, each with `current_ma`). | ~15s after boot and on request.  |
 |  |  | `/alert` | see **Error reporting** below | Fire-and-forget notices: current out of expected range, watering queue full, OTA result, and any command/topic error. Not retained, not queued for delivery guarantees. Every alert carries a `datetime` field — JSON alerts get it spliced in alongside their other keys, plain-text alerts are wrapped as `{"datetime":"...","message":"..."}`. |
 | `/cmd/restart` | "" |  |  | **No special response** Publishes `false` to `online`, then restarts. |
 | `/cmd/ota` | FW `.bin` URL | `/ota_completed` | `"2026-07-12T06:00:00"` |  Downloads and flashes that URL, restarts on success. Blocking by design — see [agents.md](agents.md) for why. |
