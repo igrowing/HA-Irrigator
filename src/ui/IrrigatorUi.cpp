@@ -408,38 +408,24 @@ void IrrigatorUi::drawMenuList(const char* title,
 
 void IrrigatorUi::renderMenuMain(const RenderData& data) {
     const bool wateringActive = isActivelyRunning(data.snapshot);
-    const uint8_t itemCount = static_cast<uint8_t>(wateringActive ? 6 : 4);
+    const auto layout = ::irrigator::domain::UiStateMachine::menuMainLayout(wateringActive);
 
     drawMenuList(
-        "MENU", itemCount, uiState_.selectedIndex(), [this, &data, wateringActive](uint8_t index, char* buffer, size_t size) {
-            uint8_t i = index;
-            if (wateringActive) {
-                if (i == 0) {
-                    snprintf(buffer, size, "Stop %s", zoneLabel(data, data.snapshot.activeZone));
-                    return;
-                }
-                if (i == 1) {
-                    snprintf(buffer, size, "Stop all");
-                    return;
-                }
-                i -= 2;
-            }
-            switch (i) {
-                case 0:
-                    snprintf(buffer, size, "Schedule");
-                    break;
-                case 1:
-                    snprintf(buffer, size, "Test all zones");
-                    break;
-                case 2:
-                    snprintf(buffer, size, "Settings");
-                    break;
-                case 3:
-                    snprintf(buffer, size, "BACK");
-                    break;
-                default:
-                    buffer[0] = '\0';
-                    break;
+        "MENU", layout.itemCount, uiState_.selectedIndex(), [this, &data, wateringActive, layout](uint8_t index, char* buffer, size_t size) {
+            if (wateringActive && index == 0) {
+                snprintf(buffer, size, "Stop %s", zoneLabel(data, data.snapshot.activeZone));
+            } else if (wateringActive && index == 1) {
+                snprintf(buffer, size, "Stop all");
+            } else if (index == layout.scheduleIndex) {
+                snprintf(buffer, size, "Schedule");
+            } else if (index == layout.testAllIndex) {
+                snprintf(buffer, size, "Test all zones");
+            } else if (index == layout.settingsIndex) {
+                snprintf(buffer, size, "Settings");
+            } else if (index == layout.backIndex) {
+                snprintf(buffer, size, "BACK");
+            } else {
+                buffer[0] = '\0';
             }
         });
 }
@@ -449,16 +435,17 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                                    ? uiState_.pendingPercentage()
                                    : (data.settings != nullptr ? data.settings->wateringPercentage : 0);
 
+    using Settings = ::irrigator::domain::UiStateMachine;
     drawMenuList(
-        "SETTINGS", 8, uiState_.selectedIndex(), [this, &data, percentage](uint8_t index, char* buffer, size_t size) {
+        "SETTINGS", Settings::kSettingsItemCount, uiState_.selectedIndex(), [this, &data, percentage](uint8_t index, char* buffer, size_t size) {
             switch (index) {
-                case 0:
+                case Settings::kSettingsIndexPercentage:
                     snprintf(buffer, size, "Adjust: %d %%", percentage);
                     break;
-                case 1:
+                case Settings::kSettingsIndexScheduleActive:
                     snprintf(buffer, size, "Schedule: %s", data.scheduleActive ? "active" : "paused");
                     break;
-                case 2: {
+                case Settings::kSettingsIndexWifi: {
                     const auto quality = ::irrigator::domain::wifiQualityFromRssi(data.wifiRssi);
                     snprintf(buffer,
                             size,
@@ -467,19 +454,19 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                             static_cast<int>(data.wifiRssi));
                     break;
                 }
-                case 3:
+                case Settings::kSettingsIndexIp:
                     snprintf(buffer, size, "IP: %s", data.deviceIp.toString().c_str());
                     break;
-                case 4:
+                case Settings::kSettingsIndexMqtt:
                     snprintf(buffer, size, "MQTT: %s", data.mqttBrokerText.c_str());
                     break;
-                case 5:
+                case Settings::kSettingsIndexTopic:
                     snprintf(buffer, size, "Topic: %s", data.mqttTopicText.c_str());
                     break;
-                case 6:
+                case Settings::kSettingsIndexFirmware:
                     snprintf(buffer, size, "FW: v.%s", irrigator::board::FIRMWARE_VERSION);
                     break;
-                case 7:
+                case Settings::kSettingsIndexBack:
                     snprintf(buffer, size, "BACK");
                     break;
                 default:
@@ -490,18 +477,19 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
 }
 
 void IrrigatorUi::renderMenuTestAll() {
+    using TestAll = ::irrigator::domain::UiStateMachine;
     const uint16_t durationMin =
         uiState_.editing() ? uiState_.pendingDuration() : uiState_.testAllZonesDurationMin();
 
-    drawMenuList("TEST ALL ZONES", 3, uiState_.selectedIndex(), [durationMin](uint8_t index, char* buffer, size_t size) {
+    drawMenuList("TEST ALL ZONES", TestAll::kTestAllItemCount, uiState_.selectedIndex(), [durationMin](uint8_t index, char* buffer, size_t size) {
         switch (index) {
-            case 0:
+            case TestAll::kTestAllIndexRun:
                 snprintf(buffer, size, "Run");
                 break;
-            case 1:
+            case TestAll::kTestAllIndexDuration:
                 snprintf(buffer, size, "Dur./zone: %u min", static_cast<unsigned>(durationMin));
                 break;
-            case 2:
+            case TestAll::kTestAllIndexBack:
                 snprintf(buffer, size, "BACK");
                 break;
             default:
@@ -514,7 +502,7 @@ void IrrigatorUi::renderMenuTestAll() {
 void IrrigatorUi::renderMenuSchedule(const RenderData& data) {
     const uint8_t recordCount = data.schedule != nullptr ? data.schedule->count : 0;
     constexpr uint8_t kFieldsPerRecord = ::irrigator::domain::UiStateMachine::kScheduleFieldsPerRecord;
-    const uint8_t itemCount = static_cast<uint8_t>(recordCount * kFieldsPerRecord + 1);
+    const uint8_t itemCount = ::irrigator::domain::UiStateMachine::scheduleItemCount(recordCount);
     const uint8_t editingIndex = uiState_.selectedIndex();
     const bool editing = uiState_.editing();
 

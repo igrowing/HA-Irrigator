@@ -60,6 +60,50 @@ public:
     static constexpr uint8_t kScheduleFieldDuration = 3;
     static constexpr uint8_t kScheduleFieldActive = 4;
 
+    // MenuSchedule's item count: `recordCount` rows of kScheduleFieldsPerRecord fields each, plus
+    // a trailing BACK row. Shared so the renderer (IrrigatorUi::renderMenuSchedule) and the click
+    // routing below (handleMenuSchedule) can't compute it two different ways.
+    static constexpr uint8_t scheduleItemCount(uint8_t recordCount) {
+        return static_cast<uint8_t>(recordCount * kScheduleFieldsPerRecord + 1);
+    }
+
+    // MenuMain's item order/count depends on whether a run is active — [Stop, Stop all] only
+    // appear while watering, shifting every index after them by 2. One source for both the
+    // renderer's row order and handleMenuMain's click routing, instead of each independently
+    // recomputing the same offsets (see agents.md's layer-separation rule for why this lives here
+    // rather than in IrrigatorUi: it's the same navigation-bounds concern kScheduleFieldsPerRecord
+    // already covers for MenuSchedule, and keeping it in the host-testable domain layer means it's
+    // covered by the native test suite instead of only by hardware smoke-testing).
+    struct MenuMainLayout {
+        uint8_t itemCount;
+        uint8_t scheduleIndex;
+        uint8_t testAllIndex;
+        uint8_t settingsIndex;
+        uint8_t backIndex;
+    };
+    static MenuMainLayout menuMainLayout(bool wateringActive);
+
+    // MenuTestAll: 3 rows — Run, Dur./zone, BACK.
+    static constexpr uint8_t kTestAllItemCount = 3;
+    static constexpr uint8_t kTestAllIndexRun = 0;
+    static constexpr uint8_t kTestAllIndexDuration = 1;
+    static constexpr uint8_t kTestAllIndexBack = 2;
+
+    // MenuSettings: 8 rows. Only Adjust/Schedule/BACK are clickable (IP/MQTT/Topic/FW/WiFi are
+    // display-only, per spec) but every row still gets a named index here so the renderer's
+    // switch and this class's click routing share one definition of the layout rather than two
+    // hand-kept-in-sync copies (this is exactly how the WiFi row's insertion previously broke
+    // BACK: the renderer's item count moved to 8 without this class's matching update).
+    static constexpr uint8_t kSettingsItemCount = 8;
+    static constexpr uint8_t kSettingsIndexPercentage = 0;
+    static constexpr uint8_t kSettingsIndexScheduleActive = 1;
+    static constexpr uint8_t kSettingsIndexWifi = 2;
+    static constexpr uint8_t kSettingsIndexIp = 3;
+    static constexpr uint8_t kSettingsIndexMqtt = 4;
+    static constexpr uint8_t kSettingsIndexTopic = 5;
+    static constexpr uint8_t kSettingsIndexFirmware = 6;
+    static constexpr uint8_t kSettingsIndexBack = 7;
+
     UiIntent handleInput(UiInputEvent event, const Context& ctx, uint32_t nowMs);
 
     // Call every loop() iteration regardless of input, to catch the 20s active-interaction
