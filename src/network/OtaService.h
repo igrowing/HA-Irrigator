@@ -5,10 +5,15 @@
 namespace irrigator::network {
 
 using OtaResultHandler = std::function<void(bool success, const char* message)>;
+using OtaStartedHandler = std::function<void()>;
 
 class OtaService {
 public:
     void setResultHandler(OtaResultHandler handler) { resultHandler_ = handler; }
+    // Fired synchronously the instant a cmd/ota is actually accepted (i.e. not rejected as
+    // empty/already-in-progress), before the HTTP GET - lets the caller ack receipt of the
+    // command separately from its eventual success/failure.
+    void setStartedHandler(OtaStartedHandler handler) { startedHandler_ = handler; }
     bool inProgress() const { return inProgress_; }
 
     // Synchronous by design (mirrors the ESP32 Arduino OTA-from-URL convention): downloads and
@@ -24,6 +29,7 @@ private:
 
     bool inProgress_ = false;
     OtaResultHandler resultHandler_;
+    OtaStartedHandler startedHandler_;
 };
 
 }  // namespace irrigator::network

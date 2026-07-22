@@ -31,6 +31,9 @@ void OtaService::beginUpdateFromUrl(const char* url) {
     }
 
     inProgress_ = true;
+    if (startedHandler_) {
+        startedHandler_();
+    }
 
     HTTPClient http;
     if (!http.begin(url)) {

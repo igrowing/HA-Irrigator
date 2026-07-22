@@ -12,6 +12,12 @@ MqttService* MqttService::activeInstance_ = nullptr;
 namespace {
 constexpr uint16_t kMqttBufferBytes = 2048;
 constexpr uint32_t kBootStatusDelayMs = 15000;
+// PubSubClient defaults to a 15s keepalive, so on the garage's weak Wi-Fi (~-70dBm) a single
+// missed PING during a brief signal dip was enough for the broker to declare the client dead
+// (~1.5x keepalive) and fire the LWT, even when the underlying link recovered moments later.
+// 200s keeps that 1.5x window (~300s) at 5 minutes, so transient drops that resolve within that
+// window never flap `.../online` or re-trigger the "request data" automation in HA.
+constexpr uint16_t kMqttKeepAliveSec = 200;
 }  // namespace
 
 void MqttService::begin(const MqttConfig& config) {
@@ -25,6 +31,7 @@ void MqttService::begin(const MqttConfig& config) {
     mqttClient_.setClient(wifiClient_);
     mqttClient_.setServer(config_.broker.c_str(), config_.port);
     mqttClient_.setBufferSize(kMqttBufferBytes);
+    mqttClient_.setKeepAlive(kMqttKeepAliveSec);
     mqttClient_.setCallback(&MqttService::staticMessageCallback);
 
     ::irrigator::drivers::Log.printf("[INFO] MQTT configured for %s:%u prefix=%s\n",
@@ -66,7 +73,7 @@ void MqttService::attemptReconnect(uint32_t nowMs) {
 
 void MqttService::onConnected() {
     const String cmdTopic = config_.prefix + "/cmd/#";
-    mqttClient_.subscribe(cmdTopic.c_str());
+    mqttClient_.subscribe(cmdTopic.c_str(), 1);
     publishAvailability(true);
 }
 
@@ -187,6 +194,10 @@ void MqttService::publishWateringPercentage(int16_t value) {
 
 void MqttService::publishOtaCompleted(const String& isoTimestamp) {
     publishRaw("/ota_completed", isoTimestamp, false);
+}
+
+void MqttService::publishOtaStarted() {
+    publishRaw("/ota_started", "true", false);
 }
 
 void MqttService::publishSkipRainUntil(const String& isoTimestamp) {

@@ -139,24 +139,23 @@ def main():
     http_thread.start()
     print(f"[http] serving {firmware_path} at {firmware_url}")
 
+    connected = threading.Event()
     done = threading.Event()
     result = {}
     publish_acked = threading.Event()
+    started_ack = threading.Event()
     pending_mid = {}
 
     completed_topic = f"{args.topic_prefix}/ota_completed"
     alert_topic = f"{args.topic_prefix}/alert"
+    started_topic = f"{args.topic_prefix}/ota_started"
     cmd_topic = f"{args.topic_prefix}/cmd/ota"
 
     def on_connect(client, userdata, flags, rc):
         if rc != 0:
             sys.exit(f"[mqtt] connect failed (rc={rc})")
-        client.subscribe([(completed_topic, 0), (alert_topic, 0)])
-        print(f"[mqtt] connected, publishing {firmware_url} to {cmd_topic}")
-        # QoS 1 so the broker's PUBACK proves it actually accepted the message
-        # (QoS 0 would "succeed" even if an ACL silently drops it).
-        info = client.publish(cmd_topic, firmware_url, qos=1)
-        pending_mid["value"] = info.mid
+        client.subscribe([(completed_topic, 0), (alert_topic, 0), (started_topic, 0)])
+        connected.set()
 
     def on_publish(client, userdata, mid):
         if mid == pending_mid.get("value"):
@@ -168,6 +167,8 @@ def main():
             result["ok"] = True
             result["message"] = payload
             done.set()
+        elif msg.topic == started_topic:
+            started_ack.set()
         elif msg.topic == alert_topic and "ota" in payload.lower():
             result["ok"] = False
             result["message"] = payload
@@ -184,15 +185,50 @@ def main():
     client.connect(args.host, args.port, keepalive=60)
     client.loop_start()
 
-    if not publish_acked.wait(timeout=10):
+    if not connected.wait(timeout=10):
+        client.loop_stop()
+        client.disconnect()
+        httpd.shutdown()
+        sys.exit("[mqtt] never got a CONNACK from the broker after 10s")
+
+    # cmd/ota is delivered to the device at QoS 0 (see MqttService's cmd/# subscription) and the
+    # device drops any command that arrives while it's mid Wi-Fi-reconnect - so the broker's PUBACK
+    # below only proves the broker got the message, not that the device did. Wait for the device's
+    # own ota_started ack and retry the publish a few times if it doesn't show up before committing
+    # to the long completion wait.
+    ACK_TIMEOUT_S = 10
+    MAX_ATTEMPTS = 10
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        print(f"[mqtt] publishing {firmware_url} to {cmd_topic} (attempt {attempt}/{MAX_ATTEMPTS})")
+        publish_acked.clear()
+        # QoS 1 so the broker's PUBACK proves it actually accepted the message
+        # (QoS 0 would "succeed" even if an ACL silently drops it).
+        info = client.publish(cmd_topic, firmware_url, qos=1)
+        pending_mid["value"] = info.mid
+
+        if not publish_acked.wait(timeout=10):
+            client.loop_stop()
+            client.disconnect()
+            httpd.shutdown()
+            sys.exit(
+                f"[mqtt] broker never acknowledged the publish to {cmd_topic} after 10s — "
+                f"check that '{args.user}' has publish permission (ACL) for that topic"
+            )
+        print("[mqtt] broker acknowledged the OTA command")
+
+        if started_ack.wait(timeout=ACK_TIMEOUT_S):
+            print(f"[mqtt] device confirmed receipt via {started_topic}")
+            break
+        print(f"[mqtt] no {started_topic} ack within {ACK_TIMEOUT_S}s"
+              + (" - retrying" if attempt < MAX_ATTEMPTS else ""))
+    else:
         client.loop_stop()
         client.disconnect()
         httpd.shutdown()
         sys.exit(
-            f"[mqtt] broker never acknowledged the publish to {cmd_topic} after 10s — "
-            f"check that '{args.user}' has publish permission (ACL) for that topic"
+            f"[mqtt] device never confirmed receipt of the OTA command after {MAX_ATTEMPTS} attempts — "
+            "it's likely offline or mid-reconnect; check the device directly"
         )
-    print(f"[mqtt] broker acknowledged the OTA command")
 
     print(f"[wait] waiting up to {args.timeout}s for {completed_topic} (OTA is blocking on the device, this can take a bit)...")
     finished = done.wait(timeout=args.timeout)

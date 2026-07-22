@@ -36,6 +36,15 @@ automation:
       - trigger: state
         entity_id: binary_sensor.irrigator_online
         to: "on"
+        # Debounced: on weak Wi-Fi the device flaps online/offline every couple minutes, and
+        # without this each flap re-triggered the full settings/schedule/status re-download
+        # below - redundant MQTT traffic plus a burst of state-changed events that made the HA
+        # charts look choppy. Since the retained /online topic is already correct the instant
+        # the device reconnects, a transient flap doesn't lose any information here - it's the
+        # reconnect-after-a-real-outage case (this trigger's whole reason to exist) that still
+        # needs to fire, and that case easily survives a 30s hold.
+        for:
+          seconds: 30
     actions:
       - action: mqtt.publish
         data: {topic: "irrigatorF4/cmd/download/settings.json", payload: ""}

@@ -859,6 +859,7 @@ void connectWifiOnce() {
     // Disable Wi-Fi modem sleep: costs more average current, but avoids the periodic
     // beacon-interval current spikes that were showing up as a bursty load on the 3.3V rail.
     esp_wifi_set_ps(WIFI_PS_NONE);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
     WiFi.begin(deviceConfig.ssid, deviceConfig.password);
     const uint32_t startMs = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - startMs < 15000UL) {
@@ -900,6 +901,7 @@ void enterOperationalMode() {
     mqtt.setNowEpochProvider([]() { return static_cast<int64_t>(clockService.epoch()); });
     mqtt.begin(mqttConfig);
 
+    ota.setStartedHandler([]() { mqtt.publishOtaStarted(); });
     ota.setResultHandler([](bool success, const char* message) {
         char alertMsg[128];
         snprintf(alertMsg, sizeof(alertMsg), R"({"ota":"%s","message":"%s"})",

@@ -59,6 +59,11 @@ public:
     void publishScheduled(bool active);
     void publishWateringPercentage(int16_t value);
     void publishOtaCompleted(const String& isoTimestamp);
+    // Publishes to `<prefix>/ota_started` the moment a `cmd/ota` command is actually accepted -
+    // lets a caller (e.g. scripts/ota.py) distinguish "broker accepted my publish" from "the
+    // device received it", since cmd/# is delivered at QoS 0 and a message can be silently
+    // dropped if the device is mid Wi-Fi-reconnect when it's sent.
+    void publishOtaStarted();
     void publishSkipRainUntil(const String& isoTimestamp);
 
     // Publishes file content to `<prefix>/download/<filename>` in response to a
