@@ -89,12 +89,12 @@ public:
     static constexpr uint8_t kTestAllIndexDuration = 1;
     static constexpr uint8_t kTestAllIndexBack = 2;
 
-    // MenuSettings: 8 rows. Only Adjust/Schedule/BACK are clickable (IP/MQTT/Topic/FW/WiFi are
-    // display-only, per spec) but every row still gets a named index here so the renderer's
+    // MenuSettings: 9 rows. Only Adjust/Schedule/Restart/BACK are clickable (IP/MQTT/Topic/FW/WiFi
+    // are display-only, per spec) but every row still gets a named index here so the renderer's
     // switch and this class's click routing share one definition of the layout rather than two
     // hand-kept-in-sync copies (this is exactly how the WiFi row's insertion previously broke
     // BACK: the renderer's item count moved to 8 without this class's matching update).
-    static constexpr uint8_t kSettingsItemCount = 8;
+    static constexpr uint8_t kSettingsItemCount = 9;
     static constexpr uint8_t kSettingsIndexPercentage = 0;
     static constexpr uint8_t kSettingsIndexScheduleActive = 1;
     static constexpr uint8_t kSettingsIndexWifi = 2;
@@ -102,7 +102,8 @@ public:
     static constexpr uint8_t kSettingsIndexMqtt = 4;
     static constexpr uint8_t kSettingsIndexTopic = 5;
     static constexpr uint8_t kSettingsIndexFirmware = 6;
-    static constexpr uint8_t kSettingsIndexBack = 7;
+    static constexpr uint8_t kSettingsIndexRestart = 7;
+    static constexpr uint8_t kSettingsIndexBack = 8;
 
     UiIntent handleInput(UiInputEvent event, const Context& ctx, uint32_t nowMs);
 
@@ -135,6 +136,7 @@ public:
     int16_t pendingPercentage() const { return pendingPercentage_; }
     bool factoryResetConfirmYesSelected() const { return factoryResetConfirmYes_; }
     bool factoryResetSucceeded() const { return factoryResetSucceeded_; }
+    bool restartConfirmYesSelected() const { return restartConfirmYes_; }
 
     uint8_t pendingScheduleZone() const { return pendingScheduleZone_; }
     uint8_t pendingScheduleDay() const { return pendingScheduleDay_; }
@@ -159,6 +161,7 @@ private:
     UiIntent handleMenuScheduleEdit(UiInputEvent event, uint8_t fieldIndex, uint8_t recordIndex);
     UiIntent handleMenuSettings(UiInputEvent event, const Context& ctx);
     UiIntent handleMenuTestAll(UiInputEvent event);
+    UiIntent handleRestartConfirm(UiInputEvent event);
     UiIntent handleFactoryResetConfirm(UiInputEvent event);
 
     static uint8_t stepIndex(uint8_t current, uint8_t count, bool forward);
@@ -190,6 +193,7 @@ private:
 
     bool factoryResetConfirmYes_ = false;
     bool factoryResetSucceeded_ = false;
+    bool restartConfirmYes_ = false;
 
     bool active_ = false;  // Active-interaction vs. display-off.
     uint32_t interactionDeadlineMs_ = 0;

@@ -90,6 +90,8 @@ UiIntent UiStateMachine::handleInput(UiInputEvent event, const Context& ctx, uin
             return handleMenuSettings(event, ctx);
         case UiScreen::MenuTestAll:
             return handleMenuTestAll(event);
+        case UiScreen::RestartConfirm:
+            return handleRestartConfirm(event);
         case UiScreen::FactoryResetConfirm:
             return handleFactoryResetConfirm(event);
         case UiScreen::FactoryResetResult:
@@ -219,6 +221,29 @@ UiIntent UiStateMachine::handleFactoryResetConfirm(UiInputEvent event) {
             break;
         case UiInputEvent::LongClick:
             factoryResetConfirmYes_ = false;
+            screen_ = UiScreen::Normal;
+            break;
+    }
+    return intent;
+}
+
+UiIntent UiStateMachine::handleRestartConfirm(UiInputEvent event) {
+    UiIntent intent;
+    switch (event) {
+        case UiInputEvent::Clockwise:
+        case UiInputEvent::CounterClockwise:
+            restartConfirmYes_ = !restartConfirmYes_;
+            break;
+        case UiInputEvent::Click:
+            if (restartConfirmYes_) {
+                intent.type = UiIntentType::RestartDevice;
+            } else {
+                screen_ = UiScreen::Normal;
+            }
+            restartConfirmYes_ = false;
+            break;
+        case UiInputEvent::LongClick:
+            restartConfirmYes_ = false;
             screen_ = UiScreen::Normal;
             break;
     }
@@ -502,6 +527,9 @@ UiIntent UiStateMachine::handleMenuSettings(UiInputEvent event, const Context& c
             } else if (selectedIndex_ == kSettingsIndexScheduleActive) {
                 intent.type = UiIntentType::ToggleScheduleActive;
                 intent.boolValue = !ctx.scheduleActive;
+            } else if (selectedIndex_ == kSettingsIndexRestart) {
+                restartConfirmYes_ = false;
+                screen_ = UiScreen::RestartConfirm;
             } else if (selectedIndex_ == kSettingsIndexBack) {
                 screen_ = UiScreen::MenuMain;
                 selectedIndex_ = 0;

@@ -16,6 +16,7 @@ enum class UiScreen : uint8_t {
     MenuSchedule,
     MenuSettings,
     MenuTestAll,
+    RestartConfirm,
     FactoryResetConfirm,
     FactoryResetResult,
 };
@@ -33,6 +34,7 @@ enum class UiIntentType : uint8_t {
     SetScheduleDuration,
     SetScheduleActive,
     RunAllZonesTest,
+    RestartDevice,
     FactoryReset,
 };
 

@@ -640,6 +640,12 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
                 enqueueOrStart(request, nowMs);
             }
             break;
+        case UiIntentType::RestartDevice:
+            irrigator::drivers::Log.info("Restart requested from Settings menu (confirmed)");
+            mqtt.publishAvailability(false);
+            delay(200);
+            ESP.restart();
+            break;
         case UiIntentType::FactoryReset: {
             irrigator::drivers::Log.warn("Factory reset requested (10s BOOT-button hold, confirmed)");
             const bool configRemoved = fileStore.remove(irrigator::board::CONFIG_FILE_PATH);

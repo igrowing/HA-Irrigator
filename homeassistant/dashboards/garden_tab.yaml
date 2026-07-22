@@ -384,11 +384,8 @@
                 entity: sensor.irrigator_address_2
                 attribute: boot_reason
                 name: Boot Reason
-              - type: attribute
-                entity: sensor.irrigator_address_2
-                attribute: uptime_s
+              - entity: sensor.irrigator_uptime
                 name: Uptime
-                suffix: " s"
               - type: attribute
                 entity: sensor.irrigator_address_2
                 attribute: rssi_db

@@ -69,6 +69,7 @@ private:
     void renderMenuSchedule(const RenderData& data);
     void renderMenuSettings(const RenderData& data);
     void renderMenuTestAll();
+    void renderRestartConfirm();
     void renderFactoryResetConfirm();
     void renderFactoryResetResult();
     void drawMenuList(const char* title, uint8_t itemCount, uint8_t selectedIndex,

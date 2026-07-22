@@ -264,7 +264,7 @@ void test_settings_store_round_trips() {
     settings.wateringPercentage = 120;
     settings.scheduleActive = false;
 
-    char buffer[512];
+    char buffer[irrigator::board::SETTINGS_JSON_MAX_BYTES];
     const size_t written = irrigator::domain::serializeSettings(settings, buffer, sizeof(buffer));
     TEST_ASSERT_TRUE(written > 0);
 
@@ -588,6 +588,49 @@ void test_ui_state_machine_settings_percentage_edit() {
     TEST_ASSERT_FALSE(ui.editing());
 }
 
+void test_ui_state_machine_settings_restart_confirm_flow() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Schedule -> Test all zones
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Test all zones -> Settings
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuSettings);
+
+    for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexRestart; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 400 + i);
+    }
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexRestart, ui.selectedIndex());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);  // -> RestartConfirm
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::RestartConfirm);
+    TEST_ASSERT_FALSE(ui.restartConfirmYesSelected());
+
+    // NO stays selected by default; confirming without toggling to YES must not restart.
+    const irrigator::domain::UiIntent noIntent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 600);
+    TEST_ASSERT_TRUE(noIntent.type == irrigator::domain::UiIntentType::None);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
+
+    // Re-enter and confirm with YES this time.
+    ui.wake(700);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 800);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 900);
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 950);
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1000);  // -> MenuSettings
+    for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexRestart; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 1100 + i);
+    }
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1200);  // -> RestartConfirm
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 1300);
+    TEST_ASSERT_TRUE(ui.restartConfirmYesSelected());
+
+    const irrigator::domain::UiIntent yesIntent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1400);
+    TEST_ASSERT_TRUE(yesIntent.type == irrigator::domain::UiIntentType::RestartDevice);
+}
+
 void test_ui_state_machine_test_all_zones_flow() {
     irrigator::domain::UiStateMachine ui;
     irrigator::domain::UiStateMachine::Context ctx;
@@ -818,6 +861,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_stop_all_requires_confirmation_then_stops_and_clears);
     RUN_TEST(test_ui_state_machine_stop_all_confirm_no_cancels_without_intent);
     RUN_TEST(test_ui_state_machine_settings_percentage_edit);
+    RUN_TEST(test_ui_state_machine_settings_restart_confirm_flow);
     RUN_TEST(test_ui_state_machine_test_all_zones_flow);
     RUN_TEST(test_ui_state_machine_schedule_duration_edit);
     RUN_TEST(test_ui_state_machine_schedule_zone_edit_wraps);

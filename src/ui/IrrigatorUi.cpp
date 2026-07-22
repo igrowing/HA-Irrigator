@@ -7,6 +7,11 @@ namespace irrigator::ui {
 
 namespace {
 
+const char* noText = "NO";
+const char* yesText = "YES";
+const int16_t noX = 35;
+const int16_t yesX = 70;
+
 void drawCentered(U8G2& display, uint8_t y, const char* text) {
     const uint16_t width = display.getStrWidth(text);
     const int16_t x = static_cast<int16_t>((128 - static_cast<int16_t>(width)) / 2);
@@ -177,6 +182,9 @@ void IrrigatorUi::render(uint32_t nowMs, const RenderData& data) {
         case ::irrigator::domain::UiScreen::MenuTestAll:
             renderMenuTestAll();
             break;
+        case ::irrigator::domain::UiScreen::RestartConfirm:
+            renderRestartConfirm();
+            break;
         case ::irrigator::domain::UiScreen::FactoryResetConfirm:
             renderFactoryResetConfirm();
             break;
@@ -314,14 +322,26 @@ void IrrigatorUi::renderStopConfirm(const RenderData& data) {
     display_.setFont(u8g2_font_helvB08_tr);
     drawCentered(display_, 30, uiState_.stopAllPending() ? "STOP ALL?" : "STOP?");
 
-    const char* noText = "NO";
-    const char* yesText = "YES";
-    const int16_t noX = 40;
-    const int16_t yesX = 80;
     const uint16_t noWidth = display_.getStrWidth(noText);
     const uint16_t yesWidth = display_.getStrWidth(yesText);
-
     if (!uiState_.stopConfirmYesSelected()) {
+        display_.drawFrame(noX - 4, 40, noWidth + 8, 16);
+    } else {
+        display_.drawFrame(yesX - 4, 40, yesWidth + 8, 16);
+    }
+    display_.drawStr(noX, 52, noText);
+    display_.drawStr(yesX, 52, yesText);
+    display_.sendBuffer();
+}
+
+void IrrigatorUi::renderRestartConfirm() {
+    display_.clearBuffer();
+    display_.setFont(u8g2_font_helvB08_tr);
+    drawCentered(display_, 30, "RESTART?");
+
+    const uint16_t noWidth = display_.getStrWidth(noText);
+    const uint16_t yesWidth = display_.getStrWidth(yesText);
+    if (!uiState_.restartConfirmYesSelected()) {
         display_.drawFrame(noX - 4, 40, noWidth + 8, 16);
     } else {
         display_.drawFrame(yesX - 4, 40, yesWidth + 8, 16);
@@ -339,14 +359,10 @@ void IrrigatorUi::renderFactoryResetConfirm() {
     drawCentered(display_, 32, "Erase config/settings");
     drawCentered(display_, 42, "/schedule, restart.");
 
-    const char* noText = "NO";
-    const char* yesText = "YES";
-    const int16_t noX = 40;
-    const int16_t yesX = 80;
     display_.setFont(u8g2_font_helvB10_tr);
+
     const uint16_t noWidth = display_.getStrWidth(noText);
     const uint16_t yesWidth = display_.getStrWidth(yesText);
-
     if (!uiState_.factoryResetConfirmYesSelected()) {
         display_.drawFrame(noX - 4, 48, noWidth + 8, 16);
     } else {
@@ -465,6 +481,9 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                     break;
                 case Settings::kSettingsIndexFirmware:
                     snprintf(buffer, size, "FW: v.%s", irrigator::board::FIRMWARE_VERSION);
+                    break;
+                case Settings::kSettingsIndexRestart:
+                    snprintf(buffer, size, "Restart");
                     break;
                 case Settings::kSettingsIndexBack:
                     snprintf(buffer, size, "BACK");

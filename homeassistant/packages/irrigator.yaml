@@ -434,6 +434,17 @@ template:
   # offset, `as_datetime` returns a naive datetime that can't be subtracted
   # from HA's tz-aware `now()`.
   - sensor:
+      # Device-reported `uptime_s` (main.ino's `doc["uptime_s"] = nowMs / 1000UL`, an attribute
+      # on sensor.irrigator_address_2's /status payload) is raw seconds - not friendly to read at
+      # a glance for anything past a couple of hours. This reformats it as DD:HH:MM:SS (2 digits
+      # each; days can't realistically exceed 2 digits since millis() itself wraps at ~49.7 days,
+      # long before nowMs/1000UL would).
+      - name: "Irrigator Uptime"
+        unique_id: irrigator_uptime_formatted
+        icon: mdi:clock-outline
+        state: >-
+          {% set s = state_attr('sensor.irrigator_address_2', 'uptime_s') | int(0) %}
+          {{ '%02d:%02d:%02d:%02d' | format(s // 86400, (s % 86400) // 3600, (s % 3600) // 60, s % 60) }}
       - name: "Irrigator Pump Remaining"
         unique_id: irrigator_pump_remaining_sensor
         default_entity_id: sensor.irrigator_pump_remaining
