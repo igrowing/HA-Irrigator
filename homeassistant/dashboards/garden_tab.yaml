@@ -397,6 +397,24 @@
                 name: WiFi Quality
               - type: attribute
                 entity: sensor.irrigator_address_2
+                attribute: bssid
+                name: WiFi BSSID
+              - type: attribute
+                entity: sensor.irrigator_address_2
+                attribute: wifi_channel
+                name: WiFi Channel
+              - type: attribute
+                entity: sensor.irrigator_address_2
+                attribute: noise_floor_db
+                name: WiFi Noise Floor
+                suffix: " dB"
+              - type: attribute
+                entity: sensor.irrigator_address_2
+                attribute: snr_db
+                name: WiFi SNR
+                suffix: " dB"
+              - type: attribute
+                entity: sensor.irrigator_address_2
                 attribute: cpu_temp_c
                 name: CPU Temp
                 suffix: " °C"

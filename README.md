@@ -150,8 +150,10 @@ MENU
 - **Settings**: `Adjust: 100 %` (±10%/tick, click to edit, click to confirm), `Schedule:
   active/paused` (click toggles), `WiFi: good (-62dB)` (verbal quality + RSSI, display only, same
   5s-sampled reading as the normal screen's dashes), `IP: ...`, `MQTT: ...`, `Topic: irrigatorF4`
-  (the MQTT prefix — see [MQTT](#mqtt) below), and `FW: v.<version>` (display only, not
-  clickable), `BACK`.
+  (the MQTT prefix — see [MQTT](#mqtt) below), `FW: v.<version>` (display only, not clickable),
+  `Restart` (opens a confirm screen — `RESTART?  [NO]  YES`, same turn-to-select/click-to-confirm
+  gesture as **Stop**/**Stop all** above — confirming reboots the device immediately; choosing
+  `NO` or backing out returns to the normal screen without restarting), `BACK`.
 
 ### Reset to factory defaults
 

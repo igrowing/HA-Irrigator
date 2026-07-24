@@ -86,6 +86,30 @@ constexpr uint32_t kWifiRssiSampleIntervalMs = 5000;
 int32_t cachedWifiRssi = -127;
 uint32_t lastWifiRssiSampleMs = 0;
 bool wifiRssiSampled = false;
+
+// SNR (RSSI relative to the local RF noise floor) needs the noise floor, which ESP32's normal
+// STA API never exposes — wifi_ap_record_t only carries rssi. The only place noise_floor exists
+// is the per-packet metadata handed to a *promiscuous*-mode RX callback (and only on original
+// ESP32 — S2/S3/C3 don't populate it in this field), so getting it means briefly switching the
+// radio into promiscuous mode alongside the normal STA connection, averaging the noise_floor of
+// whatever management frames arrive during a short window, then switching promiscuous mode back
+// off. Kept short (kNoiseFloorSampleWindowMs) and infrequent (kNoiseFloorSampleIntervalMs)
+// deliberately: promiscuous mode adds a callback invocation for every captured frame on the
+// channel, and this device's real job is irrigation control, not continuous WiFi sniffing.
+constexpr uint32_t kNoiseFloorSampleIntervalMs = 30000;
+constexpr uint32_t kNoiseFloorSampleWindowMs = 300;
+int8_t cachedNoiseFloorDbm = 0;
+bool noiseFloorSampled = false;    // False until the first window ever produces a reading.
+bool noiseFloorAttempted = false;  // Mirrors wifiRssiSampled's "eager first attempt" pattern.
+bool noiseFloorSamplingActive = false;
+uint32_t lastNoiseFloorAttemptMs = 0;
+uint32_t noiseFloorWindowStartMs = 0;
+// Written from the promiscuous RX callback (WiFi driver's own task context), read/reset from
+// loop() — plain volatile ints rather than a mutex, since the only failure mode of a torn
+// read/write here is one averaging window being off by a sample or two, not a correctness bug.
+volatile int32_t noiseFloorAccumulator = 0;
+volatile uint16_t noiseFloorSampleCount = 0;
+
 irrigator::domain::IrrigationState previousIrrigationState = irrigator::domain::IrrigationState::Idle;
 
 bool valveWindowOpen = false;
@@ -190,6 +214,63 @@ void sampleWifiRssiIfDue(uint32_t nowMs) {
     cachedWifiRssi = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : -127;
 }
 
+// Runs in the WiFi driver's own task context, not loop() — keep it to simple integer
+// bookkeeping only (no logging, no flash access, nothing that could block the WiFi task).
+// The MGMT-only filter set in startNoiseFloorSampling() already restricts what reaches here,
+// but the type check is a cheap belt-and-suspenders guard against a stale/misconfigured filter.
+void onPromiscuousPacket(void* buf, wifi_promiscuous_pkt_type_t type) {
+    if (type != WIFI_PKT_MGMT) {
+        return;
+    }
+    const auto* pkt = static_cast<const wifi_promiscuous_pkt_t*>(buf);
+    noiseFloorAccumulator += pkt->rx_ctrl.noise_floor;
+    noiseFloorSampleCount++;
+}
+
+void startNoiseFloorSampling() {
+    noiseFloorAccumulator = 0;
+    noiseFloorSampleCount = 0;
+    wifi_promiscuous_filter_t filter = {};
+    filter.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT;
+    esp_wifi_set_promiscuous_filter(&filter);
+    esp_wifi_set_promiscuous_rx_cb(&onPromiscuousPacket);
+    esp_wifi_set_promiscuous(true);
+}
+
+void stopNoiseFloorSamplingAndApply() {
+    esp_wifi_set_promiscuous(false);
+    // A quiet window (e.g. a channel with almost no management-frame traffic) can end with zero
+    // samples — keep whatever the last good reading was rather than clobbering it with garbage.
+    if (noiseFloorSampleCount > 0) {
+        cachedNoiseFloorDbm = static_cast<int8_t>(noiseFloorAccumulator / noiseFloorSampleCount);
+        noiseFloorSampled = true;
+    }
+}
+
+// Mirrors sampleWifiRssiIfDue's throttling pattern (kNoiseFloorSampleIntervalMs / eager first
+// attempt), plus the extra start/stop state machine promiscuous mode needs: a short
+// kNoiseFloorSampleWindowMs burst rather than leaving the radio in promiscuous mode continuously.
+void sampleNoiseFloorIfDue(uint32_t nowMs) {
+    if (noiseFloorSamplingActive) {
+        if (nowMs - noiseFloorWindowStartMs >= kNoiseFloorSampleWindowMs) {
+            stopNoiseFloorSamplingAndApply();
+            noiseFloorSamplingActive = false;
+        }
+        return;
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+        return;
+    }
+    if (noiseFloorAttempted && nowMs - lastNoiseFloorAttemptMs < kNoiseFloorSampleIntervalMs) {
+        return;
+    }
+    noiseFloorAttempted = true;
+    lastNoiseFloorAttemptMs = nowMs;
+    noiseFloorWindowStartMs = nowMs;
+    noiseFloorSamplingActive = true;
+    startNoiseFloorSampling();
+}
+
 String buildStatusJson(uint32_t nowMs) {
     JsonDocument doc;
     doc["firmware_version"] = irrigator::board::FIRMWARE_VERSION;
@@ -199,6 +280,21 @@ String buildStatusJson(uint32_t nowMs) {
     doc["rssi_db"] = cachedWifiRssi;
     doc["wifi_quality"] =
         irrigator::domain::toString(irrigator::domain::wifiQualityFromRssi(cachedWifiRssi));
+    // BSSID/channel identify which physical AP (and radio channel) the device is actually
+    // associated with right now — useful for spotting a sticky-client roam to a distant/overloaded
+    // AP, or channel congestion specific to where the device sits, neither of which RSSI alone
+    // reveals (a location can show strong RSSI to a bad AP, or weak RSSI to a clean one). Read
+    // live (not cached like RSSI above) since this is only built on-demand/periodically, not on
+    // every loop() iteration the way the UI's RSSI read is.
+    doc["bssid"] = WiFi.status() == WL_CONNECTED ? WiFi.BSSIDstr() : "";
+    doc["wifi_channel"] = WiFi.status() == WL_CONNECTED ? WiFi.channel() : 0;
+    // Omitted entirely (rather than a fake sentinel) until the first promiscuous-mode sampling
+    // window (see sampleNoiseFloorIfDue) actually lands a reading — see that function for why
+    // this isn't available from the normal STA API the way RSSI/BSSID/channel are.
+    if (noiseFloorSampled) {
+        doc["noise_floor_db"] = cachedNoiseFloorDbm;
+        doc["snr_db"] = cachedWifiRssi - cachedNoiseFloorDbm;
+    }
     doc["free_heap_bytes"] = ESP.getFreeHeap();
     doc["free_storage_bytes"] = static_cast<uint32_t>(fileStore.freeBytes());
     doc["cpu_temp_c"] = temperatureRead();
@@ -865,7 +961,7 @@ void connectWifiOnce() {
     // Disable Wi-Fi modem sleep: costs more average current, but avoids the periodic
     // beacon-interval current spikes that were showing up as a bursty load on the 3.3V rail.
     esp_wifi_set_ps(WIFI_PS_NONE);
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    WiFi.setTxPower(WIFI_POWER_17dBm);
     WiFi.begin(deviceConfig.ssid, deviceConfig.password);
     const uint32_t startMs = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - startMs < 15000UL) {
@@ -1116,6 +1212,7 @@ void loop() {
             // updateCurrentMonitoring(nowMs);  // Disabled for now, until measurement circuit is tested in HW and calibrated..
             updateOutputsFromDomain();
             sampleWifiRssiIfDue(nowMs);
+            sampleNoiseFloorIfDue(nowMs);
 
             {
                 irrigator::ui::RenderData renderData;

@@ -43,8 +43,8 @@ automation:
         # the device reconnects, a transient flap doesn't lose any information here - it's the
         # reconnect-after-a-real-outage case (this trigger's whole reason to exist) that still
         # needs to fire, and that case easily survives a 30s hold.
-        for:
-          seconds: 30
+        # for:
+        #   seconds: 30
     actions:
       - action: mqtt.publish
         data: {topic: "irrigatorF4/cmd/download/settings.json", payload: ""}
