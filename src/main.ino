@@ -1119,10 +1119,13 @@ void updateOutputsFromDomain() {
 
     if (valveFaultActive || pumpFaultActive) {
         led.setMode(irrigator::drivers::LedMode::Alert);
+    } else if (snapshot.state == irrigator::domain::IrrigationState::Watering) {
+        led.setMode(irrigator::drivers::LedMode::Breathe);
     } else if (snapshot.pumpOn) {
         led.setMode(irrigator::drivers::LedMode::SolidOn);
     } else if (led.mode() == irrigator::drivers::LedMode::SolidOn ||
-              led.mode() == irrigator::drivers::LedMode::Alert) {
+              led.mode() == irrigator::drivers::LedMode::Alert ||
+              led.mode() == irrigator::drivers::LedMode::Breathe) {
         led.setMode(irrigator::drivers::LedMode::Off);
     }
 }

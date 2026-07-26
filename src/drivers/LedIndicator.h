@@ -4,7 +4,7 @@
 
 namespace irrigator::drivers {
 
-enum class LedMode : uint8_t { Off, SolidOn, CaptivePortal, Alert, Ota, BreathOnce };
+enum class LedMode : uint8_t { Off, SolidOn, CaptivePortal, Alert, Ota, BreathOnce, Breathe };
 
 class LedIndicator {
 public:
