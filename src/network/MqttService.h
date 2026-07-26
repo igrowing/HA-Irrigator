@@ -95,6 +95,11 @@ private:
     NowEpochProvider nowEpochProvider_;
     WiFiClient wifiClient_;
     PubSubClient mqttClient_;
+    // False when config_.broker is empty at begin() — MQTT is entirely optional (spec: captive
+    // portal / config.json may omit broker/port/user/password). loop() short-circuits and no
+    // reconnect is ever attempted in that case; connected()/publish* already degrade safely to
+    // no-ops via PubSubClient's own null-client handling, so nothing else needs to branch on this.
+    bool enabled_ = false;
 
     uint32_t bootMs_ = 0;
     bool bootStatusPublished_ = false;

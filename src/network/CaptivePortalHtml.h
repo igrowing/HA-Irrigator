@@ -68,9 +68,9 @@ const char CAPTIVE_PORTAL_HTML[] PROGMEM = R"raw(
 
             <hr>
 
-            <h2>MQTT Settings</h2>
-            <div class="input-group"><label for="mqtt_broker">MQTT Broker Address</label><input type="text" id="mqtt_broker" name="mqtt_broker" placeholder="e.g., 192.168.1.10" value="%MQTT_BROKER_VALUE%" required></div>
-            <div class="input-group"><label for="mqtt_port">MQTT Broker Port</label><input type="number" id="mqtt_port" name="mqtt_port" min="1" max="65535" value="%MQTT_PORT_VALUE%" required></div>
+            <h2>MQTT Settings (optional)</h2>
+            <div class="input-group"><label for="mqtt_broker">MQTT Broker Address</label><input type="text" id="mqtt_broker" name="mqtt_broker" placeholder="Leave blank to disable MQTT" value="%MQTT_BROKER_VALUE%"></div>
+            <div class="input-group"><label for="mqtt_port">MQTT Broker Port</label><input type="number" id="mqtt_port" name="mqtt_port" min="1" max="65535" value="%MQTT_PORT_VALUE%"></div>
             <div class="input-group"><label for="mqtt_user">MQTT Username (optional)</label><input type="text" id="mqtt_user" name="mqtt_user" value="%MQTT_USER_VALUE%"></div>
             <div class="input-group"><label for="mqtt_password">MQTT Password (optional)</label><input type="password" id="mqtt_password" name="mqtt_password" value="%MQTT_PASSWORD_VALUE%"></div>
 
@@ -89,7 +89,7 @@ const char CAPTIVE_PORTAL_HTML[] PROGMEM = R"raw(
 </html>
 )raw";
 
-// Placeholder: %DEVICE_IP%
+// Placeholders: %DEVICE_IP% %MQTT_STATUS_LINE%
 const char CONFIG_SAVED_HTML[] PROGMEM = R"raw(
 <!DOCTYPE html>
 <html>
@@ -105,7 +105,7 @@ const char CONFIG_SAVED_HTML[] PROGMEM = R"raw(
 <body>
     <div class="container">
         <h2>Configuration Saved!</h2>
-        <p>Wi-Fi and MQTT connectivity both confirmed.</p>
+        <p>%MQTT_STATUS_LINE%</p>
         <p>Device IP: <strong>%DEVICE_IP%</strong></p>
         <p>The device is now restarting to apply the new settings.</p>
     </div>

@@ -474,10 +474,18 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                     snprintf(buffer, size, "IP: %s", data.deviceIp.toString().c_str());
                     break;
                 case Settings::kSettingsIndexMqtt:
-                    snprintf(buffer, size, "MQTT: %s", data.mqttBrokerText.c_str());
+                    if (data.mqttBrokerText.length() == 0) {
+                        snprintf(buffer, size, "MQTT: disabled");
+                    } else {
+                        snprintf(buffer, size, "MQTT: %s", data.mqttBrokerText.c_str());
+                    }
                     break;
                 case Settings::kSettingsIndexTopic:
-                    snprintf(buffer, size, "Topic: %s", data.mqttTopicText.c_str());
+                    if (data.mqttBrokerText.length() == 0) {
+                        snprintf(buffer, size, "Topic: -");
+                    } else {
+                        snprintf(buffer, size, "Topic: %s", data.mqttTopicText.c_str());
+                    }
                     break;
                 case Settings::kSettingsIndexFirmware:
                     snprintf(buffer, size, "FW: v.%s", irrigator::board::FIRMWARE_VERSION);

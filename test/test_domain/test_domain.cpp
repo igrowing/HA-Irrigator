@@ -244,6 +244,22 @@ void test_config_store_rejects_missing_required_fields() {
     TEST_ASSERT_FALSE(irrigator::domain::parseConfig(malformed, strlen(malformed), config));
 }
 
+void test_config_store_allows_mqtt_fields_blank() {
+    const char* json = R"({"ssid":"home","password":"secret","timezone":2})";
+    irrigator::domain::DeviceConfig config;
+    TEST_ASSERT_TRUE(irrigator::domain::parseConfig(json, strlen(json), config));
+    TEST_ASSERT_EQUAL_STRING("home", config.ssid);
+    TEST_ASSERT_EQUAL_STRING("", config.mqttBroker);
+    TEST_ASSERT_EQUAL_STRING("", config.mqttUser);
+    TEST_ASSERT_EQUAL_STRING("", config.mqttPassword);
+
+    // A broker given without a usable port is still rejected -- MQTT being optional doesn't
+    // relax validation once the caller opts into it.
+    const char* brokerWithoutPort = R"({"ssid":"home","mqtt_broker":"192.168.1.10","mqtt_port":0})";
+    TEST_ASSERT_FALSE(
+        irrigator::domain::parseConfig(brokerWithoutPort, strlen(brokerWithoutPort), config));
+}
+
 void test_settings_store_defaults_missing_zone_names() {
     const char* json = R"({"watering_percentage":80,"zone_names":{"1":"Grass"}})";
     irrigator::domain::Settings settings;
@@ -840,6 +856,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_abort_during_existing_grace_period_cuts_it_short);
     RUN_TEST(test_config_store_round_trips_valid_json);
     RUN_TEST(test_config_store_rejects_missing_required_fields);
+    RUN_TEST(test_config_store_allows_mqtt_fields_blank);
     RUN_TEST(test_settings_store_defaults_missing_zone_names);
     RUN_TEST(test_settings_store_rejects_out_of_range_percentage);
     RUN_TEST(test_settings_store_round_trips);

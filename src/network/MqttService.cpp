@@ -22,11 +22,17 @@ constexpr uint16_t kMqttKeepAliveSec = 200;
 
 void MqttService::begin(const MqttConfig& config) {
     config_ = config;
+    enabled_ = config_.broker.length() > 0;
     activeInstance_ = this;
     bootMs_ = millis();
     bootStatusPublished_ = false;
     reconnectBackoffMs_ = kReconnectBackoffMinMs;
     lastReconnectAttemptMs_ = 0;
+
+    if (!enabled_) {
+        ::irrigator::drivers::Log.info("MQTT broker not configured; MQTT disabled");
+        return;
+    }
 
     mqttClient_.setClient(wifiClient_);
     mqttClient_.setServer(config_.broker.c_str(), config_.port);
@@ -79,6 +85,10 @@ void MqttService::onConnected() {
 
 void MqttService::loop(uint32_t nowMs) {
     currentNowMs_ = nowMs;
+
+    if (!enabled_) {
+        return;
+    }
 
     if (WiFi.status() != WL_CONNECTED) {
         return;

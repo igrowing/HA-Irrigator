@@ -20,10 +20,9 @@ bool validateConfig(const DeviceConfig& config) {
     if (config.ssid[0] == '\0') {
         return false;
     }
-    if (config.mqttBroker[0] == '\0') {
-        return false;
-    }
-    if (config.mqttPort == 0) {
+    // MQTT is optional: an empty broker means "MQTT disabled", so there's nothing to validate
+    // about port/user/password in that case. A broker was given, though, its port must be usable.
+    if (config.mqttBroker[0] != '\0' && config.mqttPort == 0) {
         return false;
     }
     if (config.timezoneOffsetHours < board::TIMEZONE_OFFSET_MIN_HOURS ||

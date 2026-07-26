@@ -118,8 +118,10 @@ void CaptivePortalService::handleSave() {
         return;
     }
 
-    // Try MQTT exactly once, no retries (spec: Captive portal step 3).
-    if (!testMqttOnce(config)) {
+    // Try MQTT exactly once, no retries (spec: Captive portal step 3) — skipped entirely when no
+    // broker was given, since MQTT is optional and an empty broker means "don't use it".
+    const bool mqttConfigured = config.mqttBroker[0] != '\0';
+    if (mqttConfigured && !testMqttOnce(config)) {
         failAndStayInApMode(config, "Wi-Fi connected, but MQTT broker unreachable.");
         return;
     }
@@ -136,6 +138,9 @@ void CaptivePortalService::handleSave() {
     // so it can receive this response reporting the new station IP before we restart.
     String html = CONFIG_SAVED_HTML;
     html.replace("%DEVICE_IP%", WiFi.localIP().toString());
+    html.replace("%MQTT_STATUS_LINE%",
+                mqttConfigured ? "Wi-Fi and MQTT connectivity both confirmed."
+                               : "Wi-Fi connectivity confirmed. MQTT is disabled (no broker configured).");
     server_.send(200, "text/html", html);
 
     ::irrigator::drivers::Log.info("Captive portal setup succeeded, restarting");
