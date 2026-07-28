@@ -7,7 +7,10 @@
 #include <esp_mac.h>
 #include <esp_wifi.h>
 
+#include <string.h>
+
 #include "board_config.h"
+#include "domain/AutoAdjustment.h"
 #include "domain/CalendarMath.h"
 #include "domain/ConfigStore.h"
 #include "domain/CurrentFaultMonitor.h"
@@ -28,6 +31,7 @@
 #include "network/CaptivePortalService.h"
 #include "network/MqttService.h"
 #include "network/OtaService.h"
+#include "network/WeatherService.h"
 #include "ui/IrrigatorUi.h"
 
 using irrigator::board::PUMP_CURRENT_ADC_PIN;
@@ -70,7 +74,18 @@ irrigator::domain::ScheduleEngine scheduleEngine;
 irrigator::network::CaptivePortalService captivePortal;
 irrigator::network::MqttService mqtt;
 irrigator::network::OtaService ota;
+irrigator::network::WeatherService weatherService;
 irrigator::ui::IrrigatorUi ui;
+
+// Weather-based auto-adjustment retry pacing — in-RAM only, a reboot just
+// means "allow an immediate retry" rather than waiting out whatever interval was left.
+uint32_t lastGeoAttemptMs = 0;
+bool geoAttempted = false;
+uint32_t lastWeatherAttemptMs = 0;
+bool weatherAttempted = false;
+// Deliberately in-RAM only, not settings.json — a power cycle should re-run today's cycle rather
+// than remember it already happened (see the comment on Settings.h's field list for why).
+char lastWeatherUpdateDate[11] = {};  // "YYYY-MM-DD", empty until this session's first success.
 
 WateringRequest activeRequestForReporting;
 bool reportedActive = false;
@@ -675,6 +690,42 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
             }
             break;
         }
+        case UiIntentType::SetUpperLimit: {
+            irrigator::domain::Settings updated = settings;
+            updated.upperLimitPercent = intent.percentage;
+            if (irrigator::domain::validateSettings(updated)) {
+                settings = updated;
+                persistSettings();
+            }
+            break;
+        }
+        case UiIntentType::SetLowerLimit: {
+            irrigator::domain::Settings updated = settings;
+            updated.lowerLimitPercent = intent.percentage;
+            if (irrigator::domain::validateSettings(updated)) {
+                settings = updated;
+                persistSettings();
+            }
+            break;
+        }
+        case UiIntentType::SetRainSkipProbability: {
+            irrigator::domain::Settings updated = settings;
+            updated.rainSkipProbabilityPercent = intent.percentage;
+            if (irrigator::domain::validateSettings(updated)) {
+                settings = updated;
+                persistSettings();
+            }
+            break;
+        }
+        case UiIntentType::SetRainSkipAmount: {
+            irrigator::domain::Settings updated = settings;
+            updated.rainSkipAmountMm = intent.percentage;
+            if (irrigator::domain::validateSettings(updated)) {
+                settings = updated;
+                persistSettings();
+            }
+            break;
+        }
         case UiIntentType::SetScheduleZone:
             if (intent.scheduleRecordIndex < scheduleList.count) {
                 irrigator::domain::ScheduleRecord updated =
@@ -1025,6 +1076,141 @@ void enterOperationalMode() {
     ui.wake(millis());
 }
 
+// Earliest active schedule start (minutes since midnight) for the given ISO day-of-week, or -1 if
+// nothing's scheduled that day — used to derive the auto-adjustment lead-time window's opening.
+// Mirrors findNextScheduledZone's HH:MM digit-arithmetic (already validated at load time).
+int earliestScheduleStartMinutesToday(uint8_t isoDayOfWeek) {
+    int best = -1;
+    for (uint8_t i = 0; i < scheduleList.count; ++i) {
+        const auto& record = scheduleList.records[i];
+        if (!record.active || record.dayOfWeek != isoDayOfWeek) {
+            continue;
+        }
+        const int hour = (record.startTime[0] - '0') * 10 + (record.startTime[1] - '0');
+        const int minute = (record.startTime[3] - '0') * 10 + (record.startTime[4] - '0');
+        const int minutes = hour * 60 + minute;
+        if (best < 0 || minutes < best) {
+            best = minutes;
+        }
+    }
+    return best;
+}
+
+// One-time (per boot, until it succeeds) ip-api.com lookup — Phase 1/2: weather calls stay
+// disabled (see runAutoAdjustmentIfDue's settings.locationKnown guard) until this resolves.
+void tryGeolocateIfDue(uint32_t nowMs) {
+    if (settings.locationKnown || WiFi.status() != WL_CONNECTED) {
+        return;
+    }
+    if (geoAttempted && nowMs - lastGeoAttemptMs < irrigator::board::AUTOADJUSTMENT_RETRY_INTERVAL_MS) {
+        return;
+    }
+    geoAttempted = true;
+    lastGeoAttemptMs = nowMs;
+
+    const auto geo = weatherService.fetchGeoLocation();
+    if (!geo.success) {
+        irrigator::drivers::Log.warn("Geolocation attempt failed; will retry");
+        return;
+    }
+    settings.locationKnown = true;
+    settings.latitude = geo.latitude;
+    settings.longitude = geo.longitude;
+    snprintf(settings.city, sizeof(settings.city), "%s", geo.city);
+    persistSettings();
+    irrigator::drivers::Log.printf(
+        "[INFO] Geolocation resolved: %s (%.4f, %.4f)\n", settings.city, settings.latitude, settings.longitude);
+}
+
+// Step 1's predictive rain-skip: cancels the rest of today's (and tomorrow morning's) scheduled
+// runs via the existing RainSkip gate — manual/MQTT cmd/run remain unaffected, same scoping the
+// device's own cmd/skip_rain_until already has.
+void applyRainSkipDecision(int64_t nowEpoch) {
+    const int64_t skipUntil = nowEpoch + irrigator::board::AUTOADJUSTMENT_RAIN_SKIP_DURATION_S;
+    rainSkip.setSkipUntil(skipUntil);
+    char iso[24];
+    irrigator::domain::formatIso8601Utc(skipUntil, iso, sizeof(iso));
+    mqtt.publishSkipRainUntil(iso);
+    irrigator::drivers::Log.info("Auto-adjustment: rain forecast triggered a 24h scheduled-run skip");
+}
+
+void applyAutoCorrectedPercentage(float avgPastTempC, float rainPastDaysMm) {
+    const int16_t newPercentage =
+        irrigator::domain::computeAutoCorrectedPercentage(avgPastTempC,
+                                                           rainPastDaysMm,
+                                                           irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
+                                                           settings.tempModifierPctPerDegree,
+                                                           settings.rainModifierPctPerMm,
+                                                           settings.lowerLimitPercent,
+                                                           settings.upperLimitPercent);
+    if (newPercentage != settings.wateringPercentage) {
+        settings.wateringPercentage = newPercentage;
+        mqtt.publishWateringPercentage(settings.wateringPercentage);
+    }
+}
+
+// Daily weather-based adjustment cycle. Opens
+// AUTOADJUSTMENT_LEAD_TIME_MINUTES before the day's first scheduled watering (or immediately at
+// boot if that window has already passed) and, once open, retries every
+// AUTOADJUSTMENT_RETRY_INTERVAL_MS until a forecast is successfully applied for today —
+// deliberately uncapped: a forecast that only arrives after the first watering has already run
+// still helps later same-day runs or informs the rain-skip decision in time to save water.
+void runAutoAdjustmentIfDue(uint32_t nowMs) {
+    if (!settings.locationKnown) {
+        return;  // No location yet; scheduled runs keep using the manual watering percentage.
+    }
+    struct tm timeinfo;
+    if (!clockService.now(timeinfo)) {
+        return;
+    }
+    char today[11];
+    snprintf(today, sizeof(today), "%04d-%02d-%02d", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
+    if (strcmp(lastWeatherUpdateDate, today) == 0) {
+        return;  // Already completed today's cycle.
+    }
+
+    const uint8_t isoDayOfWeek = timeinfo.tm_wday == 0 ? 7 : static_cast<uint8_t>(timeinfo.tm_wday);
+    const int firstStartMinutes = earliestScheduleStartMinutesToday(isoDayOfWeek);
+    if (firstStartMinutes < 0) {
+        return;  // Nothing scheduled today; nothing to correct.
+    }
+    const int nowMinutes = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+    if (nowMinutes < firstStartMinutes - irrigator::board::AUTOADJUSTMENT_LEAD_TIME_MINUTES) {
+        return;  // Lead-time window hasn't opened yet.
+    }
+
+    if (weatherAttempted &&
+        nowMs - lastWeatherAttemptMs < irrigator::board::AUTOADJUSTMENT_RETRY_INTERVAL_MS) {
+        return;
+    }
+    weatherAttempted = true;
+    lastWeatherAttemptMs = nowMs;
+
+    const int64_t nowEpoch = clockService.epoch();
+    auto forecast = weatherService.fetchForecastOpenMeteo(settings.latitude, settings.longitude, nowEpoch);
+    if (!forecast.success) {
+        irrigator::drivers::Log.warn("Open-Meteo fetch failed; trying WeatherAPI fallback");
+        forecast = weatherService.fetchForecastWeatherApi(
+            settings.latitude, settings.longitude, nowEpoch, settings.weatherApiKey);
+    }
+    if (!forecast.success) {
+        irrigator::drivers::Log.warn("Auto-adjustment: both weather providers failed; retrying in 5 min");
+        return;
+    }
+
+    if (irrigator::domain::shouldSkipForRain(forecast.maxRainProbabilityPercent,
+                                             forecast.rainAmountNextWindowMm,
+                                             settings.rainSkipProbabilityPercent,
+                                             settings.rainSkipAmountMm)) {
+        applyRainSkipDecision(nowEpoch);
+    } else {
+        applyAutoCorrectedPercentage(forecast.avgPastTempC, forecast.rainPastDaysMm);
+    }
+
+    snprintf(lastWeatherUpdateDate, sizeof(lastWeatherUpdateDate), "%s", today);
+    persistSettings();
+}
+
 void runScheduleEngine(uint32_t nowMs) {
     struct tm timeinfo;
     if (!clockService.now(timeinfo)) {
@@ -1192,6 +1378,8 @@ void loop() {
                 ui.confirmFactoryReset(nowMs);
             }
 
+            tryGeolocateIfDue(nowMs);
+            runAutoAdjustmentIfDue(nowMs);
             runScheduleEngine(nowMs);
 
             irrigation.tick(nowMs);
@@ -1227,6 +1415,7 @@ void loop() {
                 renderData.mqttBrokerText = deviceConfig.mqttBroker;
                 renderData.mqttTopicText = mqtt.prefix();
                 renderData.wifiRssi = cachedWifiRssi;
+                renderData.lastWeatherUpdateDate = lastWeatherUpdateDate;
 
                 struct tm wallTm;
                 renderData.hasWallClock = clockService.now(wallTm);

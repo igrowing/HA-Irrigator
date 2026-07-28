@@ -41,6 +41,12 @@ HA-Irrigator fulfills traditional industry lacks of watering control systems.
 - **Captive-portal setup**: first boot (or after a factory-reset-style config wipe) serves a
   Wi-Fi AP with a setup page; it tests both Wi-Fi *and* MQTT connectivity before committing the new config, and rolls back to AP mode if either fails.
 - **DS3231-backed clock** with NTP sync and automatic EU DST switching (last Sunday of March/October, 01:00 UTC).
+- **Weather-based auto-adjustment**: once the device knows its location (auto-detected via
+  ip-api.com, no setup needed), it fetches a forecast (Open-Meteo, with a WeatherAPI.com fallback)
+  a few hours ahead of your first scheduled watering each day, skips the day's scheduled runs
+  entirely when meaningful rain is forecast, and otherwise nudges the watering percentage up in
+  hot weather / down after recent rain — all within a configurable lower/upper bound. See
+  [docs/usage_irrigator.md](docs/usage_irrigator.md) and [docs/technical.md](docs/technical.md).
 - Give the names to your zones. Numbers are nice but words play better for humans.
 - Configurable time for testing of all zones.
 
@@ -52,8 +58,8 @@ HA-Irrigator fulfills traditional industry lacks of watering control systems.
 
 
 ## Useful (further reading)
-- User guide of the HA-Irrigator, incuding installation instructions.
-- User-guide for HA integration.
-- User guide for HA.
-- Technical explanations (for geeks only).
-- OTA firmware upgrade (for makers only).
+- [User guide of the HA-Irrigator](docs/usage_irrigator.md), incuding installation instructions.
+- [User-guide for HA integration](docs/integration.md).
+- [User guide for HA](docs/usage_homeassistant.md).
+- [Technical explanations](docs/technical.md) (for geeks only).
+- [OTA firmware upgrade](docs/ota.md) (for makers only).

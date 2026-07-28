@@ -135,6 +135,26 @@ automation:
           entity_id: input_number.irrigator_pump_mv_per_ma
         data:
           value: "{{ state_attr('sensor.irrigator_settings', 'pump_current_mv_per_ma') | float(1.0) }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.irrigator_upper_limit
+        data:
+          value: "{{ state_attr('sensor.irrigator_settings', 'upper_limit') | int(200) }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.irrigator_lower_limit
+        data:
+          value: "{{ state_attr('sensor.irrigator_settings', 'lower_limit') | int(40) }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.irrigator_rain_skip_probability
+        data:
+          value: "{{ state_attr('sensor.irrigator_settings', 'rain_skip_probability_percent') | int(70) }}"
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.irrigator_rain_skip_amount
+        data:
+          value: "{{ state_attr('sensor.irrigator_settings', 'rain_skip_amount_mm') | int(4) }}"
       # switch.irrigator_schedule_active and number.irrigator_watering_percentage
       # are direct MQTT entities (not input helpers) whose state_topics
       # (/scheduled, /watering_percentage) only ever get a value when
@@ -217,6 +237,10 @@ automation:
           - input_number.irrigator_valve_mv_per_ma
           - input_number.irrigator_pump_zero_offset_mv
           - input_number.irrigator_pump_mv_per_ma
+          - input_number.irrigator_upper_limit
+          - input_number.irrigator_lower_limit
+          - input_number.irrigator_rain_skip_probability
+          - input_number.irrigator_rain_skip_amount
     conditions:
       - condition: template
         value_template: "{{ states('sensor.irrigator_settings') not in ['unknown', 'unavailable'] }}"

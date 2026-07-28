@@ -638,6 +638,27 @@ template:
         attributes:
           records: "{{ trigger.payload_json }}"
 
+  # Weather-based auto-adjustment: read-only display of whatever
+  # settings.json currently has - sourced straight from the same full-snapshot
+  # sensor.irrigator_settings every other read-only field already uses, no new MQTT wiring needed.
+  # NOTE: there is deliberately no "last update" equivalent here - that date is in-RAM only on the
+  # device (never written to settings.json, see Settings.h), so HA has no way to know it; the
+  # device's own rotary UI Settings menu is the only place it's shown.
+  - sensor:
+      - name: "Irrigator City"
+        unique_id: irrigator_city
+        icon: mdi:map-marker-outline
+        state: "{{ state_attr('sensor.irrigator_settings', 'city') or '-' }}"
+      - name: "Irrigator Coordinates"
+        unique_id: irrigator_coordinates
+        icon: mdi:crosshairs-gps
+        state: >-
+          {% if state_attr('sensor.irrigator_settings', 'location_known') %}
+            {{ '%.4f' | format(state_attr('sensor.irrigator_settings', 'latitude') | float(0)) }}, {{ '%.4f' | format(state_attr('sensor.irrigator_settings', 'longitude') | float(0)) }}
+          {% else %}
+            -
+          {% endif %}
+
   - button:
       - name: "Irrigator Refresh From Device"
         unique_id: irrigator_refresh_from_device
@@ -710,6 +731,49 @@ input_number:
     mode: slider
     unit_of_measurement: min
     initial: 5
+
+  # Auto-adjustment clamp bounds - the only two auto-adjustment fields
+  # editable from HA (per Phase 5); everything else in that feature is read-only, see the
+  # template sensors above.
+  irrigator_upper_limit:
+    name: "Auto-Adjustment Upper Limit"
+    icon: mdi:water-plus-outline
+    min: 0
+    max: 500
+    step: 5
+    mode: box
+    unit_of_measurement: "%"
+    initial: 200
+  irrigator_lower_limit:
+    name: "Auto-Adjustment Lower Limit"
+    icon: mdi:water-minus-outline
+    min: 0
+    max: 500
+    step: 5
+    mode: box
+    unit_of_measurement: "%"
+    initial: 40
+
+  # Step 1's rain-skip trigger thresholds - also user-configurable from HA (see
+  # domain::shouldSkipForRain). Probability is inclusive (>=), amount is not (>).
+  irrigator_rain_skip_probability:
+    name: "Rain-Skip Probability Threshold"
+    icon: mdi:weather-pouring
+    min: 0
+    max: 100
+    step: 5
+    mode: box
+    unit_of_measurement: "%"
+    initial: 70
+  irrigator_rain_skip_amount:
+    name: "Rain-Skip Amount Threshold"
+    icon: mdi:water-alert-outline
+    min: 0
+    max: 50
+    step: 1
+    mode: box
+    unit_of_measurement: "mm"
+    initial: 4
 
   irrigator_valve_zero_offset_mv:
     name: "Valve Current Zero Offset"
@@ -975,7 +1039,18 @@ script:
               'valve_current_zero_offset_mv': states('input_number.irrigator_valve_zero_offset_mv') | int(1650),
               'valve_current_mv_per_ma': states('input_number.irrigator_valve_mv_per_ma') | float(1.0),
               'pump_current_zero_offset_mv': states('input_number.irrigator_pump_zero_offset_mv') | int(1650),
-              'pump_current_mv_per_ma': states('input_number.irrigator_pump_mv_per_ma') | float(1.0)
+              'pump_current_mv_per_ma': states('input_number.irrigator_pump_mv_per_ma') | float(1.0),
+              'upper_limit': states('input_number.irrigator_upper_limit') | int(200),
+              'lower_limit': states('input_number.irrigator_lower_limit') | int(40),
+              'rain_skip_probability_percent': states('input_number.irrigator_rain_skip_probability') | int(70),
+              'rain_skip_amount_mm': states('input_number.irrigator_rain_skip_amount') | int(4),
+              'location_known': state_attr('sensor.irrigator_settings', 'location_known') | default(false),
+              'latitude': state_attr('sensor.irrigator_settings', 'latitude') | default(0),
+              'longitude': state_attr('sensor.irrigator_settings', 'longitude') | default(0),
+              'city': state_attr('sensor.irrigator_settings', 'city') | default(''),
+              'temp_modifier_pct_per_degree': state_attr('sensor.irrigator_settings', 'temp_modifier_pct_per_degree') | default(2),
+              'rain_modifier_pct_per_mm': state_attr('sensor.irrigator_settings', 'rain_modifier_pct_per_mm') | default(5),
+              'weatherapi_key': state_attr('sensor.irrigator_settings', 'weatherapi_key') | default('')
             } %}
             {% set base_json = (base | tojson) %}
             {{ base_json[:-1] ~ ',"zone_names":' ~ zn ~ '}' }}

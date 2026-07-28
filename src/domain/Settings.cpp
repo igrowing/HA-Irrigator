@@ -35,6 +35,22 @@ bool validateSettings(const Settings& settings) {
     if (settings.pumpCurrentZeroOffsetMv > 3300 || settings.pumpCurrentMvPerMa <= 0.0f) {
         return false;
     }
+    if (settings.latitude < -90.0f || settings.latitude > 90.0f) {
+        return false;
+    }
+    if (settings.longitude < -180.0f || settings.longitude > 180.0f) {
+        return false;
+    }
+    if (settings.lowerLimitPercent < 0 || settings.upperLimitPercent < settings.lowerLimitPercent ||
+        settings.upperLimitPercent > 500) {
+        return false;
+    }
+    if (settings.rainSkipProbabilityPercent < 0 || settings.rainSkipProbabilityPercent > 100) {
+        return false;
+    }
+    if (settings.rainSkipAmountMm < 0) {
+        return false;
+    }
     return true;
 }
 
@@ -56,6 +72,22 @@ bool parseSettings(const char* json, size_t length, Settings& out) {
     parsed.pumpCurrentZeroOffsetMv =
         doc["pump_current_zero_offset_mv"] | board::PUMP_CURRENT_SENSOR_ZERO_OFFSET_MV;
     parsed.pumpCurrentMvPerMa = doc["pump_current_mv_per_ma"] | board::PUMP_CURRENT_SENSOR_MV_PER_MA;
+
+    parsed.locationKnown = doc["location_known"] | false;
+    parsed.latitude = doc["latitude"] | 0.0f;
+    parsed.longitude = doc["longitude"] | 0.0f;
+    snprintf(parsed.city, sizeof(parsed.city), "%s", doc["city"] | "");
+    parsed.upperLimitPercent = doc["upper_limit"] | board::AUTOADJUSTMENT_DEFAULT_UPPER_LIMIT_PERCENT;
+    parsed.lowerLimitPercent = doc["lower_limit"] | board::AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT;
+    parsed.tempModifierPctPerDegree =
+        doc["temp_modifier_pct_per_degree"] | board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE;
+    parsed.rainModifierPctPerMm =
+        doc["rain_modifier_pct_per_mm"] | board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM;
+    parsed.rainSkipProbabilityPercent = doc["rain_skip_probability_percent"] |
+                                        board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_PROBABILITY_PERCENT;
+    parsed.rainSkipAmountMm =
+        doc["rain_skip_amount_mm"] | board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_AMOUNT_MM;
+    snprintf(parsed.weatherApiKey, sizeof(parsed.weatherApiKey), "%s", doc["weatherapi_key"] | "");
 
     JsonVariantConst zoneNames = doc["zone_names"];
     if (!zoneNames.isNull()) {
@@ -97,6 +129,18 @@ size_t serializeSettings(const Settings& settings, char* buffer, size_t bufferSi
     doc["valve_current_mv_per_ma"] = settings.valveCurrentMvPerMa;
     doc["pump_current_zero_offset_mv"] = settings.pumpCurrentZeroOffsetMv;
     doc["pump_current_mv_per_ma"] = settings.pumpCurrentMvPerMa;
+
+    doc["location_known"] = settings.locationKnown;
+    doc["latitude"] = settings.latitude;
+    doc["longitude"] = settings.longitude;
+    doc["city"] = settings.city;
+    doc["upper_limit"] = settings.upperLimitPercent;
+    doc["lower_limit"] = settings.lowerLimitPercent;
+    doc["temp_modifier_pct_per_degree"] = settings.tempModifierPctPerDegree;
+    doc["rain_modifier_pct_per_mm"] = settings.rainModifierPctPerMm;
+    doc["rain_skip_probability_percent"] = settings.rainSkipProbabilityPercent;
+    doc["rain_skip_amount_mm"] = settings.rainSkipAmountMm;
+    doc["weatherapi_key"] = settings.weatherApiKey;
 
     JsonObject zoneNames = doc["zone_names"].to<JsonObject>();
     for (uint8_t i = 0; i < board::ZONE_COUNT; ++i) {

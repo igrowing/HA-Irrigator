@@ -32,6 +32,10 @@ public:
         bool scheduleActive = false;
         uint8_t scheduleRecordCount = 0;
         int16_t wateringPercentage = 0;
+        int16_t upperLimitPercent = 0;
+        int16_t lowerLimitPercent = 0;
+        int16_t rainSkipProbabilityPercent = 0;
+        int16_t rainSkipAmountMm = 0;
         uint8_t defaultManualDuration = 0;
         // Disabled zones are skipped by the manual zone picker (handleNormal/handleZonePicker) —
         // see isZoneEnabled() in main.ino for the matching enforcement at the point of starting a
@@ -89,21 +93,29 @@ public:
     static constexpr uint8_t kTestAllIndexDuration = 1;
     static constexpr uint8_t kTestAllIndexBack = 2;
 
-    // MenuSettings: 9 rows. Only Adjust/Schedule/Restart/BACK are clickable (IP/MQTT/Topic/FW/WiFi
-    // are display-only, per spec) but every row still gets a named index here so the renderer's
-    // switch and this class's click routing share one definition of the layout rather than two
+    // MenuSettings: 16 rows. Only Adjust/UpperLimit/LowerLimit/RainSkipProbability/RainSkipAmount/
+    // Schedule/Restart/BACK are clickable (IP/MQTT/Topic/FW/WiFi/City/Coordinates/LastUpdate are
+    // display-only, per spec) but every row still gets a named index here so the renderer's switch
+    // and this class's click routing share one definition of the layout rather than two
     // hand-kept-in-sync copies (this is exactly how the WiFi row's insertion previously broke
     // BACK: the renderer's item count moved to 8 without this class's matching update).
-    static constexpr uint8_t kSettingsItemCount = 9;
+    static constexpr uint8_t kSettingsItemCount = 16;
     static constexpr uint8_t kSettingsIndexPercentage = 0;
-    static constexpr uint8_t kSettingsIndexScheduleActive = 1;
-    static constexpr uint8_t kSettingsIndexWifi = 2;
-    static constexpr uint8_t kSettingsIndexIp = 3;
-    static constexpr uint8_t kSettingsIndexMqtt = 4;
-    static constexpr uint8_t kSettingsIndexTopic = 5;
-    static constexpr uint8_t kSettingsIndexFirmware = 6;
-    static constexpr uint8_t kSettingsIndexRestart = 7;
-    static constexpr uint8_t kSettingsIndexBack = 8;
+    static constexpr uint8_t kSettingsIndexUpperLimit = 1;
+    static constexpr uint8_t kSettingsIndexLowerLimit = 2;
+    static constexpr uint8_t kSettingsIndexRainSkipProbability = 3;
+    static constexpr uint8_t kSettingsIndexRainSkipAmount = 4;
+    static constexpr uint8_t kSettingsIndexScheduleActive = 5;
+    static constexpr uint8_t kSettingsIndexWifi = 6;
+    static constexpr uint8_t kSettingsIndexIp = 7;
+    static constexpr uint8_t kSettingsIndexMqtt = 8;
+    static constexpr uint8_t kSettingsIndexTopic = 9;
+    static constexpr uint8_t kSettingsIndexCity = 10;
+    static constexpr uint8_t kSettingsIndexCoordinates = 11;
+    static constexpr uint8_t kSettingsIndexLastUpdate = 12;
+    static constexpr uint8_t kSettingsIndexFirmware = 13;
+    static constexpr uint8_t kSettingsIndexRestart = 14;
+    static constexpr uint8_t kSettingsIndexBack = 15;
 
     UiIntent handleInput(UiInputEvent event, const Context& ctx, uint32_t nowMs);
 
@@ -134,6 +146,10 @@ public:
     // MenuMain's "Stop" (false) vs "Stop all" (true) item; distinguishes the two on Yes.
     bool stopAllPending() const { return stopAllPending_; }
     int16_t pendingPercentage() const { return pendingPercentage_; }
+    int16_t pendingUpperLimit() const { return pendingUpperLimit_; }
+    int16_t pendingLowerLimit() const { return pendingLowerLimit_; }
+    int16_t pendingRainSkipProbability() const { return pendingRainSkipProbability_; }
+    int16_t pendingRainSkipAmount() const { return pendingRainSkipAmount_; }
     bool factoryResetConfirmYesSelected() const { return factoryResetConfirmYes_; }
     bool factoryResetSucceeded() const { return factoryResetSucceeded_; }
     bool restartConfirmYesSelected() const { return restartConfirmYes_; }
@@ -182,6 +198,10 @@ private:
     bool stopConfirmYes_ = false;
     bool stopAllPending_ = false;
     int16_t pendingPercentage_ = 0;
+    int16_t pendingUpperLimit_ = 0;
+    int16_t pendingLowerLimit_ = 0;
+    int16_t pendingRainSkipProbability_ = 0;
+    int16_t pendingRainSkipAmount_ = 0;
 
     uint8_t pendingScheduleZone_ = 0;
     uint8_t pendingScheduleDay_ = 0;

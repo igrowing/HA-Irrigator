@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.0.4"
+#define APP_VERSION "1.1.0"
 #endif
 
 namespace irrigator::board {
@@ -75,8 +75,47 @@ static constexpr int8_t TIMEZONE_OFFSET_MAX_HOURS = 13;
 static constexpr uint16_t DEFAULT_MQTT_PORT = 1883;
 
 static constexpr size_t CONFIG_JSON_MAX_BYTES = 768;
-static constexpr size_t SETTINGS_JSON_MAX_BYTES = 768;
+// Bumped from 768: settings.json grew latitude/longitude/city/upper+lower limit/the two
+// auto-adjustment coefficients/weatherapi_key on top of the original fields.
+static constexpr size_t SETTINGS_JSON_MAX_BYTES = 1280;
 static constexpr size_t SCHEDULE_JSON_MAX_BYTES = 4096;
+
+// --- Weather-based irrigation auto-adjustment ---
+static constexpr int16_t AUTOADJUSTMENT_DEFAULT_UPPER_LIMIT_PERCENT = 200;
+static constexpr int16_t AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT = 40;
+// schedule.json's per-zone duration_min is already the base runtime at this reference
+// temperature. TEMP_MODIFIER is tuned so the existing default lower/upper limits (40%/200%,
+// above) land at meaningful real-world points: raw percentage hits the 200% cap exactly at 30°C
+// and crosses below the 40% skip threshold at 14°C (both holding rainfall at 0mm) — see
+// docs/usage_irrigator.md's Step 2 table. RAIN_MODIFIER is still an untuned placeholder — needs
+// real-world calibration against this specific climate/zones (see docs/technical.md).
+static constexpr float AUTOADJUSTMENT_BASE_TEMP_C = 20.0f;
+static constexpr float AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE = 10.0f;
+static constexpr float AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM = 5.0f;
+
+// Rain-skip (Step 1) is the only *forecast*-based check — probability is inclusive (>=), amount
+// is not (>), matching shouldSkipForRain()'s exact comparison. Both thresholds are user-configurable
+// (Settings::rainSkipProbabilityPercent/rainSkipAmountMm) — these are only the factory defaults.
+static constexpr int16_t AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_PROBABILITY_PERCENT = 70;
+static constexpr int16_t AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_AMOUNT_MM = 4;
+static constexpr int64_t AUTOADJUSTMENT_RAIN_SKIP_DURATION_S = 24LL * 3600;
+
+// The correction formula's (Step 2) temperature and rain terms are both historical, over this
+// same trailing window — a rolling 5-day average temperature and a 5-day rainfall total. Only
+// the rain-skip check above looks forward.
+static constexpr uint8_t AUTOADJUSTMENT_PAST_WEATHER_DAYS = 5;
+static constexpr uint8_t AUTOADJUSTMENT_FORECAST_WINDOW_HOURS = 12;
+// How far ahead of the day's first scheduled watering the fetch/retry cycle starts.
+static constexpr int AUTOADJUSTMENT_LEAD_TIME_MINUTES = 180;
+// Retries are deliberately unbounded (not capped at a fixed attempt count): a forecast that
+// arrives late still helps later same-day waterings or tomorrow's, so this is just the pacing
+// between attempts, not a timeout.
+static constexpr uint32_t AUTOADJUSTMENT_RETRY_INTERVAL_MS = 5UL * 60UL * 1000UL;
+
+static constexpr const char* GEO_IP_API_URL = "http://ip-api.com/json/?fields=status,lat,lon,city";
+static constexpr const char* OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1/forecast";
+static constexpr const char* WEATHERAPI_FORECAST_URL = "https://api.weatherapi.com/v1/forecast.json";
+static constexpr const char* WEATHERAPI_HISTORY_URL = "https://api.weatherapi.com/v1/history.json";
 
 static constexpr const uint8_t DISPLAY_1ST_LINE_OFFSET = 7;
 static constexpr const uint8_t DISPLAY_2ND_LINE_OFFSET = 28;

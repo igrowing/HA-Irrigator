@@ -11,7 +11,7 @@ Integration (pairing) of the Irrigator with Home Assistant benefilts you with:
 - Easy configuration and settings update: Zone naming, Scheduling, defaults.
 - Ability of remote control of the Irrigator.
 - Ability of status observation and historical watering review.
-- Sophisticated weather-awareness for automatic corrections of watering - *not implemented yet*.
+- Sophisticated weather-awareness for automatic adjustment of watering - *not implemented yet*.
 
 If you want to hook it up to Home Assistant afterwards, see
 [usage_homeassistant.md](usage_homeassistant.md).
@@ -258,6 +258,22 @@ TEST ALL ZONES
 
 - **Adjust**: a watering percentage (10–300%) that scales every scheduled run's duration up or
   down — handy for quickly cutting back watering in cooler weather without editing every program.
+  Once the device has a location (see **Loc**, below), this value is also recalculated
+  automatically once a day by weather-based auto-adjustment — see below.
+- **Upper limit** / **Lower limit**: the range auto-adjustment is allowed to move **Adjust**
+  within (defaults 200% / 40%). If the computed percentage would fall below **Lower limit**, the
+  day's watering is skipped entirely (0%) rather than clamped up to it; above **Upper limit**, it's
+  capped at that value.
+- **Skip rain prob** / **Skip rain amt**: the two thresholds that decide whether today's watering
+  is skipped outright because of rain in the forecast (defaults 70% / 4mm) — see **Step 1** below
+  for exactly how they're combined.
+- **City** / **Loc**: the city name and latitude/longitude auto-adjustment resolved from the
+  device's IP address (via ip-api.com) — display only, refreshed once, the first time the device is
+  online with no location saved yet.
+- **Last update**: the date (UTC) auto-adjustment last successfully fetched a forecast and applied
+  it — display only. Stays blank until the first successful cycle, and resets after every restart
+  (this isn't saved — a restart simply re-runs today's cycle rather than remembering it already
+  happened).
 - **Schedule**: turns the whole weekly schedule on or off.
 - **WiFi**: signal quality in plain words (e.g. `good`) plus the exact signal reading.
 - **IP** / **MQTT**: connection details, useful mainly if you're troubleshooting network issues.
@@ -273,8 +289,7 @@ TEST ALL ZONES
 If you need to start over — for example, to reconnect it to a different Wi-Fi network — you can
 wipe all saved configuration:
 
-> **Warning:** this deletes all saved settings, including your Wi-Fi credentials and your
-> schedule. Only do this if you mean to reconfigure the device from scratch.
+> **Warning:** this deletes all saved settings, including your Wi-Fi credentials and your schedule. Only do this if you mean to reconfigure the device from scratch.
 
 Hold down the **Boot** button on the device itself (not the rotary knob) for about 10 seconds. The
 screen will ask you to confirm before anything is actually deleted. Confirming erases the
@@ -282,3 +297,81 @@ configuration and restarts the device straight into setup mode (see **First-time
 above), ready to be configured again.
 
 This requires physical access to the device, on purpose — it can't be triggered remotely.
+
+
+## Autoadjustment of irrigation explained
+
+Once the device has resolved its location (see **City** / **Loc** in Settings, above), it checks
+the weather once a day — a few hours before your first scheduled watering — and either skips the
+day's watering entirely, or nudges the **Adjust** percentage up or down for that day. Two checks
+happen, always in this order, and the first one decides whether the second one runs at all.
+
+### Step 1 — Is today's watering skipped because of rain?
+
+The device looks at the rain **forecast for the next 12 hours** — the only forward-looking check
+in the whole feature; everything in Step 2 below looks backward instead. Watering is skipped for
+the next 24 hours only if **both** are true at once, against the **Skip rain prob** / **Skip rain
+amt** thresholds from Settings (above; defaults shown here):
+- rain probability is **at or above Skip rain prob** (default 70%), **and**
+- the forecast rain amount is **strictly above Skip rain amt** (default 4mm — exactly 4mm doesn't count)
+
+If either condition isn't met, nothing is skipped — Step 2 (below) runs as normal. Note the two
+thresholds work differently on purpose: probability counts *at* the threshold, amount only counts
+*above* it — the table below uses the factory-default values (70% / 4mm) to illustrate.
+
+| Rain probability (next 12h) | Rain amount (next 12h) | Watering skipped today? |
+|---|---|---|
+| 50% | 10mm | No — probability under 70% |
+| 70% | 4mm | No — probability qualifies, but exactly 4mm doesn't count |
+| 70% | 4.1mm | **Yes** |
+| 71% | 4mm | No — probability well over, but amount still exactly 4mm |
+| 80% | 5mm | **Yes** |
+| 100% | 0mm | No — certain but no actual rain amount forecast |
+| 30% | 20mm | No — probability too low despite the heavy rain amount |
+
+Lowering either threshold from Settings makes the device skip more readily (e.g. dropping **Skip
+rain amt** to 2mm would make the 70%/4mm row above trigger a skip too); raising them makes it more
+tolerant of rain in the forecast.
+
+### Step 2 — If not skipped: how much to adjust
+
+If Step 1 didn't skip the day, the device recalculates **Adjust** (the watering percentage)
+automatically, based on the **last 5 days**' actual weather — never the forecast:
+- the **average temperature over the past 5 days** — hotter than 20°C increases the percentage,
+  colder decreases it;
+- the **total rainfall actually measured over the past 5 days** — more recent rain decreases the
+  percentage.
+
+The result is then kept between **Lower limit** and **Upper limit** (see Settings, above): if it
+would fall below **Lower limit**, that day's watering is skipped entirely (0%) instead of being
+raised back up to the limit; if it would go above **Upper limit**, it's capped there instead.
+
+The table below shows the result for a zone whose scheduled duration is **20 minutes**, using the
+factory-default settings (**Lower limit** 40%, **Upper limit** 200%, temperature sensitivity 10%
+per °C):
+
+| Avg temperature (past 5 days) | Past 5 days rain: 0mm | 2mm | 4mm | 6mm | 8mm |
+|---|---|---|---|---|---|
+| 10°C | 0min (skip) | 0min (skip) | 0min (skip) | 0min (skip) | 0min (skip) |
+| 14°C | 8min (40%) | 0min (skip) | 0min (skip) | 0min (skip) | 0min (skip) |
+| 16°C | 12min (60%) | 10min (50%) | 8min (40%) | 0min (skip) | 0min (skip) |
+| 18°C | 16min (80%) | 14min (70%) | 12min (60%) | 10min (50%) | 8min (40%) |
+| 20°C (no change) | 20min (100%) | 18min (90%) | 16min (80%) | 14min (70%) | 12min (60%) |
+| 22°C | 24min (120%) | 22min (110%) | 20min (100%) | 18min (90%) | 16min (80%) |
+| 24°C | 28min (140%) | 26min (130%) | 24min (120%) | 22min (110%) | 20min (100%) |
+| 26°C | 32min (160%) | 30min (150%) | 28min (140%) | 26min (130%) | 24min (120%) |
+| 28°C | 36min (180%) | 34min (170%) | 32min (160%) | 30min (150%) | 28min (140%) |
+| 30°C | 40min (200%) | 38min (190%) | 36min (180%) | 34min (170%) | 32min (160%) |
+
+A couple of things worth knowing about these numbers:
+- With the factory-default 10%/°C sensitivity, the 200% **Upper limit** is reached at exactly
+  **30°C** (holding rain at 0mm) — a realistic hot-weather scenario, unlike the much steeper
+  temperature that would've been needed at a gentler sensitivity.
+- The 14°C/0mm and 16°C/4mm and 18°C/8mm cells all land exactly on the 40% **Lower limit**
+  boundary and are *not* skipped — only a result strictly below the limit skips the day.
+  Anything colder or rainier than those crosses into skip territory.
+
+The **rain** term is still untuned (`rain_modifier_pct_per_mm`, 5% per mm) — treat it with more
+skepticism than the temperature term above until you've sanity-checked it against a few real days;
+see [technical.md](technical.md)'s **Weather-based irrigation auto-adjustment** section for where
+to change it.

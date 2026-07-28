@@ -29,6 +29,9 @@ struct RenderData {
     struct tm wallClockLocal {};
     uint8_t nextScheduledZone = 0;  // 0 = none upcoming
     char nextScheduledZoneName[16] = "";
+    // Weather auto-adjustment's last successful date (see main.ino's lastWeatherUpdateDate) —
+    // in-RAM only, not part of Settings, so this resets to "" on every reboot.
+    const char* lastWeatherUpdateDate = "";
     // Sampled at most every 5s by the caller (see main.ino's cachedWifiRssi), not read live —
     // RSSI jitters several dB reading-to-reading, so a live read would just flicker the display.
     int32_t wifiRssi = -127;

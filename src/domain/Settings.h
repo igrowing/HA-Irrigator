@@ -24,6 +24,33 @@ struct Settings {
     float valveCurrentMvPerMa = board::VALVE_CURRENT_SENSOR_MV_PER_MA;
     uint16_t pumpCurrentZeroOffsetMv = board::PUMP_CURRENT_SENSOR_ZERO_OFFSET_MV;
     float pumpCurrentMvPerMa = board::PUMP_CURRENT_SENSOR_MV_PER_MA;
+
+    // Weather-based auto-adjustment. locationKnown is an explicit flag rather
+    // than inferring "unset" from lat/lon both being 0 — (0,0) is a real place (Gulf of Guinea),
+    // so a sentinel value would be ambiguous with a genuine reading there.
+    bool locationKnown = false;
+    float latitude = 0.0f;
+    float longitude = 0.0f;
+    char city[32] = {};
+    // Deliberately NOT here: a "last successful auto-adjustment date" field. It's in-RAM only
+    // (see main.ino's lastWeatherUpdateDate) so a power cycle naturally re-triggers today's cycle
+    // instead of remembering it was already done — the auto-adjustment window (3h before the
+    // first scheduled watering) is designed to tolerate re-running, not to be skipped after a
+    // reboot.
+    int16_t upperLimitPercent = board::AUTOADJUSTMENT_DEFAULT_UPPER_LIMIT_PERCENT;
+    int16_t lowerLimitPercent = board::AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT;
+    float tempModifierPctPerDegree = board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE;
+    float rainModifierPctPerMm = board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM;
+    // Step 1's rain-skip trigger thresholds (see domain::shouldSkipForRain) — whole percent/mm,
+    // matching the rotary UI's existing integer-only editing convention (no field in this project
+    // is rotary-edited as a float today).
+    int16_t rainSkipProbabilityPercent = board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_PROBABILITY_PERCENT;
+    int16_t rainSkipAmountMm = board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_AMOUNT_MM;
+    // WeatherAPI.com key, used only as the Phase 4 fallback when Open-Meteo (no key required)
+    // fails. Note: sensor.irrigator_settings in the HA package mirrors the whole settings.json
+    // payload as attributes (see homeassistant/packages/irrigator.yaml), so this key is visible
+    // there too — not selectively excludable without reworking that sensor.
+    char weatherApiKey[48] = {};
 };
 
 Settings makeDefaultZones();

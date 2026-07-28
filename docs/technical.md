@@ -193,6 +193,17 @@ previously on flash (see `parseSettings()`/`parseSchedule()`).
   "valve_current_mv_per_ma": 1,
   "pump_current_zero_offset_mv": 1650,
   "pump_current_mv_per_ma": 1,
+  "location_known": false,
+  "latitude": 0,
+  "longitude": 0,
+  "city": "",
+  "upper_limit": 200,
+  "lower_limit": 40,
+  "temp_modifier_pct_per_degree": 2,
+  "rain_modifier_pct_per_mm": 5,
+  "rain_skip_probability_percent": 70,
+  "rain_skip_amount_mm": 4,
+  "weatherapi_key": "",
   "zone_names": {
     "1": {"name": "Trees left", "enabled": true},
     "2": {"name": "Triangle", "enabled": true},
@@ -280,17 +291,97 @@ A live current fault also overrides the status LED's normal pattern — in `upda
 `led.setMode(Alert)` takes priority over the watering (`Breathe`) and pump-only (`SolidOn`)
 patterns, so a fault is visible on the unit itself even with no MQTT client watching.
 
+## Weather-based irrigation auto-adjustment
+
+Pure calculation lives in `src/domain/AutoAdjustment.h`/`.cpp` and `src/domain/WeatherSummary.h`/
+`.cpp` (both unit-tested, see **Testing** below); the HTTP/JSON fetching lives in
+`src/network/WeatherService.h`/`.cpp` (not unit-testable — it's a live HTTP client, verified by
+flashing); orchestration (retry pacing, the daily trigger window, rain-skip vs. percentage
+decision) lives in `src/main.ino`'s `tryGeolocateIfDue()`/`runAutoAdjustmentIfDue()`.
+
+The feature has exactly one forward-looking input (the rain-skip forecast, Step 1) and two
+backward-looking inputs (the adjustment formula's temperature and rainfall, Step 2) — it's easy to
+assume both steps use the forecast, so `network::WeatherFetchResult`'s field names spell out the
+direction explicitly: `avgPastTempC`/`rainPastDaysMm` (historical) vs.
+`maxRainProbabilityPercent`/`rainAmountNextWindowMm` (forecast).
+
+### Data sources
+
+1. **Location** (`GET http://ip-api.com/json/?fields=status,lat,lon,city`) — fetched once, only
+   while `settings.json`'s `location_known` is `false`, retried every 5 minutes until it succeeds.
+   Scheduled watering uses the manual `watering_percentage` unmodified until this resolves; there's
+   no way to enter a location manually (see **Known limitations**).
+2. **Weather**, primary — [Open-Meteo](https://open-meteo.com) (`/v1/forecast`, no API key): one
+   request covers both directions at once — `hourly=temperature_2m,precipitation_probability,
+   precipitation` and `daily=precipitation_sum` with `past_days=5&forecast_days=2&timezone=UTC`. An
+   ArduinoJson `DeserializationOption::Filter` keeps only those four arrays — the raw payload also
+   carries `hourly_units`, `daily_units`, `elevation`, `generationtime_ms`, etc., which would
+   otherwise inflate the parsed `JsonDocument` for no benefit. Passing `timezone=UTC` makes the
+   hourly arrays start at 00:00 UTC of `today - 5 days`, one entry per hour — so "now"'s index into
+   that array is `domain::openMeteoNowIndex()`'s `5*24 + current_UTC_hour`, plain arithmetic, no
+   timestamp parsing needed. `domain::summarizePastAverageTemperature()` then averages the 120
+   hours *before* that index (the historical MA); `domain::summarizeForecastRainWindow()` maxes/
+   sums the 12 hours *from* that index onward (the forecast window) — same array, same "now" index,
+   opposite directions.
+3. **Weather, fallback** — [WeatherAPI.com](https://www.weatherapi.com) (`forecast.json` for the
+   forward rain-skip window, + 5×`history.json` — one call per past day, since that endpoint only
+   ever returns a single day — for the historical temperature/rainfall), used only when
+   Open-Meteo's request fails outright (bad HTTP status or JSON parse error). Each `history.json`
+   response's `day.avgtemp_c`/`day.totalprecip_mm` are averaged/summed across the 5 calls.
+   Requires `settings.json`'s `weatherapi_key`; `fetchForecastWeatherApi()` returns failure
+   immediately if that's empty rather than attempting a call that can't succeed.
+
+### When it runs
+
+`runAutoAdjustmentIfDue()` (called every `loop()` iteration, cheap to no-op) opens a window `AUTOADJUSTMENT_LEAD_TIME_MINUTES` (180) before the day's *earliest* active schedule entry — or immediately, if the device boots after that window has already opened. Once open, it retries every `AUTOADJUSTMENT_RETRY_INTERVAL_MS` (5 minutes) until a forecast is successfully applied for that calendar date, tracked by `main.ino`'s `lastWeatherUpdateDate`. This is **deliberately uncapped** — a forecast that only arrives
+after the first watering has already run at the last-known percentage still helps later same-day waterings, or the rain-skip decision, so retrying past that point is worth it rather than giving up.
+
+`lastWeatherUpdateDate` is a plain in-RAM global, **not** a `settings.json` field — a power cycle resets it to empty, so the device re-attempts today's cycle on the next boot (immediately, or once the lead-time window opens) rather than remembering it already ran before the reboot. This is deliberate: the auto-adjustment window is designed to tolerate re-running, so there's no reason to persist "already done today" across a restart, and doing so would mean writing to flash daily for no benefit.
+
+### Calculation
+
+`schedule.json`'s per-zone `duration_min` is already the base runtime at a 20°C reference temperature (`AUTOADJUSTMENT_BASE_TEMP_C`), so there's no separate mm-of-water/flow-rate conversion — the whole calculation collapses to one percentage, applied through the exact same `watering_percentage` → `ScheduleEngine::tick()` path the manual **Adjust** setting already uses.
+Both inputs below are **historical** (trailing `AUTOADJUSTMENT_PAST_WEATHER_DAYS`, 5 days) — never the forecast:
+
+```
+Percentage = 100 + (avgPastTemp5Days - 20) * temp_modifier_pct_per_degree
+                  - rainPast5Days * rain_modifier_pct_per_mm
+```
+
+then clamped: below `lower_limit` → **0%** (skip the cycle entirely, not clamped up to the limit);
+above `upper_limit` → capped at `upper_limit`. `temp_modifier_pct_per_degree` (`board_config.h`'s
+`AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE`, 10.0) is tuned so the factory default
+lower/upper limits (40%/200%) land at meaningful real-world temperatures — the 200% cap at exactly
+30°C, the 40% floor at 14°C (both holding rainfall at 0mm; see docs/usage_irrigator.md's Step 2
+table for the full grid). `rain_modifier_pct_per_mm` (5.0) is still an **untuned placeholder** —
+needs site-specific calibration against this climate/these zones; see `src/domain/AutoAdjustment.cpp`
+and its unit tests for the exact behavior at each threshold.
+
+Separately — and using the *forecast*, not the history above — if the next 12 hours show rain
+probability **at or over** `rain_skip_probability_percent` (default 70) **and** rain amount **over**
+`rain_skip_amount_mm` (default 4), the day's percentage calculation is skipped entirely and
+`rainSkip.setSkipUntil()` is called for 24 hours instead — reusing the same `RainSkip` gate
+`cmd/skip_rain_until` already writes to (see **MQTT**, above), so manual/MQTT `cmd/run` remain
+unaffected either way. The two thresholds are intentionally asymmetric: the probability check is
+`>=`, the amount check is `>` (see `domain::shouldSkipForRain()`, which takes both thresholds as
+parameters rather than reading fixed constants — they're user-configurable settings, like
+`upper_limit`/`lower_limit`, not compiled-in defaults).
+
+### Known limitations
+
+- `latitude`/`longitude`/`city` have no manual-entry path — if ip-api.com's IP-based geolocation is
+  inaccurate for your network (common on VPNs, CGNAT, or some rural ISPs), the only fix today is
+  writing corrected values directly via `cmd/upload/settings.json`.
+- `rain_modifier_pct_per_mm` still ships as an untuned placeholder (see **Calculation** above) —
+  don't fully trust the computed percentage on a rainy week until you've sanity-checked it against
+  a few real days. `temp_modifier_pct_per_degree` has since been calibrated against real target
+  points (200% at 30°C, 40% at 14°C).
+
 ## Building and flashing over USB (first time)
 
-1. Install [VS Code](https://code.visualstudio.com/) and open this repository as a folder. Accept
-   the recommended-extensions prompt (or install everything under the Extensions panel's
-   `@recommended` filter) — this pulls in the PlatformIO IDE extension, which provides the build/
-   upload/monitor tooling and its own status-bar icons (checkmark to build, right-arrow to upload,
-   plug icon to open the serial monitor).
+1. Install [VS Code](https://code.visualstudio.com/) and open this repository as a folder. Accept    the recommended-extensions prompt (or install everything under the Extensions panel's    `@recommended` filter) — this pulls in the PlatformIO IDE extension, which provides the build/    upload/monitor tooling and its own status-bar icons (checkmark to build, right-arrow to upload,    plug icon to open the serial monitor).
 
-   > Note: `platformio.ini` points the `esp32dev` environment at the community `pioarduino` fork of
-   > the espressif32 platform (not the stock PlatformIO one) — this is deliberate, not a typo, and
-   > the IDE extension handles it transparently.
+   > Note: `platformio.ini` points the `esp32dev` environment at the community `pioarduino` fork of  the espressif32 platform (not the stock PlatformIO one) — this is deliberate, not a typo, and the IDE extension handles it transparently.
 2. Connect the board over USB.
 3. Build and flash: either click the PlatformIO IDE's upload arrow in the status bar, or from a
    terminal:

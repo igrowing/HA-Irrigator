@@ -301,6 +301,33 @@
             features:
               - type: numeric-input
                 style: buttons
+          - type: tile
+            entity: input_number.irrigator_upper_limit
+            features:
+              - type: numeric-input
+                style: buttons
+          - type: tile
+            entity: input_number.irrigator_lower_limit
+            features:
+              - type: numeric-input
+                style: buttons
+          - type: tile
+            entity: input_number.irrigator_rain_skip_probability
+            features:
+              - type: numeric-input
+                style: buttons
+          - type: tile
+            entity: input_number.irrigator_rain_skip_amount
+            features:
+              - type: numeric-input
+                style: buttons
+          - type: entities
+            title: Auto-adjustment Weather Data
+            entities:
+              - entity: sensor.irrigator_city
+                name: "City"
+              - entity: sensor.irrigator_coordinates
+                name: "Coordinates"
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_1_name

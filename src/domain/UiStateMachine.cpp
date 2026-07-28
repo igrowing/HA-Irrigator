@@ -493,17 +493,49 @@ UiIntent UiStateMachine::handleMenuScheduleEdit(UiInputEvent event,
 UiIntent UiStateMachine::handleMenuSettings(UiInputEvent event, const Context& ctx) {
     UiIntent intent;
 
+    // selectedIndex_ is left untouched by entering edit mode, so it still tells us which of the
+    // editable int16 rows is being adjusted right now. Step size defaults to 10 (matches the
+    // percentage-style fields); rain-skip amount uses a finer step since its useful range is much
+    // narrower (a handful of mm, not 0-500%).
     if (editing_) {
+        int16_t* pending = nullptr;
+        int16_t step = 10;
+        UiIntentType setIntentType = UiIntentType::None;
+        switch (selectedIndex_) {
+            case kSettingsIndexPercentage:
+                pending = &pendingPercentage_;
+                setIntentType = UiIntentType::SetWateringPercentage;
+                break;
+            case kSettingsIndexUpperLimit:
+                pending = &pendingUpperLimit_;
+                setIntentType = UiIntentType::SetUpperLimit;
+                break;
+            case kSettingsIndexLowerLimit:
+                pending = &pendingLowerLimit_;
+                setIntentType = UiIntentType::SetLowerLimit;
+                break;
+            case kSettingsIndexRainSkipProbability:
+                pending = &pendingRainSkipProbability_;
+                setIntentType = UiIntentType::SetRainSkipProbability;
+                break;
+            case kSettingsIndexRainSkipAmount:
+                pending = &pendingRainSkipAmount_;
+                step = 1;
+                setIntentType = UiIntentType::SetRainSkipAmount;
+                break;
+            default:
+                break;
+        }
         switch (event) {
             case UiInputEvent::Clockwise:
-                pendingPercentage_ = static_cast<int16_t>(pendingPercentage_ + 10);
+                *pending = static_cast<int16_t>(*pending + step);
                 break;
             case UiInputEvent::CounterClockwise:
-                pendingPercentage_ = static_cast<int16_t>(pendingPercentage_ - 10);
+                *pending = static_cast<int16_t>(*pending - step);
                 break;
             case UiInputEvent::Click:
-                intent.type = UiIntentType::SetWateringPercentage;
-                intent.percentage = pendingPercentage_;
+                intent.type = setIntentType;
+                intent.percentage = *pending;
                 editing_ = false;
                 break;
             case UiInputEvent::LongClick:
@@ -524,6 +556,18 @@ UiIntent UiStateMachine::handleMenuSettings(UiInputEvent event, const Context& c
             if (selectedIndex_ == kSettingsIndexPercentage) {
                 pendingPercentage_ = ctx.wateringPercentage;
                 editing_ = true;
+            } else if (selectedIndex_ == kSettingsIndexUpperLimit) {
+                pendingUpperLimit_ = ctx.upperLimitPercent;
+                editing_ = true;
+            } else if (selectedIndex_ == kSettingsIndexLowerLimit) {
+                pendingLowerLimit_ = ctx.lowerLimitPercent;
+                editing_ = true;
+            } else if (selectedIndex_ == kSettingsIndexRainSkipProbability) {
+                pendingRainSkipProbability_ = ctx.rainSkipProbabilityPercent;
+                editing_ = true;
+            } else if (selectedIndex_ == kSettingsIndexRainSkipAmount) {
+                pendingRainSkipAmount_ = ctx.rainSkipAmountMm;
+                editing_ = true;
             } else if (selectedIndex_ == kSettingsIndexScheduleActive) {
                 intent.type = UiIntentType::ToggleScheduleActive;
                 intent.boolValue = !ctx.scheduleActive;
@@ -534,7 +578,7 @@ UiIntent UiStateMachine::handleMenuSettings(UiInputEvent event, const Context& c
                 screen_ = UiScreen::MenuMain;
                 selectedIndex_ = 0;
             }
-            // WiFi/IP/MQTT/Topic/FW rows are explicitly not clickable.
+            // WiFi/IP/MQTT/Topic/FW/City/Coordinates/LastUpdate rows are explicitly not clickable.
             break;
         case UiInputEvent::LongClick:
             screen_ = UiScreen::MenuMain;
