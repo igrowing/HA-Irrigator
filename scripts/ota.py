@@ -197,7 +197,7 @@ def main():
     # own ota_started ack and retry the publish a few times if it doesn't show up before committing
     # to the long completion wait.
     ACK_TIMEOUT_S = 10
-    MAX_ATTEMPTS = 10
+    MAX_ATTEMPTS = 100
     for attempt in range(1, MAX_ATTEMPTS + 1):
         print(f"[mqtt] publishing {firmware_url} to {cmd_topic} (attempt {attempt}/{MAX_ATTEMPTS})")
         publish_acked.clear()
