@@ -23,6 +23,12 @@ public:
     // the system clock hasn't been set yet (by NTP or restoreFromRtc()).
     bool now(struct tm& out) const;
 
+    // Same conversion as now(), but for an arbitrary UTC epoch instead of "right now" - e.g.
+    // rendering a stored timestamp (main.ino's lastWeatherUpdateEpoch) in local wall-clock terms.
+    // Returns false if utcEpoch predates the clock ever having been set (same sanity floor now()
+    // uses), since that means the caller hasn't recorded a real timestamp yet.
+    bool localTimeAt(time_t utcEpoch, struct tm& out) const;
+
     // Raw UTC epoch — unaffected by offset/DST, safe for RainSkip/ScheduleEngine's minute-edge
     // detection.
     time_t epoch() const;

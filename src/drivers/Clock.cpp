@@ -70,13 +70,17 @@ bool Clock::restoreFromRtc() {
 bool Clock::now(struct tm& out) const {
     time_t utcNow;
     time(&utcNow);
-    if (utcNow < kMinPlausibleEpoch) {
+    return localTimeAt(utcNow, out);
+}
+
+bool Clock::localTimeAt(time_t utcEpoch, struct tm& out) const {
+    if (utcEpoch < kMinPlausibleEpoch) {
         return false;
     }
 
-    const bool dst = domain::isEuDstActive(static_cast<int64_t>(utcNow));
+    const bool dst = domain::isEuDstActive(static_cast<int64_t>(utcEpoch));
     const time_t localEpoch =
-        utcNow + static_cast<time_t>(utcOffsetHours_) * 3600 + (dst ? 3600 : 0);
+        utcEpoch + static_cast<time_t>(utcOffsetHours_) * 3600 + (dst ? 3600 : 0);
     gmtime_r(&localEpoch, &out);  // gmtime_r on a pre-shifted epoch yields the correct local fields.
     return true;
 }

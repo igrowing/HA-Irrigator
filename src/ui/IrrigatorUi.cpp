@@ -544,9 +544,9 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                 case Settings::kSettingsIndexLastUpdate:
                     snprintf(buffer,
                             size,
-                            "Last update: %s",
-                            (data.lastWeatherUpdateDate != nullptr && data.lastWeatherUpdateDate[0] != '\0')
-                                ? data.lastWeatherUpdateDate
+                            "Wtr upd:%s",
+                            (data.lastWeatherUpdateDisplay != nullptr && data.lastWeatherUpdateDisplay[0] != '\0')
+                                ? data.lastWeatherUpdateDisplay
                                 : "-");
                     break;
                 case Settings::kSettingsIndexFirmware:
