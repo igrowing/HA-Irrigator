@@ -6,7 +6,11 @@
 #include <esp_system.h>
 #include <esp_mac.h>
 #include <esp_wifi.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 
+#include <memory>
 #include <string.h>
 
 #include "board_config.h"
@@ -86,6 +90,35 @@ bool weatherAttempted = false;
 // Deliberately in-RAM only, not settings.json — a power cycle should re-run today's cycle rather
 // than remember it already happened (see the comment on Settings.h's field list for why).
 char lastWeatherUpdateDate[11] = {};  // "YYYY-MM-DD", empty until this session's first success.
+int64_t lastWeatherUpdateEpoch = 0;  // Exact moment of the above; 0 until this session's first success.
+// Separate from lastWeatherUpdateDate: this one tracks the last day a failure alert went out, so
+// the uncapped 5-min retry loop (see runAutoAdjustmentIfDue) doesn't spam /alert on every attempt.
+char lastWeatherFailureAlertDate[11] = {};
+// Same idea, for tryGeolocateIfDue's retry loop — geolocation gates the whole weather pipeline
+// (see settings.locationKnown), so a stuck lookup deserves its own once-a-day heads-up too.
+char lastGeoFailureAlertDate[11] = {};
+bool weatherTaskInFlight = false;  // Only ever touched from loop() / the functions it calls.
+// Set by cmd/weather (a manual, on-demand test trigger); consumeWeatherAutoAdjustResult() checks
+// it once the triggered fetch lands and publishes /status back regardless of outcome, so the
+// trigger is directly observable over MQTT instead of only inferable from settings.json changing.
+bool weatherManualTriggerRequested = false;
+
+// TODO: delete after weather debug
+// Last weather cycle's raw intermediates, snapshotted so buildStatusJson can expose exactly what
+// fed computeAutoCorrectedPercentage (24h-mean temp vs. daytime high, past-rain total, forecast
+// window) — the values are otherwise invisible once the background task returns.
+struct WeatherDebugSnapshot {
+    bool valid = false;
+    bool usedFallback = false;
+    bool rainSkip = false;
+    float avgPastTempC = 0.0f;
+    float rainPastDaysMm = 0.0f;
+    float maxRainProbabilityPercent = 0.0f;
+    float rainAmountNextWindowMm = 0.0f;
+    int16_t percentageBeforeClamp = 0;
+    int16_t newPercentage = 0;
+};
+WeatherDebugSnapshot weatherDebug;
 
 WateringRequest activeRequestForReporting;
 bool reportedActive = false;
@@ -286,6 +319,12 @@ void sampleNoiseFloorIfDue(uint32_t nowMs) {
     startNoiseFloorSampling();
 }
 
+// Forward-declared: defined near runAutoAdjustmentIfDue, which it mirrors gate-for-gate — kept
+// side-by-side there so the two can't drift apart, but reported here so the full reason the
+// weather cycle hasn't run (no location, no clock, no schedule today, window not open yet, fetch
+// in progress, or already done) is visible over MQTT without needing serial logs.
+const char* weatherAutoAdjustStatus();
+
 String buildStatusJson(uint32_t nowMs) {
     JsonDocument doc;
     doc["firmware_version"] = irrigator::board::FIRMWARE_VERSION;
@@ -313,6 +352,46 @@ String buildStatusJson(uint32_t nowMs) {
     doc["free_heap_bytes"] = ESP.getFreeHeap();
     doc["free_storage_bytes"] = static_cast<uint32_t>(fileStore.freeBytes());
     doc["cpu_temp_c"] = temperatureRead();
+    // location_known gates the entire weather auto-adjustment pipeline (see
+    // runAutoAdjustmentIfDue) — surfaced here so "no last_weather_update" is diagnosable remotely
+    // instead of silently stuck on a geolocation lookup that never succeeded.
+    doc["location_known"] = settings.locationKnown;
+    if (settings.locationKnown) {
+        doc["city"] = settings.city;
+    }
+    doc["weather_adjust_status"] = weatherAutoAdjustStatus();
+    // Omitted until this session's first successful weather fetch, same as noise_floor_db above.
+    if (lastWeatherUpdateEpoch != 0) {
+        char lastWeatherIso[24];
+        irrigator::domain::formatIso8601Utc(lastWeatherUpdateEpoch, lastWeatherIso, sizeof(lastWeatherIso));
+        doc["last_weather_update"] = lastWeatherIso;
+    }
+
+    // TODO: delete after weather debug
+    // Raw intermediates from the last weather cycle, so a single /status shows whether the modest
+    // watering_percentage comes from the 24h-mean temperature (much lower than the daytime high) or
+    // the past-rain subtraction. tempContrib + rainContrib + 100 == percentage_before_clamp.
+    if (weatherDebug.valid) {
+        JsonObject dbg = doc["weather_debug"].to<JsonObject>();
+        dbg["used_fallback"] = weatherDebug.usedFallback;
+        dbg["provider"] = weatherDebug.usedFallback ? "weatherapi" : "open_meteo";
+        dbg["avg_past_temp_c"] = weatherDebug.avgPastTempC;
+        dbg["rain_past_days_mm"] = weatherDebug.rainPastDaysMm;
+        dbg["max_rain_probability_percent"] = weatherDebug.maxRainProbabilityPercent;
+        dbg["rain_amount_next_window_mm"] = weatherDebug.rainAmountNextWindowMm;
+        dbg["base_temp_c"] = irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C;
+        dbg["temp_modifier_pct_per_degree"] = irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE;
+        dbg["rain_modifier_pct_per_mm"] = irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM;
+        dbg["temp_contrib_pct"] =
+            (weatherDebug.avgPastTempC - irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C) *
+            irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE;
+        dbg["rain_contrib_pct"] = -weatherDebug.rainPastDaysMm * irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM;
+        dbg["past_weather_days"] = irrigator::board::AUTOADJUSTMENT_PAST_WEATHER_DAYS;
+        dbg["forecast_window_hours"] = irrigator::board::AUTOADJUSTMENT_FORECAST_WINDOW_HOURS;
+        dbg["rain_skip"] = weatherDebug.rainSkip;
+        dbg["percentage_before_clamp"] = weatherDebug.percentageBeforeClamp;
+        dbg["new_percentage"] = weatherDebug.newPercentage;
+    }
 
     JsonObject outputs = doc["outputs"].to<JsonObject>();
     if (relayBank.isPumpOn()) {
@@ -835,6 +914,36 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
         return;
     }
 
+    // Test-only escape hatch: runs the weather fetch + percentage/rain-skip adjustment right now,
+    // bypassing the schedule-today / lead-time-window / retry-pacing gates that runAutoAdjustmentIfDue
+    // normally waits on — same background task, same settings.json write, same /status report at
+    // the end (success or failure) so the whole pipeline is exercisable on demand without waiting
+    // for the daily window.
+    if (commandName == "weather") {
+        if (weatherTaskInFlight) {
+            reportMqttError("command", commandName, "a weather fetch is already in progress");
+            return;
+        }
+        if (!settings.locationKnown) {
+            reportMqttError("command", commandName, "location not known yet; geolocation hasn't resolved");
+            return;
+        }
+        struct tm timeinfo;
+        if (!clockService.now(timeinfo)) {
+            reportMqttError("command", commandName, "clock not synced yet");
+            return;
+        }
+        char today[11];
+        snprintf(today, sizeof(today), "%04d-%02d-%02d",
+                timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
+        weatherManualTriggerRequested = true;
+        if (!startWeatherFetch(today, clockService.epoch())) {
+            weatherManualTriggerRequested = false;
+            reportMqttError("command", commandName, "failed to start weather fetch task");
+        }
+        return;
+    }
+
     if (commandName.startsWith("download/")) {
         handleMqttDownload(commandName.substring(String("download/").length()));
         return;
@@ -1111,6 +1220,20 @@ void tryGeolocateIfDue(uint32_t nowMs) {
     const auto geo = weatherService.fetchGeoLocation();
     if (!geo.success) {
         irrigator::drivers::Log.warn("Geolocation attempt failed; will retry");
+        struct tm timeinfo;
+        if (clockService.now(timeinfo)) {
+            char today[11];
+            snprintf(today, sizeof(today), "%04d-%02d-%02d",
+                    timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
+            if (strcmp(lastGeoFailureAlertDate, today) != 0) {
+                snprintf(lastGeoFailureAlertDate, sizeof(lastGeoFailureAlertDate), "%s", today);
+                // Sized for geo.errorReason's 200-byte capacity (WeatherService.h) plus the JSON
+                // wrapper, so the diagnostic detail that buffer holds doesn't get cut off here.
+                char alertMsg[256];
+                snprintf(alertMsg, sizeof(alertMsg), R"({"geolocation":"failed","reason":"%s"})", geo.errorReason);
+                mqtt.publishAlert(alertMsg);
+            }
+        }
         return;
     }
     settings.locationKnown = true;
@@ -1134,19 +1257,258 @@ void applyRainSkipDecision(int64_t nowEpoch) {
     irrigator::drivers::Log.info("Auto-adjustment: rain forecast triggered a 24h scheduled-run skip");
 }
 
-void applyAutoCorrectedPercentage(float avgPastTempC, float rainPastDaysMm) {
-    const int16_t newPercentage =
-        irrigator::domain::computeAutoCorrectedPercentage(avgPastTempC,
-                                                           rainPastDaysMm,
-                                                           irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
-                                                           settings.tempModifierPctPerDegree,
-                                                           settings.rainModifierPctPerMm,
-                                                           settings.lowerLimitPercent,
-                                                           settings.upperLimitPercent);
-    if (newPercentage != settings.wateringPercentage) {
-        settings.wateringPercentage = newPercentage;
-        mqtt.publishWateringPercentage(settings.wateringPercentage);
+// Fires at most once per calendar day, on the first failed attempt that day — the retry loop
+// below keeps trying every AUTOADJUSTMENT_RETRY_INTERVAL_MS uncapped, which would otherwise spam
+// /alert for as long as both providers stay down. force=true (cmd/weather's manual test trigger)
+// bypasses the once-a-day cap, since an explicit on-demand test should always report back.
+void reportWeatherFailure(const char* today, const char* openMeteoReason, const char* weatherApiReason, bool force) {
+    if (!force) {
+        if (strcmp(lastWeatherFailureAlertDate, today) == 0) {
+            return;
+        }
+        snprintf(lastWeatherFailureAlertDate, sizeof(lastWeatherFailureAlertDate), "%s", today);
     }
+
+    // Sized for two up-to-199-char reasons (WeatherFetchResult::errorReason's 200-byte capacity)
+    // plus the JSON wrapper, so neither reason gets cut off here.
+    char alertMsg[448];
+    snprintf(alertMsg,
+            sizeof(alertMsg),
+            R"({"weather":"failed","open_meteo":"%s","weather_api":"%s"})",
+            openMeteoReason,
+            weatherApiReason);
+    mqtt.publishAlert(alertMsg);
+}
+
+// The network fetch (HTTPS GET + JSON parse, potentially two providers in sequence) runs on its
+// own FreeRTOS task instead of inline in loop() — that call chain can take several seconds on a
+// weak/slow link, and blocking the main loop task for that long would stall valve/pump timing,
+// the schedule engine, and the UI. Only pure, snapshotted inputs cross into the task (Params) and
+// only a small POD result crosses back out (Result via queue); nothing shared (settings, mqtt,
+// fileStore, rainSkip, clockService) is touched from the task, so there's nothing to lock.
+struct WeatherAutoAdjustParams {
+    float latitude;
+    float longitude;
+    int64_t nowEpoch;
+    char today[11];
+    char weatherApiKey[48];
+    int16_t rainSkipProbabilityPercent;
+    int16_t rainSkipAmountMm;
+    float tempModifierPctPerDegree;
+    float rainModifierPctPerMm;
+    int16_t lowerLimitPercent;
+    int16_t upperLimitPercent;
+};
+
+struct WeatherAutoAdjustResult {
+    bool success;
+    bool rainSkip;
+    int16_t newPercentage;
+    int64_t nowEpoch;
+    char today[11];
+    // Matches WeatherFetchResult::errorReason's size (WeatherService.h) — these are straight
+    // copies of it; a smaller buffer here would silently truncate the heap/content-length/timing
+    // detail that buffer was specifically sized to hold.
+    char openMeteoErrorReason[200];
+    char weatherApiErrorReason[200];
+    // TODO: delete after weather debug
+    bool dbgHasForecast;
+    bool dbgUsedFallback;
+    float dbgAvgPastTempC;
+    float dbgRainPastDaysMm;
+    float dbgMaxRainProbabilityPercent;
+    float dbgRainAmountNextWindowMm;
+    int16_t dbgPercentageBeforeClamp;
+};
+
+QueueHandle_t weatherResultQueue = nullptr;
+
+void weatherAutoAdjustTask(void* pvParameters) {
+    // Heap-allocated by the caller (runAutoAdjustmentIfDue) and freed here — the task outlives
+    // the stack frame that queued it.
+    std::unique_ptr<WeatherAutoAdjustParams> params(static_cast<WeatherAutoAdjustParams*>(pvParameters));
+
+    WeatherAutoAdjustResult result{};
+    result.nowEpoch = params->nowEpoch;
+    snprintf(result.today, sizeof(result.today), "%s", params->today);
+
+    bool usedFallback = false;  // TODO: delete after weather debug
+    auto forecast = weatherService.fetchForecastOpenMeteo(params->latitude, params->longitude, params->nowEpoch);
+    if (!forecast.success) {
+        irrigator::drivers::Log.warn("Open-Meteo fetch failed; trying WeatherAPI fallback");
+        snprintf(result.openMeteoErrorReason, sizeof(result.openMeteoErrorReason), "%s", forecast.errorReason);
+        usedFallback = true;  // TODO: delete after weather debug
+        forecast = weatherService.fetchForecastWeatherApi(
+            params->latitude, params->longitude, params->nowEpoch, params->weatherApiKey);
+    }
+    if (!forecast.success) {
+        snprintf(result.weatherApiErrorReason, sizeof(result.weatherApiErrorReason), "%s", forecast.errorReason);
+        result.success = false;
+    } else {
+        result.success = true;
+        if (irrigator::domain::shouldSkipForRain(forecast.maxRainProbabilityPercent,
+                                                 forecast.rainAmountNextWindowMm,
+                                                 params->rainSkipProbabilityPercent,
+                                                 params->rainSkipAmountMm)) {
+            result.rainSkip = true;
+        } else {
+            result.rainSkip = false;
+            result.newPercentage =
+                irrigator::domain::computeAutoCorrectedPercentage(forecast.avgPastTempC,
+                                                                   forecast.rainPastDaysMm,
+                                                                   irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
+                                                                   params->lowerLimitPercent,
+                                                                   params->upperLimitPercent);
+        }
+    }
+
+    // TODO: delete after weather debug
+    result.dbgHasForecast = forecast.success;
+    result.dbgUsedFallback = usedFallback;
+    result.dbgAvgPastTempC = forecast.avgPastTempC;
+    result.dbgRainPastDaysMm = forecast.rainPastDaysMm;
+    result.dbgMaxRainProbabilityPercent = forecast.maxRainProbabilityPercent;
+    result.dbgRainAmountNextWindowMm = forecast.rainAmountNextWindowMm;
+    // Unclamped formula output, so the raw temp/rain contributions are visible even when the final
+    // value hit the 0/lower/upper-limit branches inside computeAutoCorrectedPercentage.
+    result.dbgPercentageBeforeClamp = static_cast<int16_t>(
+        100.0f + (forecast.avgPastTempC - irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C) *
+                     irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE -
+        forecast.rainPastDaysMm * irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM + 0.5f);
+    irrigator::drivers::Log.printf(
+        "[DEBUG] weather: provider=%s success=%d avgPastTempC=%.2f rainPastDaysMm=%.2f "
+        "maxRainProb=%.1f rainNextWindowMm=%.2f base=%.1f tempMod=%.2f rainMod=%.2f "
+        "tempContrib=%.1f rainContrib=%.1f preClamp=%d rainSkip=%d final=%d\n",
+        usedFallback ? "weatherapi" : "open_meteo", static_cast<int>(forecast.success),
+        forecast.avgPastTempC, forecast.rainPastDaysMm, forecast.maxRainProbabilityPercent,
+        forecast.rainAmountNextWindowMm, irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
+        irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE, irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM,
+        (forecast.avgPastTempC - irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C) *
+            irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE,
+        forecast.rainPastDaysMm * irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM,
+        static_cast<int>(result.dbgPercentageBeforeClamp), static_cast<int>(result.rainSkip),
+        static_cast<int>(result.newPercentage));
+
+    xQueueSend(weatherResultQueue, &result, 0);
+    vTaskDelete(nullptr);
+}
+
+// Drains the background task's result, if any, and applies its decision — the only place that
+// touches settings/mqtt/rainSkip/fileStore for the auto-adjustment cycle, so it all stays on the
+// single-threaded loop() side.
+void consumeWeatherAutoAdjustResult(uint32_t nowMs) {
+    if (!weatherTaskInFlight) {
+        return;
+    }
+    WeatherAutoAdjustResult result;
+    if (xQueueReceive(weatherResultQueue, &result, 0) != pdTRUE) {
+        return;  // Still running.
+    }
+    weatherTaskInFlight = false;
+
+    // TODO: delete after weather debug
+    weatherDebug.valid = result.dbgHasForecast;
+    weatherDebug.usedFallback = result.dbgUsedFallback;
+    weatherDebug.rainSkip = result.rainSkip;
+    weatherDebug.avgPastTempC = result.dbgAvgPastTempC;
+    weatherDebug.rainPastDaysMm = result.dbgRainPastDaysMm;
+    weatherDebug.maxRainProbabilityPercent = result.dbgMaxRainProbabilityPercent;
+    weatherDebug.rainAmountNextWindowMm = result.dbgRainAmountNextWindowMm;
+    weatherDebug.percentageBeforeClamp = result.dbgPercentageBeforeClamp;
+    weatherDebug.newPercentage = result.newPercentage;
+
+    if (!result.success) {
+        irrigator::drivers::Log.warn("Auto-adjustment: both weather providers failed; retrying in 5 min");
+        reportWeatherFailure(result.today, result.openMeteoErrorReason, result.weatherApiErrorReason,
+                            weatherManualTriggerRequested);
+    } else {
+        if (result.rainSkip) {
+            applyRainSkipDecision(result.nowEpoch);
+        } else if (result.newPercentage != settings.wateringPercentage) {
+            settings.wateringPercentage = result.newPercentage;
+            mqtt.publishWateringPercentage(settings.wateringPercentage);
+        }
+
+        snprintf(lastWeatherUpdateDate, sizeof(lastWeatherUpdateDate), "%s", result.today);
+        lastWeatherUpdateEpoch = result.nowEpoch;
+        persistSettings();
+    }
+
+    if (weatherManualTriggerRequested) {
+        weatherManualTriggerRequested = false;
+        mqtt.publishStatus(buildStatusJson(nowMs));
+    }
+}
+
+// Mirrors runAutoAdjustmentIfDue's gates exactly, read-only — see that function for what each one
+// means. Kept as a single source of truth for "why hasn't this run" rather than duplicating the
+// reasoning independently and risking the two drifting apart.
+const char* weatherAutoAdjustStatus() {
+    if (!settings.locationKnown) {
+        return "no_location";
+    }
+    struct tm timeinfo;
+    if (!clockService.now(timeinfo)) {
+        return "no_clock";
+    }
+    char today[11];
+    snprintf(today, sizeof(today), "%04d-%02d-%02d", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
+    if (strcmp(lastWeatherUpdateDate, today) == 0) {
+        return "done_today";
+    }
+    const uint8_t isoDayOfWeek = timeinfo.tm_wday == 0 ? 7 : static_cast<uint8_t>(timeinfo.tm_wday);
+    const int firstStartMinutes = earliestScheduleStartMinutesToday(isoDayOfWeek);
+    if (firstStartMinutes < 0) {
+        return "no_schedule_today";
+    }
+    const int nowMinutes = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+    if (nowMinutes < firstStartMinutes - irrigator::board::AUTOADJUSTMENT_LEAD_TIME_MINUTES) {
+        return "waiting_for_window";
+    }
+    if (weatherTaskInFlight) {
+        return "fetch_in_progress";
+    }
+    return "waiting_retry";
+}
+
+// Snapshots the settings the fetch needs and hands them to weatherAutoAdjustTask. Shared by the
+// daily automatic cycle (runAutoAdjustmentIfDue) and cmd/weather's on-demand manual trigger —
+// callers are responsible for their own gating (locationKnown, weatherTaskInFlight, etc.).
+bool startWeatherFetch(const char* today, int64_t nowEpoch) {
+    if (weatherResultQueue == nullptr) {
+        weatherResultQueue = xQueueCreate(1, sizeof(WeatherAutoAdjustResult));
+        if (weatherResultQueue == nullptr) {
+            irrigator::drivers::Log.error("Failed to create weather auto-adjustment queue");
+            return false;
+        }
+    }
+
+    auto params = std::make_unique<WeatherAutoAdjustParams>();
+    params->latitude = settings.latitude;
+    params->longitude = settings.longitude;
+    params->nowEpoch = nowEpoch;
+    snprintf(params->today, sizeof(params->today), "%s", today);
+    snprintf(params->weatherApiKey, sizeof(params->weatherApiKey), "%s", settings.weatherApiKey);
+    params->rainSkipProbabilityPercent = settings.rainSkipProbabilityPercent;
+    params->rainSkipAmountMm = settings.rainSkipAmountMm;
+    params->tempModifierPctPerDegree = irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE;
+    params->rainModifierPctPerMm = irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM;
+    params->lowerLimitPercent = settings.lowerLimitPercent;
+    params->upperLimitPercent = settings.upperLimitPercent;
+
+    weatherTaskInFlight = true;
+    // 12KB stack: comfortably covers the TLS handshake + ArduinoJson buffers this needs (the
+    // default Arduino loop task stack this used to run inline on is smaller and shared with
+    // everything else, which is exactly what moving this off-loop avoids).
+    const BaseType_t created = xTaskCreate(
+        weatherAutoAdjustTask, "weatherAdj", 12288, params.get(), tskIDLE_PRIORITY + 1, nullptr);
+    if (created != pdPASS) {
+        irrigator::drivers::Log.error("Failed to start weather auto-adjustment task");
+        weatherTaskInFlight = false;
+        return false;  // params freed automatically (unique_ptr).
+    }
+    params.release();  // Ownership now with the task; it frees this on exit.
+    return true;
 }
 
 // Daily weather-based adjustment cycle. Opens
@@ -1156,8 +1518,11 @@ void applyAutoCorrectedPercentage(float avgPastTempC, float rainPastDaysMm) {
 // deliberately uncapped: a forecast that only arrives after the first watering has already run
 // still helps later same-day runs or informs the rain-skip decision in time to save water.
 void runAutoAdjustmentIfDue(uint32_t nowMs) {
-    if (!settings.locationKnown) {
-        return;  // No location yet; scheduled runs keep using the manual watering percentage.
+    consumeWeatherAutoAdjustResult(nowMs);
+
+    if (weatherTaskInFlight || !settings.locationKnown) {
+        return;  // Fetch already in flight, or no location yet (scheduled runs keep using the
+                 // manual watering percentage until geolocation resolves).
     }
     struct tm timeinfo;
     if (!clockService.now(timeinfo)) {
@@ -1186,29 +1551,7 @@ void runAutoAdjustmentIfDue(uint32_t nowMs) {
     weatherAttempted = true;
     lastWeatherAttemptMs = nowMs;
 
-    const int64_t nowEpoch = clockService.epoch();
-    auto forecast = weatherService.fetchForecastOpenMeteo(settings.latitude, settings.longitude, nowEpoch);
-    if (!forecast.success) {
-        irrigator::drivers::Log.warn("Open-Meteo fetch failed; trying WeatherAPI fallback");
-        forecast = weatherService.fetchForecastWeatherApi(
-            settings.latitude, settings.longitude, nowEpoch, settings.weatherApiKey);
-    }
-    if (!forecast.success) {
-        irrigator::drivers::Log.warn("Auto-adjustment: both weather providers failed; retrying in 5 min");
-        return;
-    }
-
-    if (irrigator::domain::shouldSkipForRain(forecast.maxRainProbabilityPercent,
-                                             forecast.rainAmountNextWindowMm,
-                                             settings.rainSkipProbabilityPercent,
-                                             settings.rainSkipAmountMm)) {
-        applyRainSkipDecision(nowEpoch);
-    } else {
-        applyAutoCorrectedPercentage(forecast.avgPastTempC, forecast.rainPastDaysMm);
-    }
-
-    snprintf(lastWeatherUpdateDate, sizeof(lastWeatherUpdateDate), "%s", today);
-    persistSettings();
+    startWeatherFetch(today, clockService.epoch());  // Retry paced by lastWeatherAttemptMs above regardless of outcome.
 }
 
 void runScheduleEngine(uint32_t nowMs) {

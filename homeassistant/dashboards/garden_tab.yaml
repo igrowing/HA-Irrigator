@@ -8,6 +8,17 @@
         cards:
           - type: heading
             heading: Status & Manual Control
+          - type: conditional
+            conditions:
+              - condition: numeric_state
+                entity: sensor.irrigator_command_queue
+                above: 0
+            card:
+              type: tile
+              entity: sensor.irrigator_command_queue
+              name: Pending Commands (waiting to reach the device)
+              icon: mdi:playlist-clock
+              color: orange
           - type: entities
             title: Pump
             entities:
@@ -401,6 +412,8 @@
             title: Diagnostics
             entities:
               - entity: binary_sensor.irrigator_online
+              - entity: sensor.irrigator_command_queue
+                name: Pending Commands
               - entity: sensor.irrigator_last_alert
               - entity: sensor.irrigator_queue
               - type: attribute
@@ -455,6 +468,12 @@
                 attribute: free_storage_bytes
                 name: Free Storage
                 suffix: " bytes"
+          - type: tile
+            entity: input_text.irrigator_weatherapi_key
+            name: WeatherAPI.com Key
+            icon: mdi:key-outline
+            features:
+              - type: text-input
           - type: tile
             entity: button.irrigator_refresh_from_device
             icon: mdi:cloud-download-outline

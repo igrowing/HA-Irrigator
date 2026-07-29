@@ -6,6 +6,54 @@
 # =============================================================================
 
 automation:
+  # Drains sensor.irrigator_command_queue (see the trigger-based sensor of
+  # that name in irrigator.yaml) whenever the device is reachable. Two
+  # triggers: the online transition itself (fastest path - fires the instant
+  # binary_sensor.irrigator_online flips to "on"), and a 30s time_pattern
+  # safety net that keeps retrying as long as the device stays online and
+  # anything is still queued - this is what makes it "retry periodically
+  # until success" rather than a single one-shot flush, so a batch that only
+  # partially went out (device drops mid-flush) picks back up on the next
+  # tick instead of stranding the rest of the queue forever.
+  #
+  # Pops exactly one item per loop iteration, immediately after publishing
+  # it, and re-checks `binary_sensor.irrigator_online` before every
+  # iteration (not just once at the top) - so a disconnect mid-batch stops
+  # the loop right there instead of firing the rest of the queue at a device
+  # that's no longer listening. Only ever items actually published get
+  # popped; nothing is removed from the queue on a guess.
+  - alias: "Irrigator - flush pending command queue"
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.irrigator_online
+        to: "on"
+      - trigger: time_pattern
+        seconds: "/30"
+    conditions:
+      - condition: state
+        entity_id: binary_sensor.irrigator_online
+        state: "on"
+      - condition: template
+        value_template: "{{ (state_attr('sensor.irrigator_command_queue', 'items') or []) | length > 0 }}"
+    actions:
+      - repeat:
+          while:
+            - condition: state
+              entity_id: binary_sensor.irrigator_online
+              state: "on"
+            - condition: template
+              value_template: "{{ (state_attr('sensor.irrigator_command_queue', 'items') or []) | length > 0 }}"
+          sequence:
+            - variables:
+                head: "{{ (state_attr('sensor.irrigator_command_queue', 'items'))[0] }}"
+            - action: mqtt.publish
+              data:
+                topic: "{{ head.topic }}"
+                payload: "{{ head.payload }}"
+            - event: irrigator_queue_pop
+              event_data:
+                count: 1
+
   # Per ha.md preface: settings.json / schedule.json / status are requested
   # from the device via MQTT. Rather than polling on a schedule, this only
   # fires the request when HA doesn't have a representation yet (a virgin
@@ -155,6 +203,11 @@ automation:
           entity_id: input_number.irrigator_rain_skip_amount
         data:
           value: "{{ state_attr('sensor.irrigator_settings', 'rain_skip_amount_mm') | int(4) }}"
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.irrigator_weatherapi_key
+        data:
+          value: "{{ state_attr('sensor.irrigator_settings', 'weatherapi_key') | default('') }}"
       # switch.irrigator_schedule_active and number.irrigator_watering_percentage
       # are direct MQTT entities (not input helpers) whose state_topics
       # (/scheduled, /watering_percentage) only ever get a value when
@@ -241,6 +294,7 @@ automation:
           - input_number.irrigator_lower_limit
           - input_number.irrigator_rain_skip_probability
           - input_number.irrigator_rain_skip_amount
+          - input_text.irrigator_weatherapi_key
     conditions:
       - condition: template
         value_template: "{{ states('sensor.irrigator_settings') not in ['unknown', 'unavailable'] }}"

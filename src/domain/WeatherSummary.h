@@ -11,13 +11,16 @@ namespace irrigator::domain {
 // this is pure arithmetic rather than timestamp parsing.
 size_t openMeteoNowIndex(int64_t nowEpochUtc, size_t pastDays);
 
-// Averages hourlyTemperatureC over the pastWeatherDays*24 hours immediately preceding nowIndex —
-// the historical moving-average temperature term the adjustment formula (Step 2) uses. Returns
-// false (output untouched) if there isn't that much history before nowIndex in the array.
-bool summarizePastAverageTemperature(JsonArrayConst hourlyTemperatureC,
-                                     size_t nowIndex,
-                                     size_t pastWeatherDays,
-                                     float& outAvgTempC);
+// Averages dailyMaxTemperatureC over its first pastWeatherDays entries — the historical daytime
+// *peak* temperature term the adjustment formula (Step 2) uses. Uses the daily high rather than a
+// 24h mean: the mean folds in cool nights and reads well below the daytime temperature that
+// actually drives watering need. Open-Meteo's daily arrays start at (today - pastDays), so the
+// first pastWeatherDays entries are exactly the past window with today excluded, mirroring
+// summarizePastRainfall. Returns false (output untouched) if the array is shorter than
+// pastWeatherDays.
+bool summarizePastAverageDailyMaxTemperature(JsonArrayConst dailyMaxTemperatureC,
+                                             size_t pastWeatherDays,
+                                             float& outAvgMaxTempC);
 
 // Sums dailyRainSumMm over its first pastWeatherDays entries — total precipitation over the same
 // historical window the temperature average above covers (Step 2's rain-subtraction term).
@@ -40,11 +43,15 @@ bool summarizeForecastRainWindow(JsonArrayConst hourlyRainProbabilityPercent,
 // WeatherAPI.com fallback's rain-skip window: flattens forecastDays[].hour[] (each hour carrying
 // time_epoch/chance_of_rain/precip_mm) and maxes/sums the first windowHours entries at or after
 // nowEpochUtc — WeatherAPI, unlike Open-Meteo, doesn't guarantee a fixed array index for "now".
-// Returns false if fewer than windowHours qualifying entries are found.
+// Returns false if fewer than windowHours qualifying entries are found. outQualifyingHours is
+// always set (even on failure) to how many entries actually qualified, so a caller can tell "found
+// 0" (e.g. every hour missing/misnamed time_epoch, defaulting to epoch 0 and always comparing as
+// past) apart from "found some but not enough" (a genuinely short response).
 bool summarizeWeatherApiForecastRainWindow(JsonArrayConst forecastDays,
                                            int64_t nowEpochUtc,
                                            size_t windowHours,
                                            float& outMaxRainProbabilityPercent,
-                                           float& outRainAmountMm);
+                                           float& outRainAmountMm,
+                                           size_t& outQualifyingHours);
 
 }  // namespace irrigator::domain

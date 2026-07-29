@@ -79,10 +79,6 @@ bool parseSettings(const char* json, size_t length, Settings& out) {
     snprintf(parsed.city, sizeof(parsed.city), "%s", doc["city"] | "");
     parsed.upperLimitPercent = doc["upper_limit"] | board::AUTOADJUSTMENT_DEFAULT_UPPER_LIMIT_PERCENT;
     parsed.lowerLimitPercent = doc["lower_limit"] | board::AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT;
-    parsed.tempModifierPctPerDegree =
-        doc["temp_modifier_pct_per_degree"] | board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE;
-    parsed.rainModifierPctPerMm =
-        doc["rain_modifier_pct_per_mm"] | board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM;
     parsed.rainSkipProbabilityPercent = doc["rain_skip_probability_percent"] |
                                         board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_PROBABILITY_PERCENT;
     parsed.rainSkipAmountMm =
@@ -136,8 +132,6 @@ size_t serializeSettings(const Settings& settings, char* buffer, size_t bufferSi
     doc["city"] = settings.city;
     doc["upper_limit"] = settings.upperLimitPercent;
     doc["lower_limit"] = settings.lowerLimitPercent;
-    doc["temp_modifier_pct_per_degree"] = settings.tempModifierPctPerDegree;
-    doc["rain_modifier_pct_per_mm"] = settings.rainModifierPctPerMm;
     doc["rain_skip_probability_percent"] = settings.rainSkipProbabilityPercent;
     doc["rain_skip_amount_mm"] = settings.rainSkipAmountMm;
     doc["weatherapi_key"] = settings.weatherApiKey;

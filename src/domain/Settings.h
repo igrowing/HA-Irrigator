@@ -39,8 +39,6 @@ struct Settings {
     // reboot.
     int16_t upperLimitPercent = board::AUTOADJUSTMENT_DEFAULT_UPPER_LIMIT_PERCENT;
     int16_t lowerLimitPercent = board::AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT;
-    float tempModifierPctPerDegree = board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE;
-    float rainModifierPctPerMm = board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM;
     // Step 1's rain-skip trigger thresholds (see domain::shouldSkipForRain) — whole percent/mm,
     // matching the rotary UI's existing integer-only editing convention (no field in this project
     // is rotary-edited as a float today).

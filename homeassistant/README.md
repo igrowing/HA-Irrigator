@@ -1,8 +1,7 @@
 # Irrigator - Home Assistant setup
 
 This directory is a standard HA "package" plus a Lovelace tab, built against
-the actual MQTT contract implemented in `src/main.ino` / `src/network/MqttService.*`
-(not the older `irrigator.md`/`dev.md` notes, which predate the move off ESPHome).
+the actual MQTT contract implemented in `src/main.ino` / `src/network/MqttService.*`.
 It implements the four sections requested in `ha.md` using only built-in
 Home Assistant integrations and card types - no HACS, no custom cards.
 
@@ -197,10 +196,13 @@ not on a recurring poll:
   fires a state-changed event just like a real edit would. This same sync
   automation also "self-sets" `switch.irrigator_schedule_active` and
   `number.irrigator_watering_percentage` to whatever settings.json says -
-  those two are direct MQTT entities whose own topics (`/scheduled`,
-  `/watering_percentage`) only ever get a value when someone actively
-  changes them, never as part of a passive settings download, so without
-  this they'd sit blank on every fresh boot until manually touched.
+  those two are `template:` entities (see "Offline command queue" below)
+  whose `state:` reads a read-only MQTT echo sensor
+  (`binary_sensor.irrigator_scheduled_state`, `sensor.irrigator_watering_percentage_echo`)
+  bound to `/scheduled` / `/watering_percentage`, and those topics only ever
+  get a value when someone actively changes them, never as part of a passive
+  settings download, so without this they'd sit blank on every fresh boot
+  until manually touched.
 - **`sensor.irrigator_schedule`** is a trigger-based template sensor
   listening on *two* topics: `.../schedule` (which the device pushes on
   every change, whether from an HA upload or the device's own rotary/
@@ -221,6 +223,64 @@ not on a recurring poll:
   `script.irrigator_request_downloads` to force-request `/status` plus both
   files on demand, regardless of virgin status - useful if you suspect drift
   or want to double-check after a manual device-side change.
+
+## Offline command queue
+
+The garage's Wi-Fi is flaky enough that the device drops off `.../online`
+often, and the pre-queue behavior was every manual-control switch/number
+greying out via `availability:` whenever that happened - so all the Run
+switches, Schedule Active, and Watering Percentage carry **no**
+`availability:` binding at all now; they're always clickable. Writing to any
+of them while the device is offline doesn't get lost - it's queued and
+retried until it actually reaches the device:
+
+- **`script.irrigator_enqueue_or_publish`** (`topic`, `payload`) is the one
+  chokepoint every device-bound write goes through - `irrigator_start`,
+  `irrigator_stop`, `irrigator_stop_all`, `irrigator_test_all`,
+  `irrigator_publish_settings`, `irrigator_schedule_save`,
+  `irrigator_schedule_delete`, and the `turn_on`/`turn_off`/`set_value` of
+  the two template entities above. If `binary_sensor.irrigator_online` is
+  `on`, it publishes immediately - same latency as before this existed. If
+  not, it fires an `irrigator_queue_push` event instead of publishing.
+- **`sensor.irrigator_command_queue`** is a trigger-based template sensor
+  that accumulates `{topic, payload}` entries in its `items` attribute,
+  self-referencing its own previous value via `this.attributes.items` on
+  every `irrigator_queue_push` (append one) or `irrigator_queue_pop` (drop
+  the leading `count` entries). This lives as an *attribute*, not an entity
+  `state` string, specifically so it isn't subject to HA's 255-character
+  state-value limit - a queued `cmd/upload/settings.json` or
+  `cmd/upload/schedule.json` payload can be several hundred bytes to a few
+  KB, and a plain `input_text` helper couldn't hold that.
+- **"Irrigator - flush pending command queue"** (in
+  `irrigator_automations.yaml`) drains the queue whenever the device is
+  reachable: triggered both by the online transition (fastest path) and a
+  30-second `time_pattern` safety net, so it keeps retrying for as long as
+  the device stays online and anything remains queued - not just a single
+  attempt on reconnect. It pops exactly one item at a time, immediately
+  after publishing it, and re-checks `binary_sensor.irrigator_online` before
+  every iteration - so a disconnect mid-batch stops the loop right there
+  instead of firing the rest of a stale batch at a device that already
+  stopped listening, and only items that actually got published are ever
+  removed from the queue.
+- There's no per-command delivery acknowledgement from the device for
+  `cmd/run` / `cmd/stop` / `cmd/scheduled` / `cmd/watering_percentage` (see
+  `docs/technical.md`'s MQTT section) - `cmd/#` is delivered at QoS 0 in
+  practice, and the broker can't hold QoS-0 messages for a disconnected
+  client even with a persistent session. "Published to the broker while
+  `binary_sensor.irrigator_online` said on" is the best success signal
+  available; it's not a true device-side confirmation.
+- **`irrigator_schedule_save`/`_delete`** build their new record list on top
+  of the *last still-queued* `cmd/upload/schedule.json` payload if one
+  exists (found by filtering `sensor.irrigator_command_queue`'s `items` for
+  that topic), falling back to `sensor.irrigator_schedule.records` only when
+  nothing's queued. This matters because `sensor.irrigator_schedule` only
+  updates from the device's own echo on `.../schedule` - which won't arrive
+  until it's back online - so without this, a second offline edit would
+  silently overwrite the first instead of building on it.
+- The dashboard shows `sensor.irrigator_command_queue` (its `state` is the
+  pending count) both as a conditional tile at the top of "Status & Manual
+  Control" (only visible when non-zero) and in the Diagnostics list, so it's
+  obvious when a command hasn't reached the device yet.
 
 ## Troubleshooting
 
@@ -344,7 +404,9 @@ sent.
 - `input_number.irrigator_pump_duration`, `..._zone_N_duration` - manual run
   duration, 1-120 min.
 - `switch.irrigator_schedule_active`, `number.irrigator_watering_percentage`
-  - direct MQTT round-trip.
+  - `template:` entities, state read from a read-only MQTT echo sensor,
+    writes routed through the offline command queue (see "Offline command
+    queue" below) rather than a direct `command_topic`.
 - `input_text.irrigator_zone_N_name`, `input_boolean.irrigator_zone_N_enabled`,
   `input_number.irrigator_default_manual_duration` - settings that require a
   full `settings.json` republish (see above).

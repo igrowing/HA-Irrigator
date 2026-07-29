@@ -356,12 +356,14 @@ per °C):
 | 14°C | 8min (40%) | 0min (skip) | 0min (skip) | 0min (skip) | 0min (skip) |
 | 16°C | 12min (60%) | 10min (50%) | 8min (40%) | 0min (skip) | 0min (skip) |
 | 18°C | 16min (80%) | 14min (70%) | 12min (60%) | 10min (50%) | 8min (40%) |
-| 20°C (no change) | 20min (100%) | 18min (90%) | 16min (80%) | 14min (70%) | 12min (60%) |
+| 20°C (base) | 20min (100%) | 18min (90%) | 16min (80%) | 14min (70%) | 12min (60%) |
 | 22°C | 24min (120%) | 22min (110%) | 20min (100%) | 18min (90%) | 16min (80%) |
 | 24°C | 28min (140%) | 26min (130%) | 24min (120%) | 22min (110%) | 20min (100%) |
 | 26°C | 32min (160%) | 30min (150%) | 28min (140%) | 26min (130%) | 24min (120%) |
 | 28°C | 36min (180%) | 34min (170%) | 32min (160%) | 30min (150%) | 28min (140%) |
 | 30°C | 40min (200%) | 38min (190%) | 36min (180%) | 34min (170%) | 32min (160%) |
+| 32°C | 40min (capped) | 38min (190%) | 36min (180%) | 34min (170%) | 32min (160%) |
+
 
 A couple of things worth knowing about these numbers:
 - With the factory-default 10%/°C sensitivity, the 200% **Upper limit** is reached at exactly

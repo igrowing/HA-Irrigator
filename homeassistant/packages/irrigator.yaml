@@ -42,6 +42,23 @@ mqtt:
         manufacturer: "DIY"
         model: "ESP32 Irrigation Controller"
 
+    # Read-only echo of the device's own /scheduled topic. The interactive
+    # switch.irrigator_schedule_active (template platform, further down)
+    # reads its `state:` from this - kept separate so the switch itself can
+    # go through script.irrigator_enqueue_or_publish instead of a plain
+    # command_topic, and so it's never greyed out by `availability:`.
+    - name: "Scheduled State"
+      unique_id: irrigator_scheduled_state
+      icon: mdi:calendar-check
+      state_topic: "irrigatorF4/scheduled"
+      payload_on: "true"
+      payload_off: "false"
+      device: *irrigator_device
+      availability: &irrigator_availability
+        - topic: "irrigatorF4/online"
+          payload_available: "true"
+          payload_not_available: "false"
+
   sensor:
     # Renamed to "Address" (not "Status") since its state is the device's
     # IP - this only changes the displayed friendly name, not entity_id
@@ -54,10 +71,7 @@ mqtt:
       value_template: "{{ value_json.ip }}"
       json_attributes_topic: "irrigatorF4/status"
       device: *irrigator_device
-      availability: &irrigator_availability
-        - topic: "irrigatorF4/online"
-          payload_available: "true"
-          payload_not_available: "false"
+      availability: *irrigator_availability
 
     # Live watering/pump status, per ha.md #1 ("update the status of cards
     # from the messages coming on topic <prefix>/state"). json_attributes_topic
@@ -128,42 +142,35 @@ mqtt:
       device: *irrigator_device
       availability: *irrigator_availability
 
+    # Read-only echo of the device's own /watering_percentage topic. The
+    # interactive number.irrigator_watering_percentage (template platform,
+    # further down) reads its `state:` from this - kept separate so the
+    # number itself can go through script.irrigator_enqueue_or_publish
+    # instead of a plain command_topic, and so it's never greyed out by
+    # `availability:`.
+    - name: "Watering Percentage Echo"
+      unique_id: irrigator_watering_percentage_echo
+      icon: mdi:water-percent
+      state_topic: "irrigatorF4/watering_percentage"
+      unit_of_measurement: "%"
+      device: *irrigator_device
+      availability: *irrigator_availability
+
   # NOTE: the device-side mirror of schedule.json is a trigger-based template
   # sensor (sensor.irrigator_schedule, further down under `template:`), not a
   # plain `mqtt: sensor:` here - it needs to listen on two different topics
   # (the live push on every change, and the one-shot virgin-deploy download
   # response) and merge them into one entity, which a single `state_topic`
   # can't do.
-
-  switch:
-    - name: "Schedule Active"
-      unique_id: irrigator_schedule_active
-      icon: mdi:calendar-check
-      state_topic: "irrigatorF4/scheduled"
-      command_topic: "irrigatorF4/cmd/scheduled"
-      state_on: "true"
-      state_off: "false"
-      payload_on: "true"
-      payload_off: "false"
-      device: *irrigator_device
-      availability: *irrigator_availability
-
-  number:
-    # No `mode:` - dropped after HA reported it as a DisallowedExtraPropWarning
-    # on this entity (conflicting with what the docs say elsewhere, but the
-    # live instance is ground truth). No functional loss: `mode` was only a
-    # slider-vs-box display hint, HA picks a reasonable default without it.
-    - name: "Watering Percentage"
-      unique_id: irrigator_watering_percentage
-      icon: mdi:water-percent
-      state_topic: "irrigatorF4/watering_percentage"
-      command_topic: "irrigatorF4/cmd/watering_percentage"
-      min: 0
-      max: 300
-      step: 5
-      unit_of_measurement: "%"
-      device: *irrigator_device
-      availability: *irrigator_availability
+  #
+  # Schedule Active / Watering Percentage themselves are no longer plain
+  # `mqtt: switch:` / `mqtt: number:` entities - their command side moved to
+  # `template:` switch/number entities below (turn_on/turn_off/set_value
+  # calling script.irrigator_enqueue_or_publish) so a write made while
+  # offline can be queued instead of silently dropped, and so they're never
+  # greyed out by `availability:`. See "Scheduled State" / "Watering
+  # Percentage Echo" above for the plain sensors that still mirror the
+  # device's own echo on those two topics.
 
 # -----------------------------------------------------------------------
 # Manual-control switches (part 1 of the Garden tab): one per pump/zone,
@@ -197,6 +204,13 @@ mqtt:
 # `remaining_min` still can't live on the switch as `attributes:` (same
 # restriction, unrelated to naming) - see the dedicated sensor.irrigator_*_remaining
 # entities further down for that.
+#
+# No `availability:` on any of these (deliberately, on flaky Wi-Fi where the
+# device drops offline often) - turn_on/turn_off go through
+# script.irrigator_start/irrigator_stop, which route through
+# script.irrigator_enqueue_or_publish and queue on sensor.irrigator_command_queue
+# when the device is offline instead of publishing straight away. See
+# "Offline command queue" in ../README.md for the full mechanism.
 # -----------------------------------------------------------------------
 template:
   - switch:
@@ -204,7 +218,6 @@ template:
         unique_id: irrigator_switch_pump
         icon: mdi:pump
         state: "{{ state_attr('sensor.irrigator_watering_state', 'pump') | default(false) }}"
-        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
         turn_on:
           - action: script.irrigator_start
             data:
@@ -218,7 +231,6 @@ template:
         unique_id: irrigator_switch_zone_1
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 1 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
-        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
         turn_on:
           - action: script.irrigator_start
             data: {zone: 1, duration: "{{ states('input_number.irrigator_zone_1_duration') | int(5) }}"}
@@ -230,7 +242,6 @@ template:
         unique_id: irrigator_switch_zone_2
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 2 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
-        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
         turn_on:
           - action: script.irrigator_start
             data: {zone: 2, duration: "{{ states('input_number.irrigator_zone_2_duration') | int(5) }}"}
@@ -242,7 +253,6 @@ template:
         unique_id: irrigator_switch_zone_3
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 3 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
-        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
         turn_on:
           - action: script.irrigator_start
             data: {zone: 3, duration: "{{ states('input_number.irrigator_zone_3_duration') | int(5) }}"}
@@ -254,7 +264,6 @@ template:
         unique_id: irrigator_switch_zone_4
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 4 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
-        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
         turn_on:
           - action: script.irrigator_start
             data: {zone: 4, duration: "{{ states('input_number.irrigator_zone_4_duration') | int(5) }}"}
@@ -266,7 +275,6 @@ template:
         unique_id: irrigator_switch_zone_5
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 5 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
-        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
         turn_on:
           - action: script.irrigator_start
             data: {zone: 5, duration: "{{ states('input_number.irrigator_zone_5_duration') | int(5) }}"}
@@ -278,7 +286,6 @@ template:
         unique_id: irrigator_switch_zone_6
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 6 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
-        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
         turn_on:
           - action: script.irrigator_start
             data: {zone: 6, duration: "{{ states('input_number.irrigator_zone_6_duration') | int(5) }}"}
@@ -290,7 +297,6 @@ template:
         unique_id: irrigator_switch_zone_7
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 7 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
-        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
         turn_on:
           - action: script.irrigator_start
             data: {zone: 7, duration: "{{ states('input_number.irrigator_zone_7_duration') | int(5) }}"}
@@ -302,7 +308,6 @@ template:
         unique_id: irrigator_switch_zone_8
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 8 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
-        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
         turn_on:
           - action: script.irrigator_start
             data: {zone: 8, duration: "{{ states('input_number.irrigator_zone_8_duration') | int(5) }}"}
@@ -314,7 +319,6 @@ template:
         unique_id: irrigator_switch_zone_9
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 9 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
-        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
         turn_on:
           - action: script.irrigator_start
             data: {zone: 9, duration: "{{ states('input_number.irrigator_zone_9_duration') | int(5) }}"}
@@ -326,7 +330,6 @@ template:
         unique_id: irrigator_switch_zone_10
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 10 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
-        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
         turn_on:
           - action: script.irrigator_start
             data: {zone: 10, duration: "{{ states('input_number.irrigator_zone_10_duration') | int(5) }}"}
@@ -338,12 +341,53 @@ template:
         unique_id: irrigator_switch_zone_11
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 11 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
-        availability: "{{ is_state('binary_sensor.irrigator_online', 'on') }}"
         turn_on:
           - action: script.irrigator_start
             data: {zone: 11, duration: "{{ states('input_number.irrigator_zone_11_duration') | int(5) }}"}
         turn_off:
           - action: script.irrigator_stop
+
+  # Schedule Active / Watering Percentage: template versions of the two
+  # entities that used to be plain `mqtt: switch:` / `mqtt: number:` (see the
+  # NOTE in the `mqtt:` block above). `state:` reads the device's own echo
+  # via the two read-only sensors added there; writes go through
+  # script.irrigator_enqueue_or_publish instead of a raw command_topic so
+  # they queue for retry when offline, and neither carries `availability:`
+  # so they're never greyed out.
+  - switch:
+      # `name:` deliberately includes the "Irrigator " prefix (matching the
+      # pump/zone switches above, not the mqtt: platform's device-linked
+      # entities below) - this platform has no `device:` grouping in this
+      # file, so entity_id is a plain slugify(name); without the prefix this
+      # would register as switch.schedule_active instead of the
+      # switch.irrigator_schedule_active every script/automation/dashboard
+      # card here already references.
+      - name: "Irrigator Schedule Active"
+        unique_id: irrigator_schedule_active
+        icon: mdi:calendar-check
+        state: "{{ is_state('binary_sensor.irrigator_scheduled_state', 'on') }}"
+        turn_on:
+          - action: script.irrigator_enqueue_or_publish
+            data: {topic: "irrigatorF4/cmd/scheduled", payload: "true"}
+        turn_off:
+          - action: script.irrigator_enqueue_or_publish
+            data: {topic: "irrigatorF4/cmd/scheduled", payload: "false"}
+
+  - number:
+      # Same "Irrigator " name-prefix reasoning as the switch above.
+      - name: "Irrigator Watering Percentage"
+        unique_id: irrigator_watering_percentage
+        icon: mdi:water-percent
+        min: 0
+        max: 300
+        step: 5
+        unit_of_measurement: "%"
+        state: "{{ states('sensor.irrigator_watering_percentage_echo') | int(100) }}"
+        set_value:
+          - action: script.irrigator_enqueue_or_publish
+            data:
+              topic: "irrigatorF4/cmd/watering_percentage"
+              payload: "{{ value | int }}"
 
   - binary_sensor:
       # Zone-enabled flags (unrelated to watering activity, which the
@@ -614,6 +658,44 @@ template:
             0
           {% endif %}
 
+  # Offline command queue: any write the device might miss while
+  # binary_sensor.irrigator_online is off gets appended here (via the
+  # irrigator_queue_push event) instead of published straight away - see
+  # script.irrigator_enqueue_or_publish, which is the only thing that ever
+  # fires that event, and the "Irrigator - flush pending command queue"
+  # automation below, which is the only thing that ever fires
+  # irrigator_queue_pop. Self-accumulating trigger-based sensor: each firing
+  # reads its own previous `items` attribute via `this.attributes.items`
+  # (HA's standard accumulator pattern) and either appends one entry (push)
+  # or drops the leading `count` entries once they've actually been
+  # published (pop) - so a partial flush (device drops mid-batch) only pops
+  # what really went out, leaving the rest for the next retry.
+  - trigger:
+      - trigger: event
+        event_type: irrigator_queue_push
+      - trigger: event
+        event_type: irrigator_queue_pop
+    sensor:
+      - name: "Irrigator Command Queue"
+        unique_id: irrigator_command_queue
+        icon: mdi:playlist-clock
+        unit_of_measurement: "items"
+        state: >-
+          {% set prev = this.attributes.items | default([]) %}
+          {% if trigger.event.event_type == 'irrigator_queue_push' %}
+            {{ (prev + [trigger.event.data]) | length }}
+          {% else %}
+            {{ (prev[trigger.event.data.count | default(0):]) | length }}
+          {% endif %}
+        attributes:
+          items: >-
+            {% set prev = this.attributes.items | default([]) %}
+            {% if trigger.event.event_type == 'irrigator_queue_push' %}
+              {{ prev + [{'topic': trigger.event.data.topic, 'payload': trigger.event.data.payload}] }}
+            {% else %}
+              {{ prev[trigger.event.data.count | default(0):] }}
+            {% endif %}
+
   # Current schedule.json representation. Fed by two topics so it's always
   # up to date regardless of source: `.../schedule` (the device pushes this
   # on every change - HA upload, or the device's own rotary/display menu)
@@ -696,7 +778,7 @@ input_number:
     min: 1
     max: 120
     step: 1
-    mode: slider
+    mode: box
     unit_of_measurement: min
     initial: 5
   irrigator_zone_1_duration: &zone_duration_helper
@@ -705,7 +787,7 @@ input_number:
     min: 1
     max: 120
     step: 1
-    mode: slider
+    mode: box
     unit_of_measurement: min
     initial: 5
   irrigator_zone_2_duration: *zone_duration_helper
@@ -901,6 +983,13 @@ input_text:
   irrigator_zone_10_name: {name: "Zone 10 Name", icon: mdi:label-outline, max: 15, initial: "#10 (no name)"}
   irrigator_zone_11_name: {name: "Zone 11 Name", icon: mdi:label-outline, max: 15, initial: "#11 (no name)"}
 
+  # WeatherAPI.com fallback key (Settings::weatherApiKey) - only ever used when Open-Meteo's
+  # keyless call fails. mode: password just masks the dashboard tile; the key is still visible in
+  # plaintext via sensor.irrigator_settings' attributes below (see the comment on that field in
+  # Settings.h) - there's no way to selectively exclude one attribute from that sensor without
+  # reworking it entirely, so this isn't a real secret store, just a convenience field.
+  irrigator_weatherapi_key: {name: "WeatherAPI.com Key", icon: mdi:key-outline, max: 47, mode: password, initial: ""}
+
 input_boolean:
   # Schedule editor panel field (Schedule tab) - see script.irrigator_schedule_save.
   irrigator_edit_active:
@@ -934,6 +1023,41 @@ input_boolean:
 # built in exactly one place each.
 # -----------------------------------------------------------------------
 script:
+  # Chokepoint for every device-bound MQTT write below (run/stop/test/settings/
+  # schedule) - publishes immediately when the device is known online (today's
+  # behavior, unchanged latency), otherwise appends {topic, payload} to
+  # sensor.irrigator_command_queue via irrigator_queue_push for the
+  # "Irrigator - flush pending command queue" automation to retry later.
+  # binary_sensor.irrigator_online is the only online/offline signal that
+  # exists (retained LWT topic) - there is no per-command device
+  # acknowledgement for run/stop/scheduled/watering_percentage, so "published
+  # while online" is the best available definition of success here.
+  irrigator_enqueue_or_publish:
+    alias: "Irrigator: publish now if online, else queue for retry"
+    fields:
+      topic:
+        selector:
+          text:
+      payload:
+        selector:
+          text:
+    sequence:
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: binary_sensor.irrigator_online
+                state: "on"
+            sequence:
+              - action: mqtt.publish
+                data:
+                  topic: "{{ topic }}"
+                  payload: "{{ payload }}"
+        default:
+          - event: irrigator_queue_push
+            event_data:
+              topic: "{{ topic }}"
+              payload: "{{ payload }}"
+
   irrigator_start:
     alias: "Irrigator: start zone or pump"
     fields:
@@ -944,7 +1068,7 @@ script:
         selector:
           number: {min: 1, max: 120, step: 1}
     sequence:
-      - action: mqtt.publish
+      - action: script.irrigator_enqueue_or_publish
         data:
           topic: "irrigatorF4/cmd/run"
           payload: "{{ {'zone': zone, 'duration': duration} | tojson }}"
@@ -952,7 +1076,7 @@ script:
   irrigator_stop:
     alias: "Irrigator: stop current watering"
     sequence:
-      - action: mqtt.publish
+      - action: script.irrigator_enqueue_or_publish
         data:
           topic: "irrigatorF4/cmd/stop"
           payload: ""
@@ -960,7 +1084,7 @@ script:
   irrigator_stop_all:
     alias: "Irrigator: stop and clear queue"
     sequence:
-      - action: mqtt.publish
+      - action: script.irrigator_enqueue_or_publish
         data:
           topic: "irrigatorF4/cmd/stop"
           payload: "all"
@@ -984,7 +1108,7 @@ script:
                   value_template: >-
                     {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get(repeat.item | string, {}).get('enabled', true) }}
               then:
-                - action: mqtt.publish
+                - action: script.irrigator_enqueue_or_publish
                   data:
                     topic: "irrigatorF4/cmd/run"
                     payload: "{{ {'zone': repeat.item, 'duration': duration} | tojson }}"
@@ -1028,7 +1152,7 @@ script:
       # fields (that would double-encode it as a quoted string). Instead the
       # dict of scalar fields is rendered with tojson, then its closing brace
       # is sliced off and the zone_names text spliced in directly.
-      - action: mqtt.publish
+      - action: script.irrigator_enqueue_or_publish
         data:
           topic: "irrigatorF4/cmd/upload/settings.json"
           payload: >-
@@ -1050,7 +1174,7 @@ script:
               'city': state_attr('sensor.irrigator_settings', 'city') | default(''),
               'temp_modifier_pct_per_degree': state_attr('sensor.irrigator_settings', 'temp_modifier_pct_per_degree') | default(2),
               'rain_modifier_pct_per_mm': state_attr('sensor.irrigator_settings', 'rain_modifier_pct_per_mm') | default(5),
-              'weatherapi_key': state_attr('sensor.irrigator_settings', 'weatherapi_key') | default('')
+              'weatherapi_key': states('input_text.irrigator_weatherapi_key') | default('')
             } %}
             {% set base_json = (base | tojson) %}
             {{ base_json[:-1] ~ ',"zone_names":' ~ zn ~ '}' }}
@@ -1078,7 +1202,13 @@ script:
       - variables:
           picker: "{{ states('input_select.irrigator_schedule_picker') }}"
           idx: "{{ (picker.split(']')[0].split('[')[1] | int) if picker.startswith('[') else -1 }}"
-          records: "{{ state_attr('sensor.irrigator_schedule', 'records') or [] }}"
+          # Builds on a schedule edit still sitting unsent in the offline queue (if any) rather
+          # than sensor.irrigator_schedule, which only updates from the device's own echo - which
+          # won't arrive until it's back online. Falls back to the last-known device schedule when
+          # nothing's queued, same as before.
+          records: >-
+            {% set pending = (state_attr('sensor.irrigator_command_queue', 'items') or []) | selectattr('topic', 'eq', 'irrigatorF4/cmd/upload/schedule.json') | list %}
+            {{ (pending[-1].payload | from_json) if pending else (state_attr('sensor.irrigator_schedule', 'records') or []) }}
           day_names: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
           new_record:
             zone: "{{ states('input_select.irrigator_edit_zone').split(' - ')[0] | int }}"
@@ -1101,7 +1231,7 @@ script:
                 time blocks, over the device's 32-record limit. Delete an
                 existing record first.
         else:
-          - action: mqtt.publish
+          - action: script.irrigator_enqueue_or_publish
             data:
               topic: "irrigatorF4/cmd/upload/schedule.json"
               payload: "{{ new_records | tojson }}"
@@ -1121,7 +1251,10 @@ script:
       - variables:
           picker: "{{ states('input_select.irrigator_schedule_picker') }}"
           idx: "{{ (picker.split(']')[0].split('[')[1] | int) if picker.startswith('[') else -1 }}"
-          records: "{{ state_attr('sensor.irrigator_schedule', 'records') or [] }}"
+          # Same "build on the still-queued edit if there is one" logic as irrigator_schedule_save.
+          records: >-
+            {% set pending = (state_attr('sensor.irrigator_command_queue', 'items') or []) | selectattr('topic', 'eq', 'irrigatorF4/cmd/upload/schedule.json') | list %}
+            {{ (pending[-1].payload | from_json) if pending else (state_attr('sensor.irrigator_schedule', 'records') or []) }}
       - if:
           - condition: template
             value_template: "{{ idx < 0 }}"
@@ -1133,7 +1266,7 @@ script:
                 Pick an existing record from "Schedule Record" first -
                 "+ Add new" has nothing to delete.
         else:
-          - action: mqtt.publish
+          - action: script.irrigator_enqueue_or_publish
             data:
               topic: "irrigatorF4/cmd/upload/schedule.json"
               payload: "{{ (records[:idx] + records[idx+1:]) | tojson }}"

@@ -51,19 +51,22 @@ size_t openMeteoNowIndex(int64_t nowEpochUtc, size_t pastDays) {
     return pastDays * kHoursPerDay + hourOfDayUtc;
 }
 
-bool summarizePastAverageTemperature(JsonArrayConst hourlyTemperatureC,
-                                     size_t nowIndex,
-                                     size_t pastWeatherDays,
-                                     float& outAvgTempC) {
-    const size_t windowHours = pastWeatherDays * kHoursPerDay;
-    if (nowIndex < windowHours) {
-        return false;  // Not enough history before "now" in the array to cover the window.
-    }
-    float sum = 0.0f;
-    if (!windowSum(hourlyTemperatureC, nowIndex - windowHours, windowHours, sum)) {
+bool summarizePastAverageDailyMaxTemperature(JsonArrayConst dailyMaxTemperatureC,
+                                             size_t pastWeatherDays,
+                                             float& outAvgMaxTempC) {
+    if (dailyMaxTemperatureC.size() < pastWeatherDays) {
         return false;
     }
-    outAvgTempC = sum / static_cast<float>(windowHours);
+    float sum = 0.0f;
+    size_t i = 0;
+    for (JsonVariantConst v : dailyMaxTemperatureC) {
+        if (i >= pastWeatherDays) {
+            break;
+        }
+        sum += v.as<float>();
+        ++i;
+    }
+    outAvgMaxTempC = sum / static_cast<float>(pastWeatherDays);
     return true;
 }
 
@@ -100,7 +103,8 @@ bool summarizeWeatherApiForecastRainWindow(JsonArrayConst forecastDays,
                                            int64_t nowEpochUtc,
                                            size_t windowHours,
                                            float& outMaxRainProbabilityPercent,
-                                           float& outRainAmountMm) {
+                                           float& outRainAmountMm,
+                                           size_t& outQualifyingHours) {
     float probMax = 0.0f;
     float precipSum = 0.0f;
     size_t windowCount = 0;
@@ -121,6 +125,7 @@ bool summarizeWeatherApiForecastRainWindow(JsonArrayConst forecastDays,
             ++windowCount;
         }
     }
+    outQualifyingHours = windowCount;
     if (windowCount < windowHours) {
         return false;
     }

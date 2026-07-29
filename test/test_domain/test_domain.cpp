@@ -103,39 +103,31 @@ void test_open_meteo_now_index_at_midnight() {
     TEST_ASSERT_EQUAL_UINT32(5 * 24, static_cast<uint32_t>(irrigator::domain::openMeteoNowIndex(epoch, 5)));
 }
 
-void test_summarize_past_average_temperature_averages_trailing_window() {
+void test_summarize_past_average_daily_max_temperature_averages_first_n_days() {
     JsonDocument doc;
-    JsonArray temp = doc["t"].to<JsonArray>();
-    for (int i = 0; i < 30; ++i) {
-        temp.add(10.0f + i);  // 10, 11, 12, ... 39
+    JsonArray daily = doc["t"].to<JsonArray>();
+    // 7 daily highs available (past_days=5 + forecast_days=2); only the first 5 count.
+    const float highs[7] = {20.0f, 22.0f, 24.0f, 26.0f, 28.0f, 40.0f, 41.0f};
+    for (float h : highs) {
+        daily.add(h);
     }
-    float avgTemp = 0.0f;
-    // nowIndex=24, pastWeatherDays=1 -> window is indices [0,24).
-    const bool ok = irrigator::domain::summarizePastAverageTemperature(temp, 24, 1, avgTemp);
+    float avgMaxTemp = 0.0f;
+    const bool ok =
+        irrigator::domain::summarizePastAverageDailyMaxTemperature(daily, 5, avgMaxTemp);
     TEST_ASSERT_TRUE(ok);
-    TEST_ASSERT_FLOAT_WITHIN(0.01f, 21.5f, avgTemp);  // avg of 10..33 = 21.5
+    // avg of first 5 (20,22,24,26,28) = 24.0; the trailing forecast-day highs are excluded.
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 24.0f, avgMaxTemp);
 }
 
-void test_summarize_past_average_temperature_rejects_insufficient_index() {
+void test_summarize_past_average_daily_max_temperature_rejects_short_array() {
     JsonDocument doc;
-    JsonArray temp = doc["t"].to<JsonArray>();
-    for (int i = 0; i < 10; ++i) {
-        temp.add(20.0f);
+    JsonArray daily = doc["t"].to<JsonArray>();
+    for (int i = 0; i < 4; ++i) {
+        daily.add(25.0f);  // only 4 days; 5 requested
     }
-    float avgTemp = 0.0f;
-    // nowIndex=10 is less than the 24-hour window pastWeatherDays=1 needs before it.
-    TEST_ASSERT_FALSE(irrigator::domain::summarizePastAverageTemperature(temp, 10, 1, avgTemp));
-}
-
-void test_summarize_past_average_temperature_rejects_short_array() {
-    JsonDocument doc;
-    JsonArray temp = doc["t"].to<JsonArray>();
-    for (int i = 0; i < 20; ++i) {
-        temp.add(20.0f);  // only 20 entries
-    }
-    float avgTemp = 0.0f;
-    // nowIndex=24 has enough index headroom, but the array itself is too short to cover [0,24).
-    TEST_ASSERT_FALSE(irrigator::domain::summarizePastAverageTemperature(temp, 24, 1, avgTemp));
+    float avgMaxTemp = 0.0f;
+    TEST_ASSERT_FALSE(
+        irrigator::domain::summarizePastAverageDailyMaxTemperature(daily, 5, avgMaxTemp));
 }
 
 void test_summarize_past_rainfall_sums_first_n_days() {
@@ -195,11 +187,13 @@ void test_summarize_weather_api_forecast_rain_window_matches_from_now_epoch() {
     }
 
     float maxProb = 0.0f, rain = 0.0f;
+    size_t qualifyingHours = 0;
     const bool ok = irrigator::domain::summarizeWeatherApiForecastRainWindow(
-        days, 1000 + 5 * 3600, 3, maxProb, rain);
+        days, 1000 + 5 * 3600, 3, maxProb, rain, qualifyingHours);
     TEST_ASSERT_TRUE(ok);
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 7.0f, maxProb);  // chance_of_rain 5,6,7 -> max 7
     TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.5f, rain);     // 3 hours * 0.5mm
+    TEST_ASSERT_EQUAL_UINT(3, qualifyingHours);
 }
 
 void test_summarize_weather_api_forecast_rain_window_fails_when_not_enough_hours() {
@@ -213,7 +207,10 @@ void test_summarize_weather_api_forecast_rain_window_fails_when_not_enough_hours
     h["precip_mm"] = 0.0f;
 
     float maxProb = 0.0f, rain = 0.0f;
-    TEST_ASSERT_FALSE(irrigator::domain::summarizeWeatherApiForecastRainWindow(days, 1000, 12, maxProb, rain));
+    size_t qualifyingHours = 0;
+    TEST_ASSERT_FALSE(
+        irrigator::domain::summarizeWeatherApiForecastRainWindow(days, 1000, 12, maxProb, rain, qualifyingHours));
+    TEST_ASSERT_EQUAL_UINT(1, qualifyingHours);
 }
 
 void test_start_time_validation() {
@@ -1084,9 +1081,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_should_skip_for_rain_uses_configured_thresholds);
     RUN_TEST(test_open_meteo_now_index_is_days_back_times_24_plus_hour);
     RUN_TEST(test_open_meteo_now_index_at_midnight);
-    RUN_TEST(test_summarize_past_average_temperature_averages_trailing_window);
-    RUN_TEST(test_summarize_past_average_temperature_rejects_insufficient_index);
-    RUN_TEST(test_summarize_past_average_temperature_rejects_short_array);
+    RUN_TEST(test_summarize_past_average_daily_max_temperature_averages_first_n_days);
+    RUN_TEST(test_summarize_past_average_daily_max_temperature_rejects_short_array);
     RUN_TEST(test_summarize_past_rainfall_sums_first_n_days);
     RUN_TEST(test_summarize_past_rainfall_rejects_short_array);
     RUN_TEST(test_summarize_forecast_rain_window_computes_max_and_sum);

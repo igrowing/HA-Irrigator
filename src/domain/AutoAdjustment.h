@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "board_config.h"
 
 namespace irrigator::domain {
 
@@ -10,8 +11,9 @@ namespace irrigator::domain {
 // mm-of-water/flow-rate conversion step (see the resolved design decision in the feature plan).
 //
 // Both inputs are historical (trailing board::AUTOADJUSTMENT_PAST_WEATHER_DAYS), not forecast —
-// avgPastTempC is a rolling average temperature, rainPastDaysMm a rolling rainfall total. The
-// forecast is only ever consulted for the separate rain-skip check (shouldSkipForRain, below).
+// avgPastTempC is the average of the daily peak (max) temperatures over that window, rainPastDaysMm
+// a rolling rainfall total. The forecast is only ever consulted for the separate rain-skip check
+// (shouldSkipForRain, below).
 //
 // Percentage = 100 + (avgPastTempC - baseTempC) * tempModifierPctPerDegree
 //                   - rainPastDaysMm * rainModifierPctPerMm
@@ -20,8 +22,6 @@ namespace irrigator::domain {
 int16_t computeAutoCorrectedPercentage(float avgPastTempC,
                                        float rainPastDaysMm,
                                        float baseTempC,
-                                       float tempModifierPctPerDegree,
-                                       float rainModifierPctPerMm,
                                        int16_t lowerLimitPercent,
                                        int16_t upperLimitPercent);
 

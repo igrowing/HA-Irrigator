@@ -26,7 +26,6 @@ void MqttService::begin(const MqttConfig& config) {
     activeInstance_ = this;
     bootMs_ = millis();
     bootStatusPublished_ = false;
-    reconnectBackoffMs_ = kReconnectBackoffMinMs;
     lastReconnectAttemptMs_ = 0;
 
     if (!enabled_) {
@@ -67,13 +66,11 @@ void MqttService::attemptReconnect(uint32_t nowMs) {
 
     if (ok) {
         ::irrigator::drivers::Log.info(withDatetime("MQTT connected").c_str());
-        reconnectBackoffMs_ = kReconnectBackoffMinMs;
         onConnected();
     } else {
         ::irrigator::drivers::Log.printf("[WARN] MQTT connect failed, state=%d, retry in %lums\n",
                                          mqttClient_.state(),
-                                         static_cast<unsigned long>(reconnectBackoffMs_));
-        reconnectBackoffMs_ = min(reconnectBackoffMs_ * 3U / 2U, kReconnectBackoffMaxMs);
+                                         static_cast<unsigned long>(kReconnectIntervalMs));
     }
 }
 
@@ -95,7 +92,7 @@ void MqttService::loop(uint32_t nowMs) {
     }
 
     if (!mqttClient_.connected()) {
-        if (nowMs - lastReconnectAttemptMs_ >= reconnectBackoffMs_) {
+        if (nowMs - lastReconnectAttemptMs_ >= kReconnectIntervalMs) {
             lastReconnectAttemptMs_ = nowMs;
             attemptReconnect(nowMs);
         }

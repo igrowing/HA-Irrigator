@@ -6,6 +6,11 @@ namespace irrigator::network {
 
 struct GeoLocationResult {
     bool success = false;
+    // Set only when success is false — see WeatherFetchResult::errorReason for the rationale.
+    // 200 bytes: comfortably fits a message plus free-heap/content-length/timing diagnostics
+    // without truncating them away (an 80-byte buffer previously cut the heap figure off
+    // mid-number; 160 left too little headroom once httpCode/timing were added on top).
+    char errorReason[200] = {};
     float latitude = 0.0f;
     float longitude = 0.0f;
     char city[32] = {};
@@ -13,8 +18,13 @@ struct GeoLocationResult {
 
 struct WeatherFetchResult {
     bool success = false;
+    // Set only when success is false — what went wrong (HTTP code, parse error, insufficient
+    // data, ...), for surfacing in alerts/logs without the caller needing to re-derive it. 200
+    // bytes: see GeoLocationResult::errorReason for why this isn't 80 anymore.
+    char errorReason[200] = {};
     // Historical (trailing board::AUTOADJUSTMENT_PAST_WEATHER_DAYS) — the correction formula's
-    // inputs (Step 2). Never forecast.
+    // inputs (Step 2). Never forecast. avgPastTempC is the average of the daily peak (max)
+    // temperatures, not a 24h mean — see domain::summarizePastAverageDailyMaxTemperature.
     float avgPastTempC = 0.0f;
     float rainPastDaysMm = 0.0f;
     // Forecast (next board::AUTOADJUSTMENT_FORECAST_WINDOW_HOURS) — the rain-skip check's inputs

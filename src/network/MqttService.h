@@ -106,9 +106,7 @@ private:
     uint32_t currentNowMs_ = 0;
 
     uint32_t lastReconnectAttemptMs_ = 0;
-    uint32_t reconnectBackoffMs_ = 5000;
-    static constexpr uint32_t kReconnectBackoffMinMs = 5000;
-    static constexpr uint32_t kReconnectBackoffMaxMs = 60000;
+    static constexpr uint32_t kReconnectIntervalMs = 1000;
 };
 
 }  // namespace irrigator::network
