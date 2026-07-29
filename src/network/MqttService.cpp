@@ -78,6 +78,12 @@ void MqttService::onConnected() {
     const String cmdTopic = config_.prefix + "/cmd/#";
     mqttClient_.subscribe(cmdTopic.c_str(), 1);
     publishAvailability(true);
+    // After `/online`=true so any HA sensor gated on availability is already live when the seeded
+    // state/echo topics land. main.ino publishes the retained `/scheduled` and
+    // `/watering_percentage` here from `settings` — see setConnectedHandler's declaration.
+    if (connectedHandler_) {
+        connectedHandler_();
+    }
 }
 
 void MqttService::loop(uint32_t nowMs) {
@@ -191,12 +197,19 @@ void MqttService::publishQueue(const String& jsonPayload) {
     publishRaw("/queue", jsonPayload, false);
 }
 
+// Retained: HA's switch.irrigator_schedule_active display reads this echo (via
+// binary_sensor.irrigator_scheduled_state) and no longer gets it re-pushed from a settings sync,
+// so the last value must persist on the broker for HA to recover it after an HA restart or a
+// fresh subscribe. Seeded on every connect via the ConnectedHandler.
 void MqttService::publishScheduled(bool active) {
-    publishRaw("/scheduled", active ? "true" : "false", false);
+    publishRaw("/scheduled", active ? "true" : "false", true);
 }
 
+// Retained for the same reason as publishScheduled: sensor.irrigator_watering_percentage_echo is
+// the live display of the device's current percentage (including its own weather auto-adjustment
+// changes), and HA must be able to recover it on a fresh subscribe.
 void MqttService::publishWateringPercentage(int16_t value) {
-    publishRaw("/watering_percentage", String(value), false);
+    publishRaw("/watering_percentage", String(value), true);
 }
 
 void MqttService::publishOtaCompleted(const String& isoTimestamp) {

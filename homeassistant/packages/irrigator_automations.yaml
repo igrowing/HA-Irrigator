@@ -116,15 +116,15 @@ automation:
       # Held for the whole sync below - see "Irrigator - republish settings
       # on local helper change" further down, whose trigger list is exactly
       # the input_number/input_text/input_boolean helpers this automation is
-      # about to write. Without this guard, the first of those writes (the
-      # zone-name loop, or the calibration input_numbers right after it)
-      # fires that automation mid-sync, which reads switch.irrigator_schedule_active
-      # and number.irrigator_watering_percentage for its upload - but this
-      # automation only gets to those two LAST, so the race uploads their
-      # still-stale pre-sync values and overwrites the device's real
-      # settings with them (confirmed live: a reboot with the device's real
-      # schedule_active:true got a cmd/upload/settings.json with
-      # schedule_active:false moments later).
+      # about to write (including input_number.irrigator_watering_percentage).
+      # Without this guard, the first of those writes (the zone-name loop, or
+      # the calibration input_numbers right after it) fires that automation
+      # mid-sync, which - for schedule_active specifically - reads
+      # switch.irrigator_schedule_active for its upload, but this automation
+      # only gets to that LAST, so the race uploads its still-stale pre-sync
+      # value and overwrites the device's real setting with it (confirmed
+      # live: a reboot with the device's real schedule_active:true got a
+      # cmd/upload/settings.json with schedule_active:false moments later).
       - action: input_boolean.turn_on
         target:
           entity_id: input_boolean.irrigator_syncing_from_device
@@ -208,36 +208,35 @@ automation:
           entity_id: input_text.irrigator_weatherapi_key
         data:
           value: "{{ state_attr('sensor.irrigator_settings', 'weatherapi_key') | default('') }}"
-      # switch.irrigator_schedule_active and number.irrigator_watering_percentage
-      # are direct MQTT entities (not input helpers) whose state_topics
-      # (/scheduled, /watering_percentage) only ever get a value when
-      # someone actively changes them via cmd/scheduled / cmd/watering_percentage
-      # - the device does NOT spontaneously publish either as part of
-      # /status or a settings.json download. So on a fresh boot/deploy, both
-      # would otherwise sit blank/unknown forever until manually touched.
-      # Calling turn_on/off and set_value with the value settings.json
-      # ALREADY has publishes that same value back to the device (harmless,
-      # idempotent - the device just re-validates and re-persists the same
-      # number/bool), and the device's own echo on /scheduled or
-      # /watering_percentage is what actually updates these entities'
-      # displayed state. A little redundant MQTT traffic + a flash write on
-      # the device per sync, but simpler and lower-risk than rebuilding
-      # these as trigger-based template entities just to avoid it.
-      - choose:
-          - conditions:
-              - condition: template
-                value_template: "{{ state_attr('sensor.irrigator_settings', 'schedule_active') | default(true) }}"
-            sequence:
-              - action: switch.turn_on
-                target:
-                  entity_id: switch.irrigator_schedule_active
-        default:
-          - action: switch.turn_off
-            target:
-              entity_id: switch.irrigator_schedule_active
-      - action: number.set_value
+      # schedule_active is deliberately NOT touched here anymore. It used to
+      # be "self-set" via switch.turn_on/off from settings.json's value - but
+      # switch.irrigator_schedule_active's turn_on/off PUBLISHES cmd/scheduled
+      # back to the device (see irrigator.yaml), so doing it here meant every
+      # settings download / reconnect FORCED the device's schedule_active to
+      # match the settings.json snapshot. When that snapshot was ever stale or
+      # wrong relative to the live device state, the sync "corrected" the
+      # device to the wrong value - confirmed live disabling a schedule the
+      # user had just enabled (the device reported schedule_active:false in a
+      # post-reboot download, and this automation dutifully re-broadcast that
+      # false via cmd/scheduled, cementing it). Per the "irrigator-driven, HA
+      # is just UI" principle, HA must never write schedule_active back: the
+      # switch's `state:` already follows the retained /scheduled echo topic
+      # (binary_sensor.irrigator_scheduled_state), which the broker redelivers
+      # on every reconnect, so the display stays correct on its own with no
+      # write-back. The only case the old self-set covered that this doesn't
+      # is a TRUE virgin deploy where /scheduled has never been retained at
+      # all - now handled device-side instead: the firmware publishes
+      # /scheduled once on boot (enterOperationalMode), so the retained topic
+      # exists from first boot without HA ever pushing a value.
+      #
+      # watering_percentage IS still synced below - but only to a local
+      # input_number helper (input_number.set_value writes nothing to the
+      # device), so unlike the old schedule_active self-set it can't feed back
+      # to the firmware. It's guarded by irrigator_syncing_from_device so this
+      # write doesn't re-trigger "republish settings on local helper change".
+      - action: input_number.set_value
         target:
-          entity_id: number.irrigator_watering_percentage
+          entity_id: input_number.irrigator_watering_percentage
         data:
           value: "{{ state_attr('sensor.irrigator_settings', 'watering_percentage') | int(100) }}"
       - action: input_boolean.turn_off
@@ -259,7 +258,21 @@ automation:
   # would have corrected them. Once sensor.irrigator_settings has ever held
   # real data, this condition is always true (both it and these helpers
   # persist their state across restarts), so it never blocks a genuine edit.
+  # `mode: restart` + the delay below debounce rapid-fire edits (e.g. clicking the Watering
+  # Percentage stepper five times in a row) into a single publish, 3s after the LAST change rather
+  # than one publish per click: each new trigger cancels whatever run is currently waiting/mid-flight
+  # and starts a fresh one, so only a run that goes a full 3s without being superseded ever reaches
+  # the script.irrigator_publish_settings action - and it reads every helper's state at THAT point
+  # (fresh, via states()/state_attr() at execution time), which is necessarily the latest edit's
+  # value since any later edit would have restarted it again. This also closes a race the old
+  # instant-publish had: two edits landing close together could previously fire two overlapping
+  # publishes, the second racing/interleaving with "Irrigator - sync device settings to local
+  # helpers" reading state mid-update; `mode: restart` guarantees at most one run of this automation
+  # is ever live, so there's nothing left to race. Trade-off: any single edit now takes 3s longer to
+  # reach the device than before - fine here since these are all HA-side "settings" (zone names,
+  # calibration, watering percentage), never anything on the run/stop critical path.
   - alias: "Irrigator - republish settings on local helper change"
+    mode: restart
     triggers:
       - trigger: state
         entity_id:
@@ -295,18 +308,20 @@ automation:
           - input_number.irrigator_rain_skip_probability
           - input_number.irrigator_rain_skip_amount
           - input_text.irrigator_weatherapi_key
+          - input_number.irrigator_watering_percentage
     conditions:
       - condition: template
         value_template: "{{ states('sensor.irrigator_settings') not in ['unknown', 'unavailable'] }}"
       # Skip while "Irrigator - sync device settings to local helpers" (above)
       # is still writing these same helpers from a fresh download - see the
       # guard comment on that automation's first action for why: firing here
-      # mid-sync would upload switch.irrigator_schedule_active / number.irrigator_watering_percentage's
-      # stale pre-sync values and clobber the device's real settings.
+      # mid-sync would upload switch.irrigator_schedule_active's stale
+      # pre-sync value and clobber the device's real settings.
       - condition: state
         entity_id: input_boolean.irrigator_syncing_from_device
         state: "off"
     actions:
+      - delay: "00:00:03"
       - action: script.irrigator_publish_settings
 
   # Keeps the Schedule tab's two dropdowns in sync with real data:

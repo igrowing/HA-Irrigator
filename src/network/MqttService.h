@@ -31,6 +31,13 @@ using MqttCommandHandler =
 // caller to thread a clock reading through.
 using NowEpochProvider = std::function<int64_t()>;
 
+// Called from onConnected() on every (re)connect, right after the retained `/online`=true is
+// published. Lets the owner (main.ino, which holds `settings`) seed the retained state/echo
+// topics that HA relies on for display — currently `/scheduled` and `/watering_percentage` — so
+// those survive an HA restart while the device stays up, and exist from the very first boot
+// (virgin deploy) without HA ever having to write a value back to the device.
+using ConnectedHandler = std::function<void()>;
+
 class MqttService {
 public:
     void begin(const MqttConfig& config);
@@ -39,6 +46,7 @@ public:
 
     void setCommandHandler(MqttCommandHandler handler) { commandHandler_ = handler; }
     void setNowEpochProvider(NowEpochProvider provider) { nowEpochProvider_ = provider; }
+    void setConnectedHandler(ConnectedHandler handler) { connectedHandler_ = handler; }
 
     // Publishes retained true/false to `<prefix>/online`. The broker-driven LWT
     // (registered at connect time) already covers ungraceful disconnects; call this explicitly
@@ -93,6 +101,7 @@ private:
     MqttConfig config_;
     MqttCommandHandler commandHandler_;
     NowEpochProvider nowEpochProvider_;
+    ConnectedHandler connectedHandler_;
     WiFiClient wifiClient_;
     PubSubClient mqttClient_;
     // False when config_.broker is empty at begin() — MQTT is entirely optional (spec: captive

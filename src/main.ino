@@ -445,15 +445,46 @@ void stopIrrigationExplicit(uint32_t nowMs) {
 bool persistSettings() {
     char buffer[irrigator::board::SETTINGS_JSON_MAX_BYTES];
     const size_t written = irrigator::domain::serializeSettings(settings, buffer, sizeof(buffer));
-    if (written == 0) {
-        return false;
+    const bool ok =
+        written != 0 &&
+        fileStore.writeTextWithBackup(irrigator::board::SETTINGS_FILE_PATH, String(buffer));
+    if (!ok) {
+        // Central, loud failure reporting for EVERY persist path (UI toggle, MQTT command,
+        // auto-adjustment, boot-time default write). A silent failure here is exactly how RAM and
+        // flash diverge: the in-RAM `settings` keep the new value — and get echoed over MQTT
+        // (/scheduled, /watering_percentage, /status) as if saved — while /settings.json on flash
+        // still holds the old one, so the next reboot loads the old value and silently reverts the
+        // change (and cmd/download/settings.json, which reads the raw file, reports the old value).
+        // publishAlert is a no-op when MQTT isn't connected yet (e.g. the boot default write), which
+        // is fine — the serial log line still lands.
+        irrigator::drivers::Log.error("persistSettings: flash write failed; RAM and flash now diverge");
+        mqtt.publishAlert(
+            R"({"error":"settings write to flash failed; change will not survive a reboot"})");
     }
-    return fileStore.writeTextWithBackup(irrigator::board::SETTINGS_FILE_PATH, String(buffer));
+    return ok;
 }
 
 void applyCurrentCalibration() {
     valveCurrentSensor.setCalibration(settings.valveCurrentZeroOffsetMv, settings.valveCurrentMvPerMa);
     pumpCurrentSensor.setCalibration(settings.pumpCurrentZeroOffsetMv, settings.pumpCurrentMvPerMa);
+}
+
+// schedule_active change tracer. The flag has been flipping to false across reboots for reasons
+// that are impossible to see without a serial console, so every in-RAM change to it routes through
+// here, which publishes an MQTT alert naming the cause. Watch sensor.irrigator_last_alert to see
+// exactly what changed it and in what order — no USB needed. Only publishes on an actual change,
+// and does NOT persist (callers decide when to write flash), so it's safe to call from anywhere.
+void setScheduleActive(bool newValue, const char* cause) {
+    if (settings.scheduleActive == newValue) {
+        return;
+    }
+    settings.scheduleActive = newValue;
+    irrigator::drivers::Log.printf("[INFO] schedule_active -> %s (%s)\n",
+                                   newValue ? "true" : "false", cause);
+    char msg[128];
+    snprintf(msg, sizeof(msg), R"({"schedule_active_changed_to":%s,"cause":"%s"})",
+             newValue ? "true" : "false", cause);
+    mqtt.publishAlert(msg);
 }
 
 // Every MQTT command/topic failure (malformed payload, out-of-range value, unknown command,
@@ -535,11 +566,33 @@ void handleMqttUpload(const String& filename, const uint8_t* payload, size_t len
             reportMqttError("upload", filename, "invalid settings.json content");
             return;
         }
-        if (!fileStore.writeTextWithBackup(path.c_str(), content)) {
+        // schedule_active is device-owned: it is changed ONLY via cmd/scheduled (the switch), never
+        // by a settings upload. HA's full-replace settings.json republish (fired by editing any
+        // unrelated field — a zone name, a calibration value) carries a "passenger" schedule_active
+        // that HA has no reliable, non-racy source for during a reconnect, and letting it through
+        // was silently disabling the schedule after a reboot (RAM/echo stayed true, but the file
+        // this upload wrote said false, so the NEXT reboot loaded false). Ignore the uploaded value
+        // and keep the device's own. The diagnostic alert below fires exactly when an upload tried
+        // to change it — it is the definitive proof of "HA uploaded false", and confirms this guard
+        // caught it.
+        if (parsed.scheduleActive != settings.scheduleActive) {
+            char msg[160];
+            snprintf(msg, sizeof(msg),
+                     R"({"info":"settings upload tried to set schedule_active=%s; ignored, kept device value %s"})",
+                     parsed.scheduleActive ? "true" : "false",
+                     settings.scheduleActive ? "true" : "false");
+            mqtt.publishAlert(msg);
+        }
+        parsed.scheduleActive = settings.scheduleActive;
+        settings = parsed;
+        // Persist the MERGED result (serialized from `settings`), NOT the raw uploaded bytes — those
+        // still contain the ignored schedule_active, and writing them would put the stale value back
+        // on flash and re-open the exact divergence this guard exists to close. persistSettings()
+        // surfaces any write failure via its own alert.
+        if (!persistSettings()) {
             reportMqttError("upload", filename, "failed to write");
             return;
         }
-        settings = parsed;
         applyCurrentCalibration();
         return;
     }
@@ -713,7 +766,7 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
             publishQueueState();
             break;
         case UiIntentType::ToggleScheduleActive:
-            settings.scheduleActive = intent.boolValue;
+            setScheduleActive(intent.boolValue, "ui_toggle");
             persistSettings();
             mqtt.publishScheduled(settings.scheduleActive);
             break;
@@ -923,10 +976,15 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
             reportMqttError("command", commandName, "invalid bool payload, expected true/false");
             return;
         }
-        if (settings.scheduleActive != newValue) {
-            settings.scheduleActive = newValue;
-            persistSettings();
-        }
+        // No "only persist if the value changed" guard here, deliberately. If RAM and flash have
+        // diverged (RAM already `true`, flash still `false` from an earlier failed/skipped write),
+        // that guard would see RAM already matching `newValue` and skip the write entirely — so the
+        // user setting it "true" again would do nothing, flash would stay `false`, and the schedule
+        // would keep reverting on every reboot with no way to fix it from HA. Always writing makes a
+        // re-toggle a reliable way to force flash back in sync; persistSettings() surfaces any write
+        // failure via its own alert, so a failed save is no longer silent.
+        setScheduleActive(newValue, "mqtt_cmd_scheduled");
+        persistSettings();
         mqtt.publishScheduled(settings.scheduleActive);
         return;
     }
@@ -1067,9 +1125,13 @@ void loadSchedule() {
     String raw;
     if (!fileStore.readText(irrigator::board::SCHEDULE_FILE_PATH, raw) ||
         !irrigator::domain::parseSchedule(raw.c_str(), raw.length(), scheduleList)) {
-        irrigator::drivers::Log.error("schedule.json invalid; marking schedule inactive");
+        irrigator::drivers::Log.error("schedule.json invalid; treating as empty (no scheduled runs)");
         scheduleList = {};
-        settings.scheduleActive = false;
+        // Deliberately does NOT force settings.scheduleActive=false. That used to mutate the in-RAM
+        // flag WITHOUT persisting it, so RAM and flash diverged: a later persistSettings() (e.g. the
+        // weather auto-adjustment's) would then write that false to flash, permanently disabling the
+        // schedule even after schedule.json was fixed. An empty scheduleList already prevents any
+        // scheduled run on its own (findNextScheduledZone returns 0), so the flag needn't be touched.
     }
 }
 
@@ -1118,6 +1180,27 @@ void enterOperationalMode() {
     mqttConfig.prefix = makeDevicePrefix();
     mqtt.setCommandHandler(handleMqttCommand);
     mqtt.setNowEpochProvider([]() { return static_cast<int64_t>(clockService.epoch()); });
+    // Seed the retained state/echo topics HA displays from, on every (re)connect. HA no longer
+    // writes schedule_active back to the device on sync (that was disabling schedules on
+    // reconnect), so the device is now the sole publisher of /scheduled — without this seed a
+    // virgin deploy or an HA restart while the device stays up would leave the switch blank.
+    mqtt.setConnectedHandler([]() {
+        mqtt.publishScheduled(settings.scheduleActive);
+        mqtt.publishWateringPercentage(settings.wateringPercentage);
+        // One-shot per boot: report what schedule_active was actually loaded from flash, so the
+        // change-tracer timeline in sensor.irrigator_last_alert has a known starting point. If this
+        // says `false` right after a reboot that followed a confirmed `true`, the flip happened on
+        // flash before this boot (an earlier session wrote it); if it says `true` and a later
+        // "schedule_active_changed_to:false" alert follows, the flip is happening live this session.
+        static bool bootValueReported = false;
+        if (!bootValueReported) {
+            bootValueReported = true;
+            char msg[96];
+            snprintf(msg, sizeof(msg), R"({"boot_loaded_schedule_active":%s})",
+                     settings.scheduleActive ? "true" : "false");
+            mqtt.publishAlert(msg);
+        }
+    });
     mqtt.begin(mqttConfig);
 
     ota.setStartedHandler([]() { mqtt.publishOtaStarted(); });
@@ -1667,7 +1750,25 @@ void loop() {
                 renderData.mqttBrokerText = deviceConfig.mqttBroker;
                 renderData.mqttTopicText = mqtt.prefix();
                 renderData.wifiRssi = cachedWifiRssi;
-                renderData.lastWeatherUpdateDate = lastWeatherUpdateDate;
+                // "DD-MM HH:MM" in local wall time, not main.ino's own lastWeatherUpdateDate global
+                // (that stays "YYYY-MM-DD" - it's the once-per-day gating key compared against
+                // `today` in weatherAutoAdjustStatus()/runAutoAdjustmentIfDue(), reformatting it
+                // would break those strcmp checks). lastWeatherUpdateBuffer only needs to outlive
+                // this block - ui.poll() below consumes it synchronously, nothing retains the
+                // pointer past that call.
+                char lastWeatherUpdateBuffer[12] = "";
+                struct tm lastWeatherUpdateLocalTm;
+                if (lastWeatherUpdateEpoch != 0 &&
+                    clockService.localTimeAt(lastWeatherUpdateEpoch, lastWeatherUpdateLocalTm)) {
+                    snprintf(lastWeatherUpdateBuffer,
+                            sizeof(lastWeatherUpdateBuffer),
+                            "%02d-%02d %02d:%02d",
+                            lastWeatherUpdateLocalTm.tm_mday,
+                            lastWeatherUpdateLocalTm.tm_mon + 1,
+                            lastWeatherUpdateLocalTm.tm_hour,
+                            lastWeatherUpdateLocalTm.tm_min);
+                }
+                renderData.lastWeatherUpdateDisplay = lastWeatherUpdateBuffer;
 
                 struct tm wallTm;
                 renderData.hasWallClock = clockService.now(wallTm);

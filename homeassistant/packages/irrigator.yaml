@@ -142,12 +142,15 @@ mqtt:
       device: *irrigator_device
       availability: *irrigator_availability
 
-    # Read-only echo of the device's own /watering_percentage topic. The
-    # interactive number.irrigator_watering_percentage (template platform,
-    # further down) reads its `state:` from this - kept separate so the
-    # number itself can go through script.irrigator_enqueue_or_publish
-    # instead of a plain command_topic, and so it's never greyed out by
-    # `availability:`.
+    # Read-only echo of the device's own /watering_percentage topic. No
+    # longer what the interactive control reads its state from
+    # (input_number.irrigator_watering_percentage, further down, is a plain
+    # local helper instead - see its comment for why) - this sensor is now
+    # purely a live display of whatever the device's current percentage
+    # actually is, including changes the device makes on its own via
+    # weather-driven auto-adjustment (main.ino's AutoAdjustment calls),
+    # which the input_number only picks up on the next settings.json
+    # (re)download.
     - name: "Watering Percentage Echo"
       unique_id: irrigator_watering_percentage_echo
       icon: mdi:water-percent
@@ -347,13 +350,21 @@ template:
         turn_off:
           - action: script.irrigator_stop
 
-  # Schedule Active / Watering Percentage: template versions of the two
-  # entities that used to be plain `mqtt: switch:` / `mqtt: number:` (see the
-  # NOTE in the `mqtt:` block above). `state:` reads the device's own echo
-  # via the two read-only sensors added there; writes go through
-  # script.irrigator_enqueue_or_publish instead of a raw command_topic so
-  # they queue for retry when offline, and neither carries `availability:`
-  # so they're never greyed out.
+  # Schedule Active: template version of the entity that used to be a plain
+  # `mqtt: switch:` (see the NOTE in the `mqtt:` block above). `state:` reads
+  # the device's own echo via the read-only sensor added there; writes go
+  # through script.irrigator_enqueue_or_publish instead of a raw
+  # command_topic so they queue for retry when offline, and it carries no
+  # `availability:` so it's never greyed out.
+  #
+  # Watering Percentage is NOT a sibling of this (despite both being direct
+  # MQTT entities historically) - it's now input_number.irrigator_watering_percentage
+  # (see `input_number:` below), a plain local helper like every other
+  # settings.json field, republished via script.irrigator_publish_settings
+  # instead of its own cmd/watering_percentage topic. See that helper's
+  # comment for why: cmd/watering_percentage still exists on the firmware
+  # side (main.ino's `commandName == "watering_percentage"`) for direct/manual
+  # MQTT use, but nothing in this package publishes to it anymore.
   - switch:
       # `name:` deliberately includes the "Irrigator " prefix (matching the
       # pump/zone switches above, not the mqtt: platform's device-linked
@@ -372,22 +383,6 @@ template:
         turn_off:
           - action: script.irrigator_enqueue_or_publish
             data: {topic: "irrigatorF4/cmd/scheduled", payload: "false"}
-
-  - number:
-      # Same "Irrigator " name-prefix reasoning as the switch above.
-      - name: "Irrigator Watering Percentage"
-        unique_id: irrigator_watering_percentage
-        icon: mdi:water-percent
-        min: 0
-        max: 300
-        step: 5
-        unit_of_measurement: "%"
-        state: "{{ states('sensor.irrigator_watering_percentage_echo') | int(100) }}"
-        set_value:
-          - action: script.irrigator_enqueue_or_publish
-            data:
-              topic: "irrigatorF4/cmd/watering_percentage"
-              payload: "{{ value | int }}"
 
   - binary_sensor:
       # Zone-enabled flags (unrelated to watering activity, which the
@@ -814,6 +809,35 @@ input_number:
     unit_of_measurement: min
     initial: 5
 
+  # Garden tab: manual watering_percentage override. Used to be a template
+  # `number:` entity that published straight to cmd/watering_percentage on
+  # every set_value - which meant an unrelated full-settings republish
+  # (triggered by, say, a zone name edit) could race a momentary echo-sensor
+  # dropout and silently stomp the device's real percentage back to 100 (see
+  # the "Irrigator: republish full settings.json" comment in
+  # irrigator_automations.yaml for the mechanics of that class of bug). Now a
+  # plain input_number like every other settings.json field: seeded from the
+  # device on every settings.json download ("Irrigator - sync device settings
+  # to local helpers"), and any user edit goes out via the SAME full-settings
+  # republish as the other 15 fields ("Irrigator - republish settings on
+  # local helper change") - both guarded by input_boolean.irrigator_syncing_from_device
+  # so a value just received from the device is never bounced straight back.
+  # Trade-off: unlike the old echo-sourced entity, this does NOT live-update
+  # when the device's own weather-driven auto-adjustment changes
+  # wateringPercentage on its own (main.ino's AutoAdjustment calls) - it only
+  # picks that up on the next settings.json (re)download. Still visible live
+  # in the meantime via sensor.irrigator_watering_percentage_echo (the
+  # /watering_percentage echo sensor), which is unaffected by this change.
+  irrigator_watering_percentage:
+    name: "Watering Percentage"
+    icon: mdi:water-percent
+    min: 0
+    max: 300
+    step: 5
+    mode: box
+    unit_of_measurement: "%"
+    initial: 100
+
   # Auto-adjustment clamp bounds - the only two auto-adjustment fields
   # editable from HA (per Phase 5); everything else in that feature is read-only, see the
   # template sensors above.
@@ -1135,6 +1159,27 @@ script:
   # cmd/set_calibration - is one less thing to maintain for no real loss:
   # both paths depend equally on the local input_number helpers being
   # correct, so the "narrower topic" isn't actually a safety win here.
+  #
+  # watering_percentage is read from input_number.irrigator_watering_percentage
+  # (a plain local helper, same as default_manual_duration/calibration below)
+  # rather than from any device echo - see that helper's comment in
+  # `input_number:` above for why.
+  #
+  # schedule_active is a device-owned field: the FIRMWARE ignores whatever a
+  # settings upload carries for it (it is changed only via cmd/scheduled - see
+  # handleMqttUpload's SETTINGS_FILE_PATH branch in main.ino, which overwrites
+  # parsed.scheduleActive with the device's own current value before
+  # persisting). So the value sent here is cosmetic - it cannot change the
+  # device. It's still included, sourced from sensor.irrigator_settings' own
+  # last-downloaded attribute, purely so the JSON stays a faithful full
+  # snapshot; it is deliberately NOT read from switch.irrigator_schedule_active
+  # (whose echo sensor reads a spurious `false` while `unavailable` during a
+  # reconnect - the exact stale value that used to get uploaded and disable the
+  # schedule before the firmware started ignoring it).
+  #
+  # watering_percentage is NOT device-owned in the same way - it's a plain
+  # input_number helper the user edits (see its comment in `input_number:`
+  # above), read directly, and the firmware DOES apply it from an upload.
   irrigator_publish_settings:
     alias: "Irrigator: republish full settings.json"
     sequence:
@@ -1157,8 +1202,8 @@ script:
           topic: "irrigatorF4/cmd/upload/settings.json"
           payload: >-
             {% set base = {
-              'watering_percentage': states('number.irrigator_watering_percentage') | int(100),
-              'schedule_active': is_state('switch.irrigator_schedule_active', 'on'),
+              'watering_percentage': states('input_number.irrigator_watering_percentage') | int(100),
+              'schedule_active': state_attr('sensor.irrigator_settings', 'schedule_active') | default(true),
               'default_manual_duration': states('input_number.irrigator_default_manual_duration') | int(5),
               'valve_current_zero_offset_mv': states('input_number.irrigator_valve_zero_offset_mv') | int(1650),
               'valve_current_mv_per_ma': states('input_number.irrigator_valve_mv_per_ma') | float(1.0),
@@ -1172,8 +1217,6 @@ script:
               'latitude': state_attr('sensor.irrigator_settings', 'latitude') | default(0),
               'longitude': state_attr('sensor.irrigator_settings', 'longitude') | default(0),
               'city': state_attr('sensor.irrigator_settings', 'city') | default(''),
-              'temp_modifier_pct_per_degree': state_attr('sensor.irrigator_settings', 'temp_modifier_pct_per_degree') | default(2),
-              'rain_modifier_pct_per_mm': state_attr('sensor.irrigator_settings', 'rain_modifier_pct_per_mm') | default(5),
               'weatherapi_key': states('input_text.irrigator_weatherapi_key') | default('')
             } %}
             {% set base_json = (base | tojson) %}

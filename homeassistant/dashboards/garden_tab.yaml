@@ -19,169 +19,247 @@
               name: Pending Commands (waiting to reach the device)
               icon: mdi:playlist-clock
               color: orange
-          - type: entities
-            title: Pump
-            entities:
-              - entity: switch.irrigator_pump
-              - entity: sensor.irrigator_pump_remaining
-                name: Remaining
-              - entity: input_number.irrigator_pump_duration
+          # Pump + each zone: switch and remaining time in an entities card, with the manual-run
+          # Duration as its own tile below (numeric-input feature = a "- N +" stepper, nicer and
+          # easier to nudge than a plain mode:box row) - the two wrapped in a vertical-stack so
+          # each pump/zone still reads as one grouped unit. The Duration tile references the same
+          # input_number.irrigator_*_duration helpers as before; only the presentation changed.
+          - type: vertical-stack
+            cards:
+              - type: entities
+                title: Pump
+                entities:
+                  - entity: switch.irrigator_pump
+                  - entity: sensor.irrigator_pump_remaining
+                    name: Remaining
+                show_header_toggle: false
+                state_color: true
+              - type: tile
+                entity: input_number.irrigator_pump_duration
                 name: Duration (min)
-            show_header_toggle: false
-            state_color: true
+                features:
+                  - type: numeric-input
+                    style: buttons
           - type: conditional
             conditions:
               - condition: state
                 entity: binary_sensor.irrigator_zone_1_enabled_sensor
                 state: "on"
             card:
-              type: entities
-              entities:
-                - entity: switch.irrigator_zone_1
-                - entity: sensor.irrigator_zone_1_remaining
-                  name: Remaining
-                - entity: input_number.irrigator_zone_1_duration
+              type: vertical-stack
+              cards:
+                - type: entities
+                  entities:
+                    - entity: switch.irrigator_zone_1
+                    - entity: sensor.irrigator_zone_1_remaining
+                      name: Remaining
+                  state_color: true
+                - type: tile
+                  entity: input_number.irrigator_zone_1_duration
                   name: Duration (min)
-              state_color: true
+                  features:
+                    - type: numeric-input
+                      style: buttons
           - type: conditional
             conditions:
               - condition: state
                 entity: binary_sensor.irrigator_zone_2_enabled_sensor
                 state: "on"
             card:
-              type: entities
-              entities:
-                - entity: switch.irrigator_zone_2
-                - entity: sensor.irrigator_zone_2_remaining
-                  name: Remaining
-                - entity: input_number.irrigator_zone_2_duration
+              type: vertical-stack
+              cards:
+                - type: entities
+                  entities:
+                    - entity: switch.irrigator_zone_2
+                    - entity: sensor.irrigator_zone_2_remaining
+                      name: Remaining
+                  state_color: true
+                - type: tile
+                  entity: input_number.irrigator_zone_2_duration
                   name: Duration (min)
-              state_color: true
+                  features:
+                    - type: numeric-input
+                      style: buttons
           - type: conditional
             conditions:
               - condition: state
                 entity: binary_sensor.irrigator_zone_3_enabled_sensor
                 state: "on"
             card:
-              type: entities
-              entities:
-                - entity: switch.irrigator_zone_3
-                - entity: sensor.irrigator_zone_3_remaining
-                  name: Remaining
-                - entity: input_number.irrigator_zone_3_duration
+              type: vertical-stack
+              cards:
+                - type: entities
+                  entities:
+                    - entity: switch.irrigator_zone_3
+                    - entity: sensor.irrigator_zone_3_remaining
+                      name: Remaining
+                  state_color: true
+                - type: tile
+                  entity: input_number.irrigator_zone_3_duration
                   name: Duration (min)
-              state_color: true
+                  features:
+                    - type: numeric-input
+                      style: buttons
           - type: conditional
             conditions:
               - condition: state
                 entity: binary_sensor.irrigator_zone_4_enabled_sensor
                 state: "on"
             card:
-              type: entities
-              entities:
-                - entity: switch.irrigator_zone_4
-                - entity: sensor.irrigator_zone_4_remaining
-                  name: Remaining
-                - entity: input_number.irrigator_zone_4_duration
+              type: vertical-stack
+              cards:
+                - type: entities
+                  entities:
+                    - entity: switch.irrigator_zone_4
+                    - entity: sensor.irrigator_zone_4_remaining
+                      name: Remaining
+                  state_color: true
+                - type: tile
+                  entity: input_number.irrigator_zone_4_duration
                   name: Duration (min)
-              state_color: true
+                  features:
+                    - type: numeric-input
+                      style: buttons
           - type: conditional
             conditions:
               - condition: state
                 entity: binary_sensor.irrigator_zone_5_enabled_sensor
                 state: "on"
             card:
-              type: entities
-              entities:
-                - entity: switch.irrigator_zone_5
-                - entity: sensor.irrigator_zone_5_remaining
-                  name: Remaining
-                - entity: input_number.irrigator_zone_5_duration
+              type: vertical-stack
+              cards:
+                - type: entities
+                  entities:
+                    - entity: switch.irrigator_zone_5
+                    - entity: sensor.irrigator_zone_5_remaining
+                      name: Remaining
+                  state_color: true
+                - type: tile
+                  entity: input_number.irrigator_zone_5_duration
                   name: Duration (min)
-              state_color: true
+                  features:
+                    - type: numeric-input
+                      style: buttons
           - type: conditional
             conditions:
               - condition: state
                 entity: binary_sensor.irrigator_zone_6_enabled_sensor
                 state: "on"
             card:
-              type: entities
-              entities:
-                - entity: switch.irrigator_zone_6
-                - entity: sensor.irrigator_zone_6_remaining
-                  name: Remaining
-                - entity: input_number.irrigator_zone_6_duration
+              type: vertical-stack
+              cards:
+                - type: entities
+                  entities:
+                    - entity: switch.irrigator_zone_6
+                    - entity: sensor.irrigator_zone_6_remaining
+                      name: Remaining
+                  state_color: true
+                - type: tile
+                  entity: input_number.irrigator_zone_6_duration
                   name: Duration (min)
-              state_color: true
+                  features:
+                    - type: numeric-input
+                      style: buttons
           - type: conditional
             conditions:
               - condition: state
                 entity: binary_sensor.irrigator_zone_7_enabled_sensor
                 state: "on"
             card:
-              type: entities
-              entities:
-                - entity: switch.irrigator_zone_7
-                - entity: sensor.irrigator_zone_7_remaining
-                  name: Remaining
-                - entity: input_number.irrigator_zone_7_duration
+              type: vertical-stack
+              cards:
+                - type: entities
+                  entities:
+                    - entity: switch.irrigator_zone_7
+                    - entity: sensor.irrigator_zone_7_remaining
+                      name: Remaining
+                  state_color: true
+                - type: tile
+                  entity: input_number.irrigator_zone_7_duration
                   name: Duration (min)
-              state_color: true
+                  features:
+                    - type: numeric-input
+                      style: buttons
           - type: conditional
             conditions:
               - condition: state
                 entity: binary_sensor.irrigator_zone_8_enabled_sensor
                 state: "on"
             card:
-              type: entities
-              entities:
-                - entity: switch.irrigator_zone_8
-                - entity: sensor.irrigator_zone_8_remaining
-                  name: Remaining
-                - entity: input_number.irrigator_zone_8_duration
+              type: vertical-stack
+              cards:
+                - type: entities
+                  entities:
+                    - entity: switch.irrigator_zone_8
+                    - entity: sensor.irrigator_zone_8_remaining
+                      name: Remaining
+                  state_color: true
+                - type: tile
+                  entity: input_number.irrigator_zone_8_duration
                   name: Duration (min)
+                  features:
+                    - type: numeric-input
+                      style: buttons
           - type: conditional
             conditions:
               - condition: state
                 entity: binary_sensor.irrigator_zone_9_enabled_sensor
                 state: "on"
             card:
-              type: entities
-              entities:
-                - entity: switch.irrigator_zone_9
-                - entity: sensor.irrigator_zone_9_remaining
-                  name: Remaining
-                - entity: input_number.irrigator_zone_9_duration
+              type: vertical-stack
+              cards:
+                - type: entities
+                  entities:
+                    - entity: switch.irrigator_zone_9
+                    - entity: sensor.irrigator_zone_9_remaining
+                      name: Remaining
+                  state_color: true
+                - type: tile
+                  entity: input_number.irrigator_zone_9_duration
                   name: Duration (min)
-              state_color: true
+                  features:
+                    - type: numeric-input
+                      style: buttons
           - type: conditional
             conditions:
               - condition: state
                 entity: binary_sensor.irrigator_zone_10_enabled_sensor
                 state: "on"
             card:
-              type: entities
-              entities:
-                - entity: switch.irrigator_zone_10
-                - entity: sensor.irrigator_zone_10_remaining
-                  name: Remaining
-                - entity: input_number.irrigator_zone_10_duration
+              type: vertical-stack
+              cards:
+                - type: entities
+                  entities:
+                    - entity: switch.irrigator_zone_10
+                    - entity: sensor.irrigator_zone_10_remaining
+                      name: Remaining
+                  state_color: true
+                - type: tile
+                  entity: input_number.irrigator_zone_10_duration
                   name: Duration (min)
-              state_color: true
+                  features:
+                    - type: numeric-input
+                      style: buttons
           - type: conditional
             conditions:
               - condition: state
                 entity: binary_sensor.irrigator_zone_11_enabled_sensor
                 state: "on"
             card:
-              type: entities
-              entities:
-                - entity: switch.irrigator_zone_11
-                - entity: sensor.irrigator_zone_11_remaining
-                  name: Remaining
-                - entity: input_number.irrigator_zone_11_duration
+              type: vertical-stack
+              cards:
+                - type: entities
+                  entities:
+                    - entity: switch.irrigator_zone_11
+                    - entity: sensor.irrigator_zone_11_remaining
+                      name: Remaining
+                  state_color: true
+                - type: tile
+                  entity: input_number.irrigator_zone_11_duration
                   name: Duration (min)
-              state_color: true
+                  features:
+                    - type: numeric-input
+                      style: buttons
           - type: tile
             entity: button.irrigator_test_all
             icon: mdi:play-circle-outline
@@ -303,7 +381,14 @@
           - type: heading
             heading: Settings
           - type: tile
-            entity: number.irrigator_watering_percentage
+            entity: sensor.irrigator_watering_percentage_echo
+            name: Current watering adjustment
+            icon: mdi:water-percent
+            grid_options:
+              columns: 12
+              rows: 1
+          - type: tile
+            entity: input_number.irrigator_watering_percentage
             features:
               - type: numeric-input
                 style: buttons
@@ -468,12 +553,6 @@
                 attribute: free_storage_bytes
                 name: Free Storage
                 suffix: " bytes"
-          - type: tile
-            entity: input_text.irrigator_weatherapi_key
-            name: WeatherAPI.com Key
-            icon: mdi:key-outline
-            features:
-              - type: text-input
           - type: tile
             entity: button.irrigator_refresh_from_device
             icon: mdi:cloud-download-outline
