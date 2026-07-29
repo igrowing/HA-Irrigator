@@ -103,23 +103,6 @@ bool weatherTaskInFlight = false;  // Only ever touched from loop() / the functi
 // trigger is directly observable over MQTT instead of only inferable from settings.json changing.
 bool weatherManualTriggerRequested = false;
 
-// TODO: delete after weather debug
-// Last weather cycle's raw intermediates, snapshotted so buildStatusJson can expose exactly what
-// fed computeAutoCorrectedPercentage (24h-mean temp vs. daytime high, past-rain total, forecast
-// window) — the values are otherwise invisible once the background task returns.
-struct WeatherDebugSnapshot {
-    bool valid = false;
-    bool usedFallback = false;
-    bool rainSkip = false;
-    float avgPastTempC = 0.0f;
-    float rainPastDaysMm = 0.0f;
-    float maxRainProbabilityPercent = 0.0f;
-    float rainAmountNextWindowMm = 0.0f;
-    int16_t percentageBeforeClamp = 0;
-    int16_t newPercentage = 0;
-};
-WeatherDebugSnapshot weatherDebug;
-
 WateringRequest activeRequestForReporting;
 bool reportedActive = false;
 bool mqttBreathPlayed = false;
@@ -365,32 +348,6 @@ String buildStatusJson(uint32_t nowMs) {
         char lastWeatherIso[24];
         irrigator::domain::formatIso8601Utc(lastWeatherUpdateEpoch, lastWeatherIso, sizeof(lastWeatherIso));
         doc["last_weather_update"] = lastWeatherIso;
-    }
-
-    // TODO: delete after weather debug
-    // Raw intermediates from the last weather cycle, so a single /status shows whether the modest
-    // watering_percentage comes from the 24h-mean temperature (much lower than the daytime high) or
-    // the past-rain subtraction. tempContrib + rainContrib + 100 == percentage_before_clamp.
-    if (weatherDebug.valid) {
-        JsonObject dbg = doc["weather_debug"].to<JsonObject>();
-        dbg["used_fallback"] = weatherDebug.usedFallback;
-        dbg["provider"] = weatherDebug.usedFallback ? "weatherapi" : "open_meteo";
-        dbg["avg_past_temp_c"] = weatherDebug.avgPastTempC;
-        dbg["rain_past_days_mm"] = weatherDebug.rainPastDaysMm;
-        dbg["max_rain_probability_percent"] = weatherDebug.maxRainProbabilityPercent;
-        dbg["rain_amount_next_window_mm"] = weatherDebug.rainAmountNextWindowMm;
-        dbg["base_temp_c"] = irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C;
-        dbg["temp_modifier_pct_per_degree"] = irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE;
-        dbg["rain_modifier_pct_per_mm"] = irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM;
-        dbg["temp_contrib_pct"] =
-            (weatherDebug.avgPastTempC - irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C) *
-            irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE;
-        dbg["rain_contrib_pct"] = -weatherDebug.rainPastDaysMm * irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM;
-        dbg["past_weather_days"] = irrigator::board::AUTOADJUSTMENT_PAST_WEATHER_DAYS;
-        dbg["forecast_window_hours"] = irrigator::board::AUTOADJUSTMENT_FORECAST_WINDOW_HOURS;
-        dbg["rain_skip"] = weatherDebug.rainSkip;
-        dbg["percentage_before_clamp"] = weatherDebug.percentageBeforeClamp;
-        dbg["new_percentage"] = weatherDebug.newPercentage;
     }
 
     JsonObject outputs = doc["outputs"].to<JsonObject>();
@@ -1311,14 +1268,6 @@ struct WeatherAutoAdjustResult {
     // detail that buffer was specifically sized to hold.
     char openMeteoErrorReason[200];
     char weatherApiErrorReason[200];
-    // TODO: delete after weather debug
-    bool dbgHasForecast;
-    bool dbgUsedFallback;
-    float dbgAvgPastTempC;
-    float dbgRainPastDaysMm;
-    float dbgMaxRainProbabilityPercent;
-    float dbgRainAmountNextWindowMm;
-    int16_t dbgPercentageBeforeClamp;
 };
 
 QueueHandle_t weatherResultQueue = nullptr;
@@ -1332,12 +1281,10 @@ void weatherAutoAdjustTask(void* pvParameters) {
     result.nowEpoch = params->nowEpoch;
     snprintf(result.today, sizeof(result.today), "%s", params->today);
 
-    bool usedFallback = false;  // TODO: delete after weather debug
     auto forecast = weatherService.fetchForecastOpenMeteo(params->latitude, params->longitude, params->nowEpoch);
     if (!forecast.success) {
         irrigator::drivers::Log.warn("Open-Meteo fetch failed; trying WeatherAPI fallback");
         snprintf(result.openMeteoErrorReason, sizeof(result.openMeteoErrorReason), "%s", forecast.errorReason);
-        usedFallback = true;  // TODO: delete after weather debug
         forecast = weatherService.fetchForecastWeatherApi(
             params->latitude, params->longitude, params->nowEpoch, params->weatherApiKey);
     }
@@ -1362,33 +1309,6 @@ void weatherAutoAdjustTask(void* pvParameters) {
         }
     }
 
-    // TODO: delete after weather debug
-    result.dbgHasForecast = forecast.success;
-    result.dbgUsedFallback = usedFallback;
-    result.dbgAvgPastTempC = forecast.avgPastTempC;
-    result.dbgRainPastDaysMm = forecast.rainPastDaysMm;
-    result.dbgMaxRainProbabilityPercent = forecast.maxRainProbabilityPercent;
-    result.dbgRainAmountNextWindowMm = forecast.rainAmountNextWindowMm;
-    // Unclamped formula output, so the raw temp/rain contributions are visible even when the final
-    // value hit the 0/lower/upper-limit branches inside computeAutoCorrectedPercentage.
-    result.dbgPercentageBeforeClamp = static_cast<int16_t>(
-        100.0f + (forecast.avgPastTempC - irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C) *
-                     irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE -
-        forecast.rainPastDaysMm * irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM + 0.5f);
-    irrigator::drivers::Log.printf(
-        "[DEBUG] weather: provider=%s success=%d avgPastTempC=%.2f rainPastDaysMm=%.2f "
-        "maxRainProb=%.1f rainNextWindowMm=%.2f base=%.1f tempMod=%.2f rainMod=%.2f "
-        "tempContrib=%.1f rainContrib=%.1f preClamp=%d rainSkip=%d final=%d\n",
-        usedFallback ? "weatherapi" : "open_meteo", static_cast<int>(forecast.success),
-        forecast.avgPastTempC, forecast.rainPastDaysMm, forecast.maxRainProbabilityPercent,
-        forecast.rainAmountNextWindowMm, irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
-        irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE, irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM,
-        (forecast.avgPastTempC - irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C) *
-            irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE,
-        forecast.rainPastDaysMm * irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM,
-        static_cast<int>(result.dbgPercentageBeforeClamp), static_cast<int>(result.rainSkip),
-        static_cast<int>(result.newPercentage));
-
     xQueueSend(weatherResultQueue, &result, 0);
     vTaskDelete(nullptr);
 }
@@ -1405,17 +1325,6 @@ void consumeWeatherAutoAdjustResult(uint32_t nowMs) {
         return;  // Still running.
     }
     weatherTaskInFlight = false;
-
-    // TODO: delete after weather debug
-    weatherDebug.valid = result.dbgHasForecast;
-    weatherDebug.usedFallback = result.dbgUsedFallback;
-    weatherDebug.rainSkip = result.rainSkip;
-    weatherDebug.avgPastTempC = result.dbgAvgPastTempC;
-    weatherDebug.rainPastDaysMm = result.dbgRainPastDaysMm;
-    weatherDebug.maxRainProbabilityPercent = result.dbgMaxRainProbabilityPercent;
-    weatherDebug.rainAmountNextWindowMm = result.dbgRainAmountNextWindowMm;
-    weatherDebug.percentageBeforeClamp = result.dbgPercentageBeforeClamp;
-    weatherDebug.newPercentage = result.newPercentage;
 
     if (!result.success) {
         irrigator::drivers::Log.warn("Auto-adjustment: both weather providers failed; retrying in 5 min");

@@ -53,31 +53,31 @@ void test_watering_percentage_rounds_to_nearest_minute() {
 
 void test_auto_adjustment_percentage_base_case_is_100() {
     TEST_ASSERT_EQUAL_INT16(
-        100, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 0.0f, 20.0f, 2.0f, 5.0f, 40, 200));
+        100, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 0.0f, 20.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_temp_above_base_increases_it() {
     // (25-20)*2 = +10 -> 110%
     TEST_ASSERT_EQUAL_INT16(
-        110, irrigator::domain::computeAutoCorrectedPercentage(25.0f, 0.0f, 20.0f, 2.0f, 5.0f, 40, 200));
+        150, irrigator::domain::computeAutoCorrectedPercentage(25.0f, 0.0f, 20.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_rain_reduces_it() {
     // 100 - 4mm*5 = 80%
     TEST_ASSERT_EQUAL_INT16(
-        80, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 4.0f, 20.0f, 2.0f, 5.0f, 40, 200));
+        96, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 4.0f, 20.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_clamps_to_upper_limit() {
     // (80-20)*2 = +120 -> 220%, over the 200% limit -> clamped to 200.
     TEST_ASSERT_EQUAL_INT16(
-        200, irrigator::domain::computeAutoCorrectedPercentage(80.0f, 0.0f, 20.0f, 2.0f, 5.0f, 40, 200));
+        200, irrigator::domain::computeAutoCorrectedPercentage(80.0f, 0.0f, 20.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_below_lower_limit_sets_zero() {
     // 100 - 15mm*5 = 25%, below the 40% lower limit -> 0 (skip), not clamped to 40.
     TEST_ASSERT_EQUAL_INT16(
-        0, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 15.0f, 20.0f, 2.0f, 5.0f, 40, 200));
+        0, irrigator::domain::computeAutoCorrectedPercentage(13.0f, 30.0f, 20.0f, 40, 200));
 }
 
 void test_should_skip_for_rain_probability_inclusive_amount_exclusive() {
