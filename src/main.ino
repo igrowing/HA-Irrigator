@@ -584,6 +584,15 @@ void handleMqttUpload(const String& filename, const uint8_t* payload, size_t len
             mqtt.publishAlert(msg);
         }
         parsed.scheduleActive = settings.scheduleActive;
+        // location_known/latitude/longitude/city are likewise device-owned: they're populated only
+        // by the device's own geolocation resolution (see resolveGeolocationIfNeeded()), never by a
+        // settings upload. Silently ignored (no alert) since HA's settings.json mirror always
+        // carries the device's last-published values here anyway, so a "changed" upload would just
+        // mean HA echoed back a stale copy, not a deliberate edit worth flagging.
+        parsed.locationKnown = settings.locationKnown;
+        parsed.latitude = settings.latitude;
+        parsed.longitude = settings.longitude;
+        snprintf(parsed.city, sizeof(parsed.city), "%s", settings.city);
         settings = parsed;
         // Persist the MERGED result (serialized from `settings`), NOT the raw uploaded bytes — those
         // still contain the ignored schedule_active, and writing them would put the stale value back
@@ -921,6 +930,7 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
 
     if (commandName == "status") {
         mqtt.publishStatus(buildStatusJson(nowMs));
+        mqtt.publishWateringPercentage(settings.wateringPercentage);
         return;
     }
 

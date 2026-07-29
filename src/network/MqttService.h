@@ -6,6 +6,7 @@
 #include <functional>
 
 #include "../domain/IrrigationTypes.h"
+#include "../domain/Settings.h"
 
 namespace irrigator::network {
 
