@@ -89,6 +89,46 @@ Zone names shown everywhere come directly from the device's own configuration �
 finished loading (a few seconds after Home Assistant starts), you may briefly see a placeholder
 like `#3 (no name)` instead of the real name.
 
+## Setting the WeatherAPI.com fallback key manually
+
+The dashboard's **WeatherAPI.com Key** field (Settings section) is the normal way to set this —
+click directly on that row (not the gear/settings icon, which only edits entity registry metadata
+and will tell you the entity "cannot be edited from the UI"; that's expected for every
+package-defined helper here, not an error) and Home Assistant pushes it to the device
+automatically. This section is for setting it **without** Home Assistant, or for confirming what
+HA is doing under the hood.
+
+The key lives in `settings.json`, and — like every file the device serves under
+`cmd/download`/`cmd/upload` — there's no partial-field update: uploading replaces the *entire*
+file, and any field you omit resets to its firmware default (see **JSON file formats** in
+[technical.md](technical.md)). So this is always a **read, edit, write-the-whole-file-back**
+round-trip, never a single-field publish:
+
+```
+# 1. Fetch the current settings.json
+mosquitto_sub -t irrigatorF4/download/settings.json -C 1 > settings.json
+mosquitto_pub -t irrigatorF4/cmd/download/settings.json -m ""
+
+# 2. Edit settings.json - change ONLY the "weatherapi_key" value, leave every other
+#    field exactly as downloaded (zone names, schedule_active, calibration, etc. all
+#    reset to defaults if you drop them from the upload)
+
+# 3. Push the whole edited file back
+mosquitto_pub -t irrigatorF4/cmd/upload/settings.json -f settings.json
+```
+
+Get your key from [weatherapi.com](https://www.weatherapi.com) (free tier is enough) — it's only
+used as a fallback when [Open-Meteo](https://open-meteo.com)'s keyless request fails (see **Weather
+auto-adjustment** in [technical.md](technical.md)), so a wrong or empty key doesn't break normal
+operation, just the fallback path.
+
+If you're running the HA package too: HA caches its own copy of the whole file
+(`sensor.irrigator_settings`) and re-uploads it wholesale whenever any *other* Settings-tab field
+changes (zone name, calibration, etc.) — so a manual edit made outside HA can get silently
+overwritten the next time you touch anything in HA, until HA's cache catches up. Press **Refresh
+From Device** on the dashboard right after a manual edit to pull the new key into HA's cache and
+avoid that.
+
 ## Troubleshooting
 
 If most or all Irrigator entities show as **unavailable** right after setup, the package likely

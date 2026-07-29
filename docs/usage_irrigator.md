@@ -373,7 +373,4 @@ A couple of things worth knowing about these numbers:
   boundary and are *not* skipped — only a result strictly below the limit skips the day.
   Anything colder or rainier than those crosses into skip territory.
 
-The **rain** term is still untuned (`rain_modifier_pct_per_mm`, 5% per mm) — treat it with more
-skepticism than the temperature term above until you've sanity-checked it against a few real days;
-see [technical.md](technical.md)'s **Weather-based irrigation auto-adjustment** section for where
-to change it.
+

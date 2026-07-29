@@ -353,7 +353,7 @@ above `upper_limit` → capped at `upper_limit`. `temp_modifier_pct_per_degree` 
 `AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE`, 10.0) is tuned so the factory default
 lower/upper limits (40%/200%) land at meaningful real-world temperatures — the 200% cap at exactly
 30°C, the 40% floor at 14°C (both holding rainfall at 0mm; see docs/usage_irrigator.md's Step 2
-table for the full grid). `rain_modifier_pct_per_mm` (5.0) is still an **untuned placeholder** —
+table for the full grid). `rain_modifier_pct_per_mm` (1.1) is still an **untuned placeholder** —
 needs site-specific calibration against this climate/these zones; see `src/domain/AutoAdjustment.cpp`
 and its unit tests for the exact behavior at each threshold.
 
@@ -372,10 +372,6 @@ parameters rather than reading fixed constants — they're user-configurable set
 - `latitude`/`longitude`/`city` have no manual-entry path — if ip-api.com's IP-based geolocation is
   inaccurate for your network (common on VPNs, CGNAT, or some rural ISPs), the only fix today is
   writing corrected values directly via `cmd/upload/settings.json`.
-- `rain_modifier_pct_per_mm` still ships as an untuned placeholder (see **Calculation** above) —
-  don't fully trust the computed percentage on a rainy week until you've sanity-checked it against
-  a few real days. `temp_modifier_pct_per_degree` has since been calibrated against real target
-  points (200% at 30°C, 40% at 14°C).
 
 ## Building and flashing over USB (first time)
 

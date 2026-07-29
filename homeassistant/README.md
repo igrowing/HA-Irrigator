@@ -194,15 +194,14 @@ not on a recurring poll:
   automatically: the 15 Settings-tab helpers are created fresh at their
   YAML `initial:` placeholder values on a virgin deploy, and that creation
   fires a state-changed event just like a real edit would. This same sync
-  automation also "self-sets" `switch.irrigator_schedule_active` and
-  `number.irrigator_watering_percentage` to whatever settings.json says -
-  those two are `template:` entities (see "Offline command queue" below)
-  whose `state:` reads a read-only MQTT echo sensor
-  (`binary_sensor.irrigator_scheduled_state`, `sensor.irrigator_watering_percentage_echo`)
-  bound to `/scheduled` / `/watering_percentage`, and those topics only ever
-  get a value when someone actively changes them, never as part of a passive
-  settings download, so without this they'd sit blank on every fresh boot
-  until manually touched.
+  automation also "self-sets" `switch.irrigator_schedule_active` (a
+  `template:` entity - see "Offline command queue" below - whose `state:`
+  reads the read-only `binary_sensor.irrigator_scheduled_state` MQTT echo
+  sensor bound to `/scheduled`, which only ever gets a value when someone
+  actively changes it, never as part of a passive settings download, so
+  without this it'd sit blank on every fresh boot until manually touched)
+  and `input_number.irrigator_watering_percentage` (a plain local helper,
+  same as every other Settings-tab field - no echo dance needed there).
 - **`sensor.irrigator_schedule`** is a trigger-based template sensor
   listening on *two* topics: `.../schedule` (which the device pushes on
   every change, whether from an HA upload or the device's own rotary/
@@ -227,21 +226,24 @@ not on a recurring poll:
 ## Offline command queue
 
 The garage's Wi-Fi is flaky enough that the device drops off `.../online`
-often, and the pre-queue behavior was every manual-control switch/number
-greying out via `availability:` whenever that happened - so all the Run
-switches, Schedule Active, and Watering Percentage carry **no**
-`availability:` binding at all now; they're always clickable. Writing to any
-of them while the device is offline doesn't get lost - it's queued and
-retried until it actually reaches the device:
+often, and the pre-queue behavior was every manual-control switch greying
+out via `availability:` whenever that happened - so all the Run switches and
+Schedule Active carry **no** `availability:` binding at all now; they're
+always clickable. Writing to any of them while the device is offline doesn't
+get lost - it's queued and retried until it actually reaches the device.
+Watering Percentage is a plain `input_number` helper (not gated by
+`availability:` either, since it isn't an MQTT entity at all) - editing it
+goes out via the same full-settings republish as every other Settings-tab
+field, which is itself queued the same way when offline:
 
 - **`script.irrigator_enqueue_or_publish`** (`topic`, `payload`) is the one
   chokepoint every device-bound write goes through - `irrigator_start`,
   `irrigator_stop`, `irrigator_stop_all`, `irrigator_test_all`,
   `irrigator_publish_settings`, `irrigator_schedule_save`,
-  `irrigator_schedule_delete`, and the `turn_on`/`turn_off`/`set_value` of
-  the two template entities above. If `binary_sensor.irrigator_online` is
-  `on`, it publishes immediately - same latency as before this existed. If
-  not, it fires an `irrigator_queue_push` event instead of publishing.
+  `irrigator_schedule_delete`, and the `turn_on`/`turn_off` of the Schedule
+  Active template switch above. If `binary_sensor.irrigator_online` is `on`,
+  it publishes immediately - same latency as before this existed. If not, it
+  fires an `irrigator_queue_push` event instead of publishing.
 - **`sensor.irrigator_command_queue`** is a trigger-based template sensor
   that accumulates `{topic, payload}` entries in its `items` attribute,
   self-referencing its own previous value via `this.attributes.items` on
@@ -263,7 +265,7 @@ retried until it actually reaches the device:
   stopped listening, and only items that actually got published are ever
   removed from the queue.
 - There's no per-command delivery acknowledgement from the device for
-  `cmd/run` / `cmd/stop` / `cmd/scheduled` / `cmd/watering_percentage` (see
+  `cmd/run` / `cmd/stop` / `cmd/scheduled` / `cmd/upload/settings.json` (see
   `docs/technical.md`'s MQTT section) - `cmd/#` is delivered at QoS 0 in
   practice, and the broker can't hold QoS-0 messages for a disconnected
   client even with a persistent session. "Published to the broker while
@@ -355,7 +357,11 @@ hand:
   | `sensor.ha_irrigator_irrigator_queue` | `sensor.irrigator_queue` |
   | `sensor.ha_irrigator_irrigator_settings` | `sensor.irrigator_settings` |
   | `switch.ha_irrigator_irrigator_schedule_active` | `switch.irrigator_schedule_active` |
-  | `number.ha_irrigator_irrigator_watering_percentage` | `number.irrigator_watering_percentage` |
+
+  (Watering Percentage used to be a `number.` entity affected by this same
+  device-linked-naming issue; it's since been replaced by the plain
+  `input_number.irrigator_watering_percentage` helper below, which was never
+  linked to the `device:` block and so was never subject to this rename.)
 
 - **Or delete the "Irrigator" device** (Settings > Devices & Services >
   Devices > Irrigator > ⋮ menu > Delete) and restart - since it's an
@@ -403,13 +409,14 @@ sent.
     one currently active.
 - `input_number.irrigator_pump_duration`, `..._zone_N_duration` - manual run
   duration, 1-120 min.
-- `switch.irrigator_schedule_active`, `number.irrigator_watering_percentage`
-  - `template:` entities, state read from a read-only MQTT echo sensor,
-    writes routed through the offline command queue (see "Offline command
-    queue" below) rather than a direct `command_topic`.
+- `switch.irrigator_schedule_active` - `template:` entity, state read from a
+  read-only MQTT echo sensor, writes routed through the offline command
+  queue (see "Offline command queue" below) rather than a direct
+  `command_topic`.
 - `input_text.irrigator_zone_N_name`, `input_boolean.irrigator_zone_N_enabled`,
-  `input_number.irrigator_default_manual_duration` - settings that require a
-  full `settings.json` republish (see above).
+  `input_number.irrigator_default_manual_duration`,
+  `input_number.irrigator_watering_percentage` - settings that require a full
+  `settings.json` republish (see above).
 - `input_number.irrigator_valve_zero_offset_mv` / `_valve_mv_per_ma` /
   `_pump_zero_offset_mv` / `_pump_mv_per_ma` - current-sensor calibration,
   also folded into the full `settings.json` republish (see above).

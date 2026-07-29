@@ -53,8 +53,21 @@ HA-Irrigator fulfills traditional industry lacks of watering control systems.
 
 ## Device
 
+![Irrigator device](docs/irrigator.jpg)
+
 
 ## Screenshots
+
+### Status and manual control
+![Status and manual control](docs/status%20manual%20control.jpg)
+
+### Settings
+![Settings](docs/settings.jpg)
+
+### Schedule
+![Schedule](docs/schedule.jpg)
+
+See more screenshots in [User guide for HA](docs/usage_homeassistant.md).
 
 
 ## Useful (further reading)
@@ -63,3 +76,4 @@ HA-Irrigator fulfills traditional industry lacks of watering control systems.
 - [User guide for HA](docs/usage_homeassistant.md).
 - [Technical explanations](docs/technical.md) (for geeks only).
 - [OTA firmware upgrade](docs/ota.md) (for makers only).
+- [Hardware](hardware/readme.md).
