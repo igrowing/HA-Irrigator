@@ -59,6 +59,18 @@ mqtt:
           payload_available: "true"
           payload_not_available: "false"
 
+    # Read-only echo of the device's own /auto_adjustment topic — same pattern as "Scheduled
+    # State" above, feeding switch.irrigator_auto_adjustment (template platform, further down)
+    # rather than the switch reading MQTT directly.
+    - name: "Auto-adjustment State"
+      unique_id: irrigator_auto_adjustment_state
+      icon: mdi:weather-partly-rainy
+      state_topic: "irrigatorF4/auto_adjustment"
+      payload_on: "true"
+      payload_off: "false"
+      device: *irrigator_device
+      availability: *irrigator_availability
+
   sensor:
     # Renamed to "Address" (not "Status") since its state is the device's
     # IP - this only changes the displayed friendly name, not entity_id
@@ -383,6 +395,22 @@ template:
         turn_off:
           - action: script.irrigator_enqueue_or_publish
             data: {topic: "irrigatorF4/cmd/scheduled", payload: "false"}
+
+      # Master on/off for weather-based auto-adjustment (both the daily percentage recalculation
+      # and the rain-skip check) — same template-switch-over-echo-sensor pattern as "Irrigator
+      # Schedule Active" above, for the same reason: writes go through
+      # script.irrigator_enqueue_or_publish so they queue for retry when offline, and it carries
+      # no `availability:` so it's never greyed out.
+      - name: "Irrigator Auto-adjustment"
+        unique_id: irrigator_auto_adjustment
+        icon: mdi:weather-partly-rainy
+        state: "{{ is_state('binary_sensor.irrigator_auto_adjustment_state', 'on') }}"
+        turn_on:
+          - action: script.irrigator_enqueue_or_publish
+            data: {topic: "irrigatorF4/cmd/auto_adjustment", payload: "true"}
+        turn_off:
+          - action: script.irrigator_enqueue_or_publish
+            data: {topic: "irrigatorF4/cmd/auto_adjustment", payload: "false"}
 
   - binary_sensor:
       # Zone-enabled flags (unrelated to watering activity, which the
@@ -1204,6 +1232,7 @@ script:
             {% set base = {
               'watering_percentage': states('input_number.irrigator_watering_percentage') | int(100),
               'schedule_active': state_attr('sensor.irrigator_settings', 'schedule_active') | default(true),
+              'auto_adjustment_enabled': state_attr('sensor.irrigator_settings', 'auto_adjustment_enabled') | default(true),
               'default_manual_duration': states('input_number.irrigator_default_manual_duration') | int(5),
               'valve_current_zero_offset_mv': states('input_number.irrigator_valve_zero_offset_mv') | int(1650),
               'valve_current_mv_per_ma': states('input_number.irrigator_valve_mv_per_ma') | float(1.0),

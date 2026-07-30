@@ -418,8 +418,10 @@
               - type: numeric-input
                 style: buttons
           - type: entities
-            title: Auto-adjustment Weather Data
+            title: Auto-adjustment by the Weather
             entities:
+              - entity: switch.irrigator_auto_adjustment
+                name: "Auto-adjustment"
               - entity: sensor.irrigator_city
                 name: "City"
               - entity: sensor.irrigator_coordinates

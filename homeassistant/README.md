@@ -413,6 +413,11 @@ sent.
   read-only MQTT echo sensor, writes routed through the offline command
   queue (see "Offline command queue" below) rather than a direct
   `command_topic`.
+- `switch.irrigator_auto_adjustment` - master on/off for weather-based
+  auto-adjustment, same `template:`-entity-over-echo-sensor pattern as
+  `switch.irrigator_schedule_active` immediately above (backed by
+  `binary_sensor.irrigator_auto_adjustment_state`, writes via
+  `cmd/auto_adjustment`).
 - `input_text.irrigator_zone_N_name`, `input_boolean.irrigator_zone_N_enabled`,
   `input_number.irrigator_default_manual_duration`,
   `input_number.irrigator_watering_percentage` - settings that require a full
