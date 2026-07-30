@@ -33,10 +33,12 @@ using MqttCommandHandler =
 using NowEpochProvider = std::function<int64_t()>;
 
 // Called from onConnected() on every (re)connect, right after the retained `/online`=true is
-// published. Lets the owner (main.ino, which holds `settings`) seed the retained state/echo
-// topics that HA relies on for display — currently `/scheduled` and `/watering_percentage` — so
-// those survive an HA restart while the device stays up, and exist from the very first boot
-// (virgin deploy) without HA ever having to write a value back to the device.
+// published. Lets the owner (main.ino, which holds `settings`) seed the state/echo topics HA
+// relies on for display — currently `/scheduled` (retained), and `/auto_adjustment` and
+// `/watering_percentage` (not retained) — so a subscriber that's already listening gets the
+// current value right away on every reconnect, and `/scheduled` additionally survives an HA
+// restart or a fresh subscribe while the device stays up, without HA ever having to write a value
+// back to the device.
 using ConnectedHandler = std::function<void()>;
 
 class MqttService {

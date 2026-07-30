@@ -1316,10 +1316,13 @@ void enterOperationalMode() {
     mqttConfig.prefix = makeDevicePrefix();
     mqtt.setCommandHandler(handleMqttCommand);
     mqtt.setNowEpochProvider([]() { return static_cast<int64_t>(clockService.epoch()); });
-    // Seed the retained state/echo topics HA displays from, on every (re)connect. HA no longer
-    // writes schedule_active back to the device on sync (that was disabling schedules on
-    // reconnect), so the device is now the sole publisher of /scheduled — without this seed a
-    // virgin deploy or an HA restart while the device stays up would leave the switch blank.
+    // Seed the state/echo topics HA displays from, on every (re)connect. HA no longer writes
+    // schedule_active back to the device on sync (that was disabling schedules on reconnect), so
+    // the device is now the sole publisher of /scheduled — without this seed a virgin deploy or an
+    // HA restart while the device stays up would leave the switch blank. /scheduled is retained
+    // (see publishScheduled()); /auto_adjustment and /watering_percentage deliberately are not, so
+    // this seed is also the only way a subscriber that's already listening gets those two promptly
+    // on reconnect, rather than waiting for the next actual change.
     mqtt.setConnectedHandler([]() {
         mqtt.publishScheduled(settings.scheduleActive);
         mqtt.publishAutoAdjustmentEnabled(settings.autoAdjustmentEnabled);

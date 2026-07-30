@@ -79,8 +79,9 @@ void MqttService::onConnected() {
     mqttClient_.subscribe(cmdTopic.c_str(), 1);
     publishAvailability(true);
     // After `/online`=true so any HA sensor gated on availability is already live when the seeded
-    // state/echo topics land. main.ino publishes the retained `/scheduled` and
-    // `/watering_percentage` here from `settings` — see setConnectedHandler's declaration.
+    // state/echo topics land. main.ino publishes the retained `/scheduled`, plus `/auto_adjustment`
+    // and `/watering_percentage` (not retained -- see their publish*() comments below), here from
+    // `settings` — see setConnectedHandler's declaration.
     if (connectedHandler_) {
         connectedHandler_();
     }
@@ -205,18 +206,22 @@ void MqttService::publishScheduled(bool active) {
     publishRaw("/scheduled", active ? "true" : "false", true);
 }
 
-// Retained for the same reason as publishScheduled: switch.irrigator_auto_adjustment reads this
-// echo (via a binary_sensor) rather than settings.json, and must survive an HA restart or fresh
-// subscribe while the device stays up. Seeded on every connect via the ConnectedHandler.
+// NOT retained (deliberately, unlike publishScheduled): a stale retained value here would
+// misrepresent switch.irrigator_auto_adjustment's echo indefinitely if the broker held it past a
+// device restart. Still seeded on every connect via the ConnectedHandler, so a subscriber that's
+// already listening at that moment gets the current value promptly; it just isn't held by the
+// broker for one that subscribes later.
 void MqttService::publishAutoAdjustmentEnabled(bool enabled) {
-    publishRaw("/auto_adjustment", enabled ? "true" : "false", true);
+    publishRaw("/auto_adjustment", enabled ? "true" : "false", false);
 }
 
-// Retained for the same reason as publishScheduled: sensor.irrigator_watering_percentage_echo is
-// the live display of the device's current percentage (including its own weather auto-adjustment
-// changes), and HA must be able to recover it on a fresh subscribe.
+// NOT retained (deliberately, unlike publishScheduled): a stale retained value here would
+// misrepresent sensor.irrigator_watering_percentage_echo indefinitely if the broker held it past a
+// device restart. Still seeded on every connect via the ConnectedHandler, so a subscriber that's
+// already listening at that moment gets the current value promptly; it just isn't held by the
+// broker for one that subscribes later.
 void MqttService::publishWateringPercentage(int16_t value) {
-    publishRaw("/watering_percentage", String(value), true);
+    publishRaw("/watering_percentage", String(value), false);
 }
 
 void MqttService::publishOtaCompleted(const String& isoTimestamp) {
