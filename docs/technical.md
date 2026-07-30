@@ -137,6 +137,7 @@ device's actual prefix in every example below.
 | `/cmd/set_calibration` | `{"valve_zero_mv":1650,`<br>`"valve_mv_per_ma":1.0,`<br>`"pump_zero_mv":1650,`<br>`"pump_mv_per_ma":1.0}` |   |  | **No special response** Any subset of the four fields; updates the live current-sensor calibration and persists it to `settings.json`. See **Current-sensor calibration** below — the factory defaults are *not* real calibration values. |
 | `/cmd/download/<filename>` | "" | `/download/<filename>` | String | Reads that file from flash and publishes it. |
 | `/cmd/upload/<filename>` | new file content |  |  | Writes that file to flash. |
+| `/cmd/delete/<filename>` | `true` |  |  | **No special response, alert either way.** Deletes that file (and its `.bak`, if any) from flash. Payload must be the literal string `true` — anything else is rejected outright as a missing confirmation, not treated as a no-op. See **JSON file formats** below for why you'd want this. |
 
 #### Error reporting
 
@@ -154,6 +155,8 @@ silently dropped or coerced. A malformed payload, an out-of-range value, an unre
 {"download":"settings.json","error":"failed to read"}
 {"upload":"schedule.json","error":"invalid schedule.json content"}
 {"upload":"schedule.json","error":"failed to write"}
+{"delete":"missing.json","error":"not found"}
+{"delete":"settings.json","error":"payload must be 'true' to confirm deletion"}
 ```
 
 A `settings.json`/`config.json` upload that otherwise succeeds but had one or more fields
@@ -161,6 +164,12 @@ rejected (see **JSON file formats** below) raises a softer `alert` instead of an
 rest of the upload still went through:
 ```json
 {"upload":"settings.json","alert":"invalid value(s) ignored, kept previous: watering_percentage"}
+```
+
+A successful `delete` raises an informational `alert` too, since there's no dedicated response
+topic to confirm it otherwise:
+```json
+{"delete":"settings.json","info":"file deleted"}
 ```
 
 ### Examples
@@ -205,6 +214,17 @@ above) are always read back as a whole file via `download`. `upload` behaves dif
   number of records can still grow or shrink freely between uploads.
 - Any other filename (JSON or not) is written to flash exactly as received — there's no schema to
   validate it against.
+
+Because `settings.json`/`config.json` uploads only ever add or update a field — never remove
+one — a stale key from a since-abandoned JSON shape (e.g. a `zone_names` restructuring) or an
+oversized `zone_names`/`schedule.json` list can't be trimmed down through `upload` alone. Use
+`/cmd/delete/<filename>` (payload `true`) to remove the file outright first, then either upload a
+clean replacement or let it regenerate with firmware defaults on the next boot (`settings.json`
+always regenerates; `config.json`'s absence instead re-enters captive portal mode; a missing
+`schedule.json` is simply treated as empty). Deleting takes effect only on the next boot/upload —
+the in-RAM `deviceConfig`/`settings`/`scheduleList` stay live until then, so deleting `config.json`
+remotely won't drop your current MQTT session, but the *next* reboot will need the captive portal
+again since there's no Wi-Fi config left to load.
 
 **`settings.json`** (see `src/domain/Settings.h`/`.cpp`):
 ```json

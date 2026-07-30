@@ -678,6 +678,53 @@ void handleMqttUpload(const String& filename, const uint8_t* payload, size_t len
     }
 }
 
+// `cmd/delete/<filename>` handler: filename comes from the topic, payload must be the literal
+// string "true" (a deliberate confirmation, not a toggle/boolean like cmd/scheduled) or the
+// request is rejected outright. Main use case: mergeSettings()/mergeConfig() (see
+// handleMqttUpload) can only ever add or update a field, never remove one that's no longer
+// wanted -- e.g. after a zone_names restructuring, or to shrink a file back down -- so deleting
+// the file and re-uploading a clean one (or letting boot-time defaults regenerate it) is the
+// escape hatch. Deleting config.json/settings.json/schedule.json only takes effect on the next
+// boot (the in-RAM deviceConfig/settings/scheduleList stay live until then); deleting config.json
+// specifically drops the device into captive portal mode on that next boot, since there's then no
+// Wi-Fi config left to load (see loadOperationalConfig()).
+void handleMqttDelete(const String& filename, const String& body) {
+    if (filename.length() == 0) {
+        reportMqttError("delete", filename, "empty filename");
+        return;
+    }
+
+    String trimmedBody = body;
+    trimmedBody.trim();
+    if (trimmedBody != "true") {
+        reportMqttError("delete", filename, "payload must be 'true' to confirm deletion");
+        return;
+    }
+
+    String path = filename;
+    path.trim();
+    if (!path.startsWith("/")) {
+        path = "/" + path;
+    }
+
+    if (!fileStore.exists(path.c_str())) {
+        reportMqttError("delete", filename, "not found");
+        return;
+    }
+    if (!fileStore.remove(path.c_str())) {
+        reportMqttError("delete", filename, "failed to delete");
+        return;
+    }
+    // Best-effort: a stray .bak left behind by writeTextWithBackup() shouldn't outlive the
+    // primary file it was backing up. Not checked for success -- it may simply not exist.
+    fileStore.remove((path + ".bak").c_str());
+
+    irrigator::drivers::Log.printf("[INFO] %s deleted via MQTT cmd/delete\n", filename.c_str());
+    char alertMsg[128];
+    snprintf(alertMsg, sizeof(alertMsg), R"({"delete":"%s","info":"file deleted"})", filename.c_str());
+    mqtt.publishAlert(alertMsg);
+}
+
 // `cmd/state` handler: publishes the current watering/pump status on demand, independent of
 // the edge-triggered publishes that fire on every start/stop.
 void publishCurrentState() {
@@ -1027,6 +1074,11 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
 
     if (commandName.startsWith("upload/")) {
         handleMqttUpload(commandName.substring(String("upload/").length()), payload, length);
+        return;
+    }
+
+    if (commandName.startsWith("delete/")) {
+        handleMqttDelete(commandName.substring(String("delete/").length()), body);
         return;
     }
 
