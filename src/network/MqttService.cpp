@@ -205,6 +205,13 @@ void MqttService::publishScheduled(bool active) {
     publishRaw("/scheduled", active ? "true" : "false", true);
 }
 
+// Retained for the same reason as publishScheduled: switch.irrigator_auto_adjustment reads this
+// echo (via a binary_sensor) rather than settings.json, and must survive an HA restart or fresh
+// subscribe while the device stays up. Seeded on every connect via the ConnectedHandler.
+void MqttService::publishAutoAdjustmentEnabled(bool enabled) {
+    publishRaw("/auto_adjustment", enabled ? "true" : "false", true);
+}
+
 // Retained for the same reason as publishScheduled: sensor.irrigator_watering_percentage_echo is
 // the live display of the device's current percentage (including its own weather auto-adjustment
 // changes), and HA must be able to recover it on a fresh subscribe.

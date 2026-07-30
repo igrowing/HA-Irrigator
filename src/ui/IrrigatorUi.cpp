@@ -88,6 +88,7 @@ const char* IrrigatorUi::dayOfWeekName(uint8_t isoDay) {
     ::irrigator::domain::UiStateMachine::Context ctx;
     ctx.wateringActive = isActivelyRunning(data.snapshot);
     ctx.scheduleActive = data.scheduleActive;
+    ctx.autoAdjustmentEnabled = data.settings != nullptr ? data.settings->autoAdjustmentEnabled : false;
     ctx.nextScheduledZone = data.nextScheduledZone;
     ctx.scheduleRecordCount = data.schedule != nullptr ? data.schedule->count : 0;
     ctx.wateringPercentage = data.settings != nullptr ? data.settings->wateringPercentage : 0;
@@ -487,6 +488,12 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
         [this, &data, percentage, upperLimit, lowerLimit, rainSkipProbability, rainSkipAmount](
             uint8_t index, char* buffer, size_t size) {
             switch (index) {
+                case Settings::kSettingsIndexAutoAdjustment:
+                    snprintf(buffer,
+                            size,
+                            "Auto-adjust: %s",
+                            (data.settings != nullptr && data.settings->autoAdjustmentEnabled) ? "on" : "off");
+                    break;
                 case Settings::kSettingsIndexPercentage:
                     snprintf(buffer, size, "Adjust: %d %%", percentage);
                     break;

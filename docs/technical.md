@@ -126,6 +126,7 @@ device's actual prefix in every example below.
 | `/cmd/run` | `{"zone":3,"duration":15}` |  |  | **No special response** Response will be either adding to the queue or alert. Starts zone 3 for 15 min (or queues it if something's already running). `zone:0` = pump only. A **disabled** zone (`zone_names.<n>.enabled: false` in `settings.json`) is rejected outright with an `/alert` — `{"message":"Zone 3 (Back Lawn) is disabled. Enable it in settings first."}` — it's never silently ignored, and it never reaches the watering queue at all (see `enqueueOrStart()` in `src/main.ino`). |
 | `/cmd/stop` | empty, or `all`  |  |  | **No special response** Response will be either adding to the queue or alert. Stops the current run — closes the valve immediately, but a zone run's pump still gets its normal graceful-shutdown tail rather than cutting immediately (a pump-only run has no such tail). Plain/empty payload also pops and starts the next queued item, if any; `all` also empties the queue. |
 | `/cmd/scheduled` | bool | `/scheduled` | bool | Turn the schedule on/off, write the schedule state in settings.json if changed, report back true/false. |
+| `/cmd/auto_adjustment` | bool | `/auto_adjustment` | bool | Master on/off for weather-based auto-adjustment (both the daily percentage recalculation and the rain-skip check) — persisted to `settings.json`'s `auto_adjustment_enabled`, reported back true/false. |
 | `/cmd/watering_percentage` | integer | `/watering_percentage` | integer | Sets the schedule-wide watering multiplier (0–300%), persisted to `settings.json`. |
 | `/cmd/skip_rain_until` | `"2026-07-12T06:00:00"` |  `/skip_rain_until` | `"2026-07-12T06:00:00"` | Suppresses **scheduled** runs until this UTC timestamp (manual/MQTT runs are never affected — this only gates the schedule engine). |
 |  |  | `/online` |  boolean (LWT on ungraceful disconnect, or explicitly before a deliberate restart). | **Retained message**. Matches Home Assistant's default MQTT `availability_topic` convention. |
@@ -155,6 +156,13 @@ silently dropped or coerced. A malformed payload, an out-of-range value, an unre
 {"upload":"schedule.json","error":"failed to write"}
 ```
 
+A `settings.json`/`config.json` upload that otherwise succeeds but had one or more fields
+rejected (see **JSON file formats** below) raises a softer `alert` instead of an `error`, since the
+rest of the upload still went through:
+```json
+{"upload":"settings.json","alert":"invalid value(s) ignored, kept previous: watering_percentage"}
+```
+
 ### Examples
 
 ```
@@ -179,9 +187,24 @@ mosquitto_pub -t irrigatorF4/cmd/stop -m "all"
 ### JSON file formats
 
 The three files under `/cmd/download/<filename>` and `/cmd/upload/<filename>` (see the table
-above) always round-trip as a whole file — there's no partial-field update, so any write replaces
-the entire file. Missing fields on upload fall back to firmware defaults, never to whatever was
-previously on flash (see `parseSettings()`/`parseSchedule()`).
+above) are always read back as a whole file via `download`. `upload` behaves differently per file:
+
+- **`settings.json`/`config.json`** are merged field by field onto the device's current values
+  (see `mergeSettings()`/`mergeConfig()` in `src/domain/Settings.cpp`/`ConfigStore.cpp`): a field
+  present in the upload with a non-null, non-empty value is validated on its own and applied only
+  if it individually makes sense; a field that's missing, `null`, an empty string, or that fails
+  its own check (wrong type, e.g. `-1` for a boolean, or out of range, e.g. `300` for a setting
+  clamped at 200) instead keeps whatever was already there — the latter case also raises an
+  `/alert` naming the rejected field(s), so the rest of the upload isn't silently dropped without
+  a trace. `zone_names` is merged per zone index, so naming only zone 3 doesn't disturb the
+  others. This means you can push just the field(s) you want changed instead of round-tripping the
+  whole file.
+- **`schedule.json`** keeps whole-file replace semantics: it's a JSON array of records, not a flat
+  object of named fields, so any single invalid record (or a payload that isn't a JSON array at
+  all) rejects the entire upload with an `/alert`, same as loading it from flash at boot. The
+  number of records can still grow or shrink freely between uploads.
+- Any other filename (JSON or not) is written to flash exactly as received — there's no schema to
+  validate it against.
 
 **`settings.json`** (see `src/domain/Settings.h`/`.cpp`):
 ```json
@@ -193,6 +216,7 @@ previously on flash (see `parseSettings()`/`parseSchedule()`).
   "valve_current_mv_per_ma": 1,
   "pump_current_zero_offset_mv": 1650,
   "pump_current_mv_per_ma": 1,
+  "auto_adjustment_enabled": true,
   "location_known": false,
   "latitude": 0,
   "longitude": 0,
@@ -333,6 +357,16 @@ direction explicitly: `avgPastTempC`/`rainPastDaysMm` (historical) vs.
 
 ### When it runs
 
+`settings.json`'s `auto_adjustment_enabled` (default `true`) is the master on/off switch for the
+whole feature, checked first thing in both `runAutoAdjustmentIfDue()` and
+`weatherAutoAdjustStatus()` — when `false`, the daily cycle never runs and scheduled watering keeps
+using the manual `watering_percentage` unmodified, exactly as if the feature didn't exist. It's
+editable from the device's own rotary UI (Settings menu, first item) or Home Assistant's
+`switch.irrigator_auto_adjustment`; either path writes through `/cmd/auto_adjustment` semantics and
+persists immediately (see **MQTT**, above). Geolocation resolution (`tryGeolocateIfDue()`) is
+deliberately *not* gated by this — it's cheap, one-time, and its result (city/coordinates) is still
+worth having even with adjustment disabled.
+
 `runAutoAdjustmentIfDue()` (called every `loop()` iteration, cheap to no-op) opens a window `AUTOADJUSTMENT_LEAD_TIME_MINUTES` (180) before the day's *earliest* active schedule entry — or immediately, if the device boots after that window has already opened. Once open, it retries every `AUTOADJUSTMENT_RETRY_INTERVAL_MS` (5 minutes) until a forecast is successfully applied for that calendar date, tracked by `main.ino`'s `lastWeatherUpdateDate`. This is **deliberately uncapped** — a forecast that only arrives
 after the first watering has already run at the last-known percentage still helps later same-day waterings, or the rain-skip decision, so retrying past that point is worth it rather than giving up.
 
@@ -369,9 +403,11 @@ parameters rather than reading fixed constants — they're user-configurable set
 
 ### Known limitations
 
-- `latitude`/`longitude`/`city` have no manual-entry path — if ip-api.com's IP-based geolocation is
-  inaccurate for your network (common on VPNs, CGNAT, or some rural ISPs), the only fix today is
-  writing corrected values directly via `cmd/upload/settings.json`.
+- `latitude`/`longitude`/`city` have no manual-entry path, and — unlike every other field —
+  `mergeSettings()` deliberately never reads them from an uploaded `settings.json` at all (they're
+  device-owned, populated only by the device's own geolocation resolution), so there is currently
+  no fix from outside the device if ip-api.com's IP-based geolocation is inaccurate for your
+  network (common on VPNs, CGNAT, or some rural ISPs).
 
 ## Building and flashing over USB (first time)
 

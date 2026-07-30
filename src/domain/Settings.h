@@ -25,7 +25,14 @@ struct Settings {
     uint16_t pumpCurrentZeroOffsetMv = board::PUMP_CURRENT_SENSOR_ZERO_OFFSET_MV;
     float pumpCurrentMvPerMa = board::PUMP_CURRENT_SENSOR_MV_PER_MA;
 
-    // Weather-based auto-adjustment. locationKnown is an explicit flag rather
+    // Weather-based auto-adjustment. Master on/off switch for the whole feature (both the
+    // percentage recalculation and the rain-skip check) — defaults true so upgrading an existing
+    // settings.json (missing this field) preserves today's behavior instead of silently disabling
+    // a feature that was already running. Geolocation resolution (tryGeolocateIfDue in main.ino)
+    // is intentionally NOT gated by this: it's cheap, one-time, and its result (city/coordinates)
+    // is still worth displaying even with adjustment disabled.
+    bool autoAdjustmentEnabled = true;
+    // locationKnown is an explicit flag rather
     // than inferring "unset" from lat/lon both being 0 — (0,0) is a real place (Gulf of Guinea),
     // so a sentinel value would be ambiguous with a genuine reading there.
     bool locationKnown = false;
@@ -59,5 +66,29 @@ bool validateSettings(const Settings& settings);
 // rejects, e.g. an out-of-range watering percentage.
 bool parseSettings(const char* json, size_t length, Settings& out);
 size_t serializeSettings(const Settings& settings, char* buffer, size_t bufferSize);
+
+// Same field-by-field merge semantics as ConfigStore.h's mergeConfig(): a field present in
+// `json` with a non-null, non-empty value is validated on its own and applied to `out` only if
+// it individually passes; a field that's missing, null, an empty string, or fails its own check
+// instead keeps `existing`'s value, and (only for the fails-its-own-check case) its name is
+// appended, comma-separated, into `rejectedFieldsOut`. zone_names is merged per zone index, so
+// an upload naming only zone 3 doesn't disturb zones 1, 2, 4... upper_limit/lower_limit are
+// validated together (upper >= lower), matching validateSettings().
+//
+// location_known/latitude/longitude/city are device-owned (populated only by the device's own
+// geolocation resolution — see main.ino's resolveGeolocationIfNeeded()) and are deliberately
+// never read from `json` here; `out` always keeps `existing`'s values for those four. Callers
+// that also guard schedule_active/auto_adjustment_enabled as device-owned (see main.ino's
+// handleMqttUpload) still need to do that themselves after calling this — those two are still
+// merged like any other field here.
+//
+// Returns false only when `json` doesn't parse as a JSON object at all — there's nothing to
+// merge from then, and `out`/`rejectedFieldsOut` are left untouched.
+bool mergeSettings(const Settings& existing,
+                    const char* json,
+                    size_t length,
+                    Settings& out,
+                    char* rejectedFieldsOut,
+                    size_t rejectedFieldsOutSize);
 
 }  // namespace irrigator::domain

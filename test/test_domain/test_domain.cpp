@@ -443,6 +443,7 @@ void test_settings_store_round_trips() {
     irrigator::domain::Settings settings = irrigator::domain::makeDefaultZones();
     settings.wateringPercentage = 120;
     settings.scheduleActive = false;
+    settings.autoAdjustmentEnabled = false;
 
     char buffer[irrigator::board::SETTINGS_JSON_MAX_BYTES];
     const size_t written = irrigator::domain::serializeSettings(settings, buffer, sizeof(buffer));
@@ -452,6 +453,172 @@ void test_settings_store_round_trips() {
     TEST_ASSERT_TRUE(irrigator::domain::parseSettings(buffer, written, roundTripped));
     TEST_ASSERT_EQUAL_INT16(120, roundTripped.wateringPercentage);
     TEST_ASSERT_FALSE(roundTripped.scheduleActive);
+    TEST_ASSERT_FALSE(roundTripped.autoAdjustmentEnabled);
+}
+
+// A settings.json written before auto_adjustment_enabled existed (or any upload that omits it)
+// must default to true — the feature was already running unconditionally for every prior
+// deployment, so an upgrade must not silently disable it.
+void test_settings_store_defaults_auto_adjustment_enabled_to_true_when_missing() {
+    const char* json = R"({"watering_percentage":80})";
+    irrigator::domain::Settings settings;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(json, strlen(json), settings));
+    TEST_ASSERT_TRUE(settings.autoAdjustmentEnabled);
+}
+
+void test_merge_config_keeps_untouched_fields_and_updates_present_ones() {
+    irrigator::domain::DeviceConfig existing;
+    snprintf(existing.ssid, sizeof(existing.ssid), "%s", "home");
+    snprintf(existing.mqttBroker, sizeof(existing.mqttBroker), "%s", "192.168.1.10");
+    existing.mqttPort = 1883;
+    existing.timezoneOffsetHours = 2;
+
+    // Only mqtt_port is present; ssid/mqtt_broker/timezone must survive untouched.
+    const char* json = R"({"mqtt_port":1884})";
+    irrigator::domain::DeviceConfig merged;
+    char rejected[128];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeConfig(existing, json, strlen(json), merged, rejected,
+                                                    sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("", rejected);
+    TEST_ASSERT_EQUAL_STRING("home", merged.ssid);
+    TEST_ASSERT_EQUAL_STRING("192.168.1.10", merged.mqttBroker);
+    TEST_ASSERT_EQUAL_INT8(2, merged.timezoneOffsetHours);
+    TEST_ASSERT_EQUAL_UINT16(1884, merged.mqttPort);
+}
+
+void test_merge_config_null_or_empty_fields_do_not_change_existing() {
+    irrigator::domain::DeviceConfig existing;
+    snprintf(existing.ssid, sizeof(existing.ssid), "%s", "home");
+
+    const char* json = R"({"ssid":"","password":null})";
+    irrigator::domain::DeviceConfig merged;
+    char rejected[128];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeConfig(existing, json, strlen(json), merged, rejected,
+                                                    sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("", rejected);
+    TEST_ASSERT_EQUAL_STRING("home", merged.ssid);
+}
+
+void test_merge_config_rejects_out_of_range_field_but_keeps_rest() {
+    irrigator::domain::DeviceConfig existing;
+    snprintf(existing.ssid, sizeof(existing.ssid), "%s", "home");
+    existing.timezoneOffsetHours = 2;
+
+    const char* json = R"({"ssid":"newhome","timezone":99})";
+    irrigator::domain::DeviceConfig merged;
+    char rejected[128];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeConfig(existing, json, strlen(json), merged, rejected,
+                                                    sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("timezone", rejected);
+    TEST_ASSERT_EQUAL_STRING("newhome", merged.ssid);
+    TEST_ASSERT_EQUAL_INT8(2, merged.timezoneOffsetHours);
+}
+
+void test_merge_config_rejects_malformed_json_outright() {
+    irrigator::domain::DeviceConfig existing;
+    irrigator::domain::DeviceConfig merged;
+    char rejected[128];
+    const char* malformed = "{not json";
+    TEST_ASSERT_FALSE(irrigator::domain::mergeConfig(existing, malformed, strlen(malformed), merged,
+                                                      rejected, sizeof(rejected)));
+}
+
+void test_merge_settings_keeps_untouched_fields_and_updates_present_ones() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    existing.wateringPercentage = 100;
+    snprintf(existing.zoneNames[2], sizeof(existing.zoneNames[2]), "%s", "Trees");
+
+    const char* json = R"({"watering_percentage":150})";
+    irrigator::domain::Settings merged;
+    char rejected[256];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("", rejected);
+    TEST_ASSERT_EQUAL_INT16(150, merged.wateringPercentage);
+    // Zone name that wasn't mentioned in the upload must survive.
+    TEST_ASSERT_EQUAL_STRING("Trees", merged.zoneNames[2]);
+}
+
+void test_merge_settings_rejects_bad_type_field_and_alerts_but_keeps_rest() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    existing.wateringPercentage = 100;
+
+    // -1 for a boolean field is a type mismatch, not just an out-of-range number.
+    const char* json = R"({"watering_percentage":300,"auto_adjustment_enabled":-1})";
+    irrigator::domain::Settings merged;
+    char rejected[256];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("auto_adjustment_enabled", rejected);
+    TEST_ASSERT_EQUAL_INT16(300, merged.wateringPercentage);
+    TEST_ASSERT_TRUE(merged.autoAdjustmentEnabled);
+}
+
+void test_merge_settings_rejects_out_of_range_numeric_field() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    existing.wateringPercentage = 100;
+
+    // 500 is above the hard 0-300 clamp on watering_percentage.
+    const char* json = R"({"watering_percentage":500})";
+    irrigator::domain::Settings merged;
+    char rejected[256];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("watering_percentage", rejected);
+    TEST_ASSERT_EQUAL_INT16(100, merged.wateringPercentage);
+}
+
+void test_merge_settings_updates_single_zone_without_disturbing_others() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    snprintf(existing.zoneNames[0], sizeof(existing.zoneNames[0]), "%s", "Front");
+    snprintf(existing.zoneNames[2], sizeof(existing.zoneNames[2]), "%s", "Back");
+    existing.zoneEnabled[2] = true;
+
+    const char* json = R"({"zone_names":{"3":{"enabled":false}}})";
+    irrigator::domain::Settings merged;
+    char rejected[256];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("", rejected);
+    TEST_ASSERT_EQUAL_STRING("Front", merged.zoneNames[0]);
+    TEST_ASSERT_EQUAL_STRING("Back", merged.zoneNames[2]);
+    TEST_ASSERT_FALSE(merged.zoneEnabled[2]);
+}
+
+void test_merge_settings_upper_lower_limit_cross_validated_together() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    existing.upperLimitPercent = 200;
+    existing.lowerLimitPercent = 40;
+
+    // upper < lower makes no sense together; both must be rejected and neither applied.
+    const char* json = R"({"upper_limit":30,"lower_limit":40})";
+    irrigator::domain::Settings merged;
+    char rejected[256];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("upper_limit,lower_limit", rejected);
+    TEST_ASSERT_EQUAL_INT16(200, merged.upperLimitPercent);
+    TEST_ASSERT_EQUAL_INT16(40, merged.lowerLimitPercent);
+}
+
+void test_merge_settings_never_reads_device_owned_location_fields() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    existing.locationKnown = true;
+    existing.latitude = 12.5f;
+    existing.longitude = -3.5f;
+    snprintf(existing.city, sizeof(existing.city), "%s", "Testville");
+
+    const char* json =
+        R"({"location_known":false,"latitude":0.0,"longitude":0.0,"city":"Somewhere Else"})";
+    irrigator::domain::Settings merged;
+    char rejected[256];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("", rejected);
+    TEST_ASSERT_TRUE(merged.locationKnown);
+    TEST_ASSERT_EQUAL_FLOAT(12.5f, merged.latitude);
+    TEST_ASSERT_EQUAL_FLOAT(-3.5f, merged.longitude);
+    TEST_ASSERT_EQUAL_STRING("Testville", merged.city);
 }
 
 void test_schedule_store_round_trips_valid_list() {
@@ -756,6 +923,9 @@ void test_ui_state_machine_settings_percentage_edit() {
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuSettings);
 
+    for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexPercentage; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 350 + i);
+    }
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);  // enter percentage edit
     TEST_ASSERT_TRUE(ui.editing());
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 500);
@@ -779,7 +949,9 @@ void test_ui_state_machine_settings_upper_lower_limit_edit() {
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Test all zones -> Settings
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
 
-    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 350);  // Percentage -> Upper limit
+    for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexUpperLimit; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 350 + i);
+    }
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);      // enter upper-limit edit
     TEST_ASSERT_TRUE(ui.editing());
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 450);
@@ -798,6 +970,33 @@ void test_ui_state_machine_settings_upper_lower_limit_edit() {
         ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 700);
     TEST_ASSERT_TRUE(lowerIntent.type == irrigator::domain::UiIntentType::SetLowerLimit);
     TEST_ASSERT_EQUAL_INT16(30, lowerIntent.percentage);
+}
+
+void test_ui_state_machine_settings_auto_adjustment_toggle_is_first_item() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.autoAdjustmentEnabled = true;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Schedule -> Test all zones
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Test all zones -> Settings
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexAutoAdjustment,
+                            ui.selectedIndex());
+
+    // Direct toggle, like ToggleScheduleActive — no separate edit step.
+    const irrigator::domain::UiIntent offIntent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);
+    TEST_ASSERT_TRUE(offIntent.type == irrigator::domain::UiIntentType::ToggleAutoAdjustment);
+    TEST_ASSERT_FALSE(offIntent.boolValue);
+    TEST_ASSERT_FALSE(ui.editing());
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuSettings);
+
+    ctx.autoAdjustmentEnabled = false;
+    const irrigator::domain::UiIntent onIntent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);
+    TEST_ASSERT_TRUE(onIntent.type == irrigator::domain::UiIntentType::ToggleAutoAdjustment);
+    TEST_ASSERT_TRUE(onIntent.boolValue);
 }
 
 void test_ui_state_machine_settings_rain_skip_threshold_edit() {
@@ -1137,6 +1336,17 @@ int main(int argc, char** argv) {
     RUN_TEST(test_settings_store_defaults_missing_zone_names);
     RUN_TEST(test_settings_store_rejects_out_of_range_percentage);
     RUN_TEST(test_settings_store_round_trips);
+    RUN_TEST(test_settings_store_defaults_auto_adjustment_enabled_to_true_when_missing);
+    RUN_TEST(test_merge_config_keeps_untouched_fields_and_updates_present_ones);
+    RUN_TEST(test_merge_config_null_or_empty_fields_do_not_change_existing);
+    RUN_TEST(test_merge_config_rejects_out_of_range_field_but_keeps_rest);
+    RUN_TEST(test_merge_config_rejects_malformed_json_outright);
+    RUN_TEST(test_merge_settings_keeps_untouched_fields_and_updates_present_ones);
+    RUN_TEST(test_merge_settings_rejects_bad_type_field_and_alerts_but_keeps_rest);
+    RUN_TEST(test_merge_settings_rejects_out_of_range_numeric_field);
+    RUN_TEST(test_merge_settings_updates_single_zone_without_disturbing_others);
+    RUN_TEST(test_merge_settings_upper_lower_limit_cross_validated_together);
+    RUN_TEST(test_merge_settings_never_reads_device_owned_location_fields);
     RUN_TEST(test_schedule_store_round_trips_valid_list);
     RUN_TEST(test_schedule_store_rejects_whole_file_on_one_bad_record);
     RUN_TEST(test_schedule_engine_fires_matching_record_once_per_minute);
@@ -1156,6 +1366,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_stop_all_confirm_no_cancels_without_intent);
     RUN_TEST(test_ui_state_machine_settings_percentage_edit);
     RUN_TEST(test_ui_state_machine_settings_upper_lower_limit_edit);
+    RUN_TEST(test_ui_state_machine_settings_auto_adjustment_toggle_is_first_item);
     RUN_TEST(test_ui_state_machine_settings_rain_skip_threshold_edit);
     RUN_TEST(test_ui_state_machine_settings_restart_confirm_flow);
     RUN_TEST(test_ui_state_machine_info_menu_is_separate_from_settings_and_read_only);

@@ -28,6 +28,7 @@ enum class UiIntentType : uint8_t {
     AbortWatering,
     StopAllWatering,
     ToggleScheduleActive,
+    ToggleAutoAdjustment,
     SetWateringPercentage,
     SetUpperLimit,
     SetLowerLimit,

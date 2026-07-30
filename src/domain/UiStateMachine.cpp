@@ -558,7 +558,10 @@ UiIntent UiStateMachine::handleMenuSettings(UiInputEvent event, const Context& c
             selectedIndex_ = stepIndex(selectedIndex_, kSettingsItemCount, false);
             break;
         case UiInputEvent::Click:
-            if (selectedIndex_ == kSettingsIndexPercentage) {
+            if (selectedIndex_ == kSettingsIndexAutoAdjustment) {
+                intent.type = UiIntentType::ToggleAutoAdjustment;
+                intent.boolValue = !ctx.autoAdjustmentEnabled;
+            } else if (selectedIndex_ == kSettingsIndexPercentage) {
                 pendingPercentage_ = ctx.wateringPercentage;
                 editing_ = true;
             } else if (selectedIndex_ == kSettingsIndexUpperLimit) {

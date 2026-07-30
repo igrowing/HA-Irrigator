@@ -30,6 +30,7 @@ public:
 
         bool wateringActive = false;
         bool scheduleActive = false;
+        bool autoAdjustmentEnabled = false;
         uint8_t scheduleRecordCount = 0;
         int16_t wateringPercentage = 0;
         int16_t upperLimitPercent = 0;
@@ -94,21 +95,24 @@ public:
     static constexpr uint8_t kTestAllIndexDuration = 1;
     static constexpr uint8_t kTestAllIndexBack = 2;
 
-    // MenuSettings: 8 rows, all the settings that can actually change. All rows are clickable
+    // MenuSettings: 9 rows, all the settings that can actually change. All rows are clickable
     // except BACK (see spec-comment on kInfoItemCount below for the read-only counterparts, split
     // out into their own MenuInfo screen) but every row still gets a named index here so the
     // renderer's switch and this class's click routing share one definition of the layout rather
     // than two hand-kept-in-sync copies (this is exactly how the WiFi row's insertion previously
     // broke BACK: the renderer's item count moved to 8 without this class's matching update).
-    static constexpr uint8_t kSettingsItemCount = 8;
-    static constexpr uint8_t kSettingsIndexPercentage = 0;
-    static constexpr uint8_t kSettingsIndexUpperLimit = 1;
-    static constexpr uint8_t kSettingsIndexLowerLimit = 2;
-    static constexpr uint8_t kSettingsIndexRainSkipProbability = 3;
-    static constexpr uint8_t kSettingsIndexRainSkipAmount = 4;
-    static constexpr uint8_t kSettingsIndexScheduleActive = 5;
-    static constexpr uint8_t kSettingsIndexRestart = 6;
-    static constexpr uint8_t kSettingsIndexBack = 7;
+    // Auto-adjustment is deliberately first: it's the master on/off for the whole weather feature,
+    // so it reads before any of the fields it affects (Adjust/Upper/Lower/rain-skip thresholds).
+    static constexpr uint8_t kSettingsItemCount = 9;
+    static constexpr uint8_t kSettingsIndexAutoAdjustment = 0;
+    static constexpr uint8_t kSettingsIndexPercentage = 1;
+    static constexpr uint8_t kSettingsIndexUpperLimit = 2;
+    static constexpr uint8_t kSettingsIndexLowerLimit = 3;
+    static constexpr uint8_t kSettingsIndexRainSkipProbability = 4;
+    static constexpr uint8_t kSettingsIndexRainSkipAmount = 5;
+    static constexpr uint8_t kSettingsIndexScheduleActive = 6;
+    static constexpr uint8_t kSettingsIndexRestart = 7;
+    static constexpr uint8_t kSettingsIndexBack = 8;
 
     // MenuInfo: 9 rows, the read-only counterparts split out of MenuSettings (WiFi/IP/MQTT/Topic/
     // City/Coordinates/LastUpdate/FW are all display-only, per spec) plus BACK. None of the

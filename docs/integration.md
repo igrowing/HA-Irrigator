@@ -98,24 +98,16 @@ package-defined helper here, not an error) and Home Assistant pushes it to the d
 automatically. This section is for setting it **without** Home Assistant, or for confirming what
 HA is doing under the hood.
 
-The key lives in `settings.json`, and — like every file the device serves under
-`cmd/download`/`cmd/upload` — there's no partial-field update: uploading replaces the *entire*
-file, and any field you omit resets to its firmware default (see **JSON file formats** in
-[technical.md](technical.md)). So this is always a **read, edit, write-the-whole-file-back**
-round-trip, never a single-field publish:
+The key lives in `settings.json`, which the device merges field by field on upload (see **JSON
+file formats** in [technical.md](technical.md)) — so setting just this one field is a single
+publish, no read-edit-write round-trip needed:
 
 ```
-# 1. Fetch the current settings.json
-mosquitto_sub -t irrigatorF4/download/settings.json -C 1 > settings.json
-mosquitto_pub -t irrigatorF4/cmd/download/settings.json -m ""
-
-# 2. Edit settings.json - change ONLY the "weatherapi_key" value, leave every other
-#    field exactly as downloaded (zone names, schedule_active, calibration, etc. all
-#    reset to defaults if you drop them from the upload)
-
-# 3. Push the whole edited file back
-mosquitto_pub -t irrigatorF4/cmd/upload/settings.json -f settings.json
+mosquitto_pub -t irrigatorF4/cmd/upload/settings.json -m '{"weatherapi_key":"YOUR_KEY_HERE"}'
 ```
+
+Every other field (zone names, `schedule_active`, calibration, etc.) is left exactly as it was on
+flash — only fields you actually include, with a non-null non-empty value, get changed.
 
 Get your key from [weatherapi.com](https://www.weatherapi.com) (free tier is enough) — it's only
 used as a fallback when [Open-Meteo](https://open-meteo.com)'s keyless request fails (see **Weather

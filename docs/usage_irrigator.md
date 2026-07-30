@@ -261,7 +261,8 @@ Everything here can be changed from the knob:
 
 ```
 SETTINGS
-> Adjust: 100 %
+> Auto-adjust: on
+  Adjust: 100 %
   Upper limit: 200 %
   Lower limit: 40 %
   Skip rain prob: 70 %
@@ -271,10 +272,15 @@ SETTINGS
   BACK
 ```
 
+- **Auto-adjust**: the master on/off switch for the whole weather-based auto-adjustment feature
+  (both the daily percentage recalculation and the rain-skip check, below) — click to flip it.
+  Turning it off freezes **Adjust** at whatever it's currently set to until turned back on; it's
+  also available as `switch.irrigator_auto_adjustment` in Home Assistant, topmost in the
+  **Auto-adjustment Weather Data** card.
 - **Adjust**: a watering percentage (10–300%) that scales every scheduled run's duration up or
   down — handy for quickly cutting back watering in cooler weather without editing every program.
-  Once the device has a location (see **Loc** in Info, below), this value is also recalculated
-  automatically once a day by weather-based auto-adjustment — see below.
+  Once the device has a location (see **Loc** in Info, below) and **Auto-adjust** is on, this value
+  is also recalculated automatically once a day by weather-based auto-adjustment — see below.
 - **Upper limit** / **Lower limit**: the range auto-adjustment is allowed to move **Adjust**
   within (defaults 200% / 40%). If the computed percentage would fall below **Lower limit**, the
   day's watering is skipped entirely (0%) rather than clamped up to it; above **Upper limit**, it's
@@ -333,6 +339,10 @@ This requires physical access to the device, on purpose — it can't be triggere
 
 
 ## Autoadjustment of irrigation explained
+
+Everything in this section only happens while **Auto-adjust** (Settings, above) is on — turn it off
+and the device just keeps using **Adjust** exactly as you last set it, with no daily recalculation
+and no rain-skip check.
 
 Once the device has resolved its location (see **City** / **Loc** in Info, above), it checks
 the weather once a day — a few hours before your first scheduled watering — and either skips the

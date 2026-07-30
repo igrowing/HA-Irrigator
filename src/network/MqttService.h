@@ -66,6 +66,7 @@ public:
     void publishSchedule(const String& jsonPayload);
     void publishQueue(const String& jsonPayload);
     void publishScheduled(bool active);
+    void publishAutoAdjustmentEnabled(bool enabled);
     void publishWateringPercentage(int16_t value);
     void publishOtaCompleted(const String& isoTimestamp);
     // Publishes to `<prefix>/ota_started` the moment a `cmd/ota` command is actually accepted -

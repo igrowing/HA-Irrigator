@@ -335,6 +335,9 @@ String buildStatusJson(uint32_t nowMs) {
     doc["free_heap_bytes"] = ESP.getFreeHeap();
     doc["free_storage_bytes"] = static_cast<uint32_t>(fileStore.freeBytes());
     doc["cpu_temp_c"] = temperatureRead();
+    // Master on/off for the whole weather auto-adjustment pipeline (see runAutoAdjustmentIfDue) —
+    // surfaced here so "why hasn't this run" is diagnosable remotely without a settings.json pull.
+    doc["auto_adjustment_enabled"] = settings.autoAdjustmentEnabled;
     // location_known gates the entire weather auto-adjustment pipeline (see
     // runAutoAdjustmentIfDue) — surfaced here so "no last_weather_update" is diagnosable remotely
     // instead of silently stuck on a geolocation lookup that never succeeded.
@@ -497,6 +500,23 @@ void reportMqttError(const char* context, const String& detail, const char* reas
     irrigator::drivers::Log.printf("[WARN] %s %s: %s\n", context, detail.c_str(), reason);
 }
 
+// Companion to reportMqttError() for a merge upload (see handleMqttUpload) that otherwise
+// succeeded: `rejectedFields` names the field(s) whose new value failed its own validation and
+// so kept the existing file's value instead — surfaced as an alert (not an error) since the rest
+// of the upload still went through.
+void reportMqttFieldsRejected(const String& filename, const char* rejectedFields) {
+    if (rejectedFields[0] == '\0') {
+        return;
+    }
+    char alertMsg[224];
+    snprintf(alertMsg, sizeof(alertMsg),
+             R"({"upload":"%s","alert":"invalid value(s) ignored, kept previous: %s"})",
+             filename.c_str(), rejectedFields);
+    mqtt.publishAlert(alertMsg);
+    irrigator::drivers::Log.printf("[WARN] upload %s: invalid value(s) ignored: %s\n",
+                                   filename.c_str(), rejectedFields);
+}
+
 // `cmd/download/<filename>` handler: filename comes from the topic (payload is unused, "" per
 // spec), response goes to `<prefix>/download/<filename>`.
 void handleMqttDownload(const String& filename) {
@@ -524,10 +544,16 @@ void handleMqttDownload(const String& filename) {
     mqtt.publishDownload(filename, content);
 }
 
-// `cmd/upload/<filename>` handler: payload is the new file content. config.json/settings.json/
-// schedule.json are parsed and validated (reject-whole-file-on-invalid, same as loading them
-// from flash at boot) before being written and applied live; any other filename is written
-// as-is since there's no schema to validate it against. A successful config.json upload
+// `cmd/upload/<filename>` handler: payload is the new file content. config.json/settings.json
+// are merged field-by-field onto the device's current in-RAM copy (deviceConfig/settings) rather
+// than replacing the whole file: a field present in the upload with a non-null, non-empty value
+// is validated on its own and applied only if it individually makes sense; a field that's
+// missing, null, an empty string, or fails its own check instead keeps the existing value, with
+// the latter case also raising an alert naming the field (see ConfigStore.h/Settings.h's
+// mergeConfig/mergeSettings). schedule.json keeps the older reject-whole-file-on-invalid
+// semantics unchanged (it's a JSON array of records, not a flat object of fields — see
+// Schedule.h), though its record count can still grow/shrink freely. Any other filename is
+// written as-is since there's no schema to validate it against. A successful config.json upload
 // restarts the device (new Wi-Fi/MQTT credentials only take effect from enterOperationalMode()
 // at boot).
 void handleMqttUpload(const String& filename, const uint8_t* payload, size_t length) {
@@ -544,15 +570,21 @@ void handleMqttUpload(const String& filename, const uint8_t* payload, size_t len
     const String content(reinterpret_cast<const char*>(payload), length);
 
     if (path == irrigator::board::CONFIG_FILE_PATH) {
-        irrigator::domain::DeviceConfig parsed;
-        if (!irrigator::domain::parseConfig(content.c_str(), content.length(), parsed)) {
+        char rejectedFields[192];
+        irrigator::domain::DeviceConfig merged;
+        if (!irrigator::domain::mergeConfig(deviceConfig, content.c_str(), content.length(), merged,
+                                            rejectedFields, sizeof(rejectedFields)) ||
+            !irrigator::domain::validateConfig(merged)) {
             reportMqttError("upload", filename, "invalid config.json content");
             return;
         }
-        if (!fileStore.writeTextWithBackup(path.c_str(), content)) {
+        char buffer[irrigator::board::CONFIG_JSON_MAX_BYTES];
+        const size_t written = irrigator::domain::serializeConfig(merged, buffer, sizeof(buffer));
+        if (written == 0 || !fileStore.writeTextWithBackup(path.c_str(), String(buffer))) {
             reportMqttError("upload", filename, "failed to write");
             return;
         }
+        reportMqttFieldsRejected(filename, rejectedFields);
         irrigator::drivers::Log.info("config.json updated via MQTT upload; restarting");
         mqtt.publishAvailability(false);
         delay(200);
@@ -561,8 +593,11 @@ void handleMqttUpload(const String& filename, const uint8_t* payload, size_t len
     }
 
     if (path == irrigator::board::SETTINGS_FILE_PATH) {
-        irrigator::domain::Settings parsed;
-        if (!irrigator::domain::parseSettings(content.c_str(), content.length(), parsed)) {
+        char rejectedFields[256];
+        irrigator::domain::Settings merged;
+        if (!irrigator::domain::mergeSettings(settings, content.c_str(), content.length(), merged,
+                                              rejectedFields, sizeof(rejectedFields)) ||
+            !irrigator::domain::validateSettings(merged)) {
             reportMqttError("upload", filename, "invalid settings.json content");
             return;
         }
@@ -575,34 +610,50 @@ void handleMqttUpload(const String& filename, const uint8_t* payload, size_t len
         // and keep the device's own. The diagnostic alert below fires exactly when an upload tried
         // to change it — it is the definitive proof of "HA uploaded false", and confirms this guard
         // caught it.
-        if (parsed.scheduleActive != settings.scheduleActive) {
+        if (merged.scheduleActive != settings.scheduleActive) {
             char msg[160];
             snprintf(msg, sizeof(msg),
                      R"({"info":"settings upload tried to set schedule_active=%s; ignored, kept device value %s"})",
-                     parsed.scheduleActive ? "true" : "false",
+                     merged.scheduleActive ? "true" : "false",
                      settings.scheduleActive ? "true" : "false");
             mqtt.publishAlert(msg);
         }
-        parsed.scheduleActive = settings.scheduleActive;
+        merged.scheduleActive = settings.scheduleActive;
+        // auto_adjustment_enabled is guarded the same way, and for the same reason: HA's
+        // full-settings republish (script.irrigator_publish_settings) can only echo back whatever
+        // sensor.irrigator_settings last saw, which races the same way schedule_active did — an
+        // upload landing right after a toggle could carry the pre-toggle value and silently flip
+        // it back on the next reboot. The dedicated cmd/auto_adjustment command (and its switch)
+        // is the only path that's allowed to actually change this.
+        if (merged.autoAdjustmentEnabled != settings.autoAdjustmentEnabled) {
+            char msg[176];
+            snprintf(msg, sizeof(msg),
+                     R"({"info":"settings upload tried to set auto_adjustment_enabled=%s; ignored, kept device value %s"})",
+                     merged.autoAdjustmentEnabled ? "true" : "false",
+                     settings.autoAdjustmentEnabled ? "true" : "false");
+            mqtt.publishAlert(msg);
+        }
+        merged.autoAdjustmentEnabled = settings.autoAdjustmentEnabled;
         // location_known/latitude/longitude/city are likewise device-owned: they're populated only
         // by the device's own geolocation resolution (see resolveGeolocationIfNeeded()), never by a
-        // settings upload. Silently ignored (no alert) since HA's settings.json mirror always
-        // carries the device's last-published values here anyway, so a "changed" upload would just
-        // mean HA echoed back a stale copy, not a deliberate edit worth flagging.
-        parsed.locationKnown = settings.locationKnown;
-        parsed.latitude = settings.latitude;
-        parsed.longitude = settings.longitude;
-        snprintf(parsed.city, sizeof(parsed.city), "%s", settings.city);
-        settings = parsed;
+        // settings upload -- mergeSettings() doesn't even read them from the upload, so `merged`
+        // already carries `settings`'s values here. Kept as an explicit assignment anyway so that
+        // stays true even if mergeSettings' internals ever change.
+        merged.locationKnown = settings.locationKnown;
+        merged.latitude = settings.latitude;
+        merged.longitude = settings.longitude;
+        snprintf(merged.city, sizeof(merged.city), "%s", settings.city);
+        settings = merged;
         // Persist the MERGED result (serialized from `settings`), NOT the raw uploaded bytes — those
-        // still contain the ignored schedule_active, and writing them would put the stale value back
-        // on flash and re-open the exact divergence this guard exists to close. persistSettings()
-        // surfaces any write failure via its own alert.
+        // may omit fields entirely (partial upload) or still contain the ignored schedule_active/
+        // auto_adjustment_enabled, and writing them would put stale/incomplete data back on flash.
+        // persistSettings() surfaces any write failure via its own alert.
         if (!persistSettings()) {
             reportMqttError("upload", filename, "failed to write");
             return;
         }
         applyCurrentCalibration();
+        reportMqttFieldsRejected(filename, rejectedFields);
         return;
     }
 
@@ -778,6 +829,11 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
             setScheduleActive(intent.boolValue, "ui_toggle");
             persistSettings();
             mqtt.publishScheduled(settings.scheduleActive);
+            break;
+        case UiIntentType::ToggleAutoAdjustment:
+            settings.autoAdjustmentEnabled = intent.boolValue;
+            persistSettings();
+            mqtt.publishAutoAdjustmentEnabled(settings.autoAdjustmentEnabled);
             break;
         case UiIntentType::SetWateringPercentage: {
             irrigator::domain::Settings updated = settings;
@@ -999,6 +1055,24 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
         return;
     }
 
+    if (commandName == "auto_adjustment") {
+        String trimmed = body;
+        trimmed.trim();
+        bool newValue;
+        if (trimmed == "true" || trimmed == "1") {
+            newValue = true;
+        } else if (trimmed == "false" || trimmed == "0") {
+            newValue = false;
+        } else {
+            reportMqttError("command", commandName, "invalid bool payload, expected true/false");
+            return;
+        }
+        settings.autoAdjustmentEnabled = newValue;
+        persistSettings();
+        mqtt.publishAutoAdjustmentEnabled(settings.autoAdjustmentEnabled);
+        return;
+    }
+
     if (commandName == "watering_percentage") {
         if (body.length() == 0) {
             reportMqttError("command", commandName, "empty payload, expected an integer");
@@ -1196,6 +1270,7 @@ void enterOperationalMode() {
     // virgin deploy or an HA restart while the device stays up would leave the switch blank.
     mqtt.setConnectedHandler([]() {
         mqtt.publishScheduled(settings.scheduleActive);
+        mqtt.publishAutoAdjustmentEnabled(settings.autoAdjustmentEnabled);
         mqtt.publishWateringPercentage(settings.wateringPercentage);
         // One-shot per boot: report what schedule_active was actually loaded from flash, so the
         // change-tracer timeline in sensor.irrigator_last_alert has a known starting point. If this
@@ -1446,6 +1521,9 @@ void consumeWeatherAutoAdjustResult(uint32_t nowMs) {
 // means. Kept as a single source of truth for "why hasn't this run" rather than duplicating the
 // reasoning independently and risking the two drifting apart.
 const char* weatherAutoAdjustStatus() {
+    if (!settings.autoAdjustmentEnabled) {
+        return "disabled";
+    }
     if (!settings.locationKnown) {
         return "no_location";
     }
@@ -1522,6 +1600,10 @@ bool startWeatherFetch(const char* today, int64_t nowEpoch) {
 void runAutoAdjustmentIfDue(uint32_t nowMs) {
     consumeWeatherAutoAdjustResult(nowMs);
 
+    if (!settings.autoAdjustmentEnabled) {
+        return;  // Master switch is off — scheduled runs keep using the manual watering
+                 // percentage untouched, same as before this feature ever ran.
+    }
     if (weatherTaskInFlight || !settings.locationKnown) {
         return;  // Fetch already in flight, or no location yet (scheduled runs keep using the
                  // manual watering percentage until geolocation resolves).
