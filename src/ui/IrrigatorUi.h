@@ -74,6 +74,7 @@ private:
     void renderMenuMain(const RenderData& data);
     void renderMenuSchedule(const RenderData& data);
     void renderMenuSettings(const RenderData& data);
+    void renderMenuInfo(const RenderData& data);
     void renderMenuTestAll();
     void renderRestartConfirm();
     void renderFactoryResetConfirm();

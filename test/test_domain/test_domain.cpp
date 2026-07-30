@@ -877,6 +877,36 @@ void test_ui_state_machine_settings_restart_confirm_flow() {
     TEST_ASSERT_TRUE(yesIntent.type == irrigator::domain::UiIntentType::RestartDevice);
 }
 
+void test_ui_state_machine_info_menu_is_separate_from_settings_and_read_only() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+
+    const auto layout = irrigator::domain::UiStateMachine::menuMainLayout(false);
+    for (uint8_t i = 0; i < layout.infoIndex; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200 + i);
+    }
+    TEST_ASSERT_EQUAL_UINT8(layout.infoIndex, ui.selectedIndex());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);  // -> MenuInfo
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuInfo);
+    TEST_ASSERT_EQUAL_UINT8(0, ui.selectedIndex());
+
+    // Every display-only row is a no-op click; only BACK navigates.
+    for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kInfoIndexBack; ++i) {
+        const irrigator::domain::UiIntent intent =
+            ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400 + i);
+        TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::None);
+        TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuInfo);
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 450 + i);
+    }
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kInfoIndexBack, ui.selectedIndex());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);  // BACK -> MenuMain
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuMain);
+}
+
 void test_ui_state_machine_test_all_zones_flow() {
     irrigator::domain::UiStateMachine ui;
     irrigator::domain::UiStateMachine::Context ctx;
@@ -1128,6 +1158,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_settings_upper_lower_limit_edit);
     RUN_TEST(test_ui_state_machine_settings_rain_skip_threshold_edit);
     RUN_TEST(test_ui_state_machine_settings_restart_confirm_flow);
+    RUN_TEST(test_ui_state_machine_info_menu_is_separate_from_settings_and_read_only);
     RUN_TEST(test_ui_state_machine_test_all_zones_flow);
     RUN_TEST(test_ui_state_machine_schedule_duration_edit);
     RUN_TEST(test_ui_state_machine_schedule_zone_edit_wraps);

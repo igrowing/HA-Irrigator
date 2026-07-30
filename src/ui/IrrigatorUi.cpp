@@ -183,6 +183,9 @@ void IrrigatorUi::render(uint32_t nowMs, const RenderData& data) {
         case ::irrigator::domain::UiScreen::MenuSettings:
             renderMenuSettings(data);
             break;
+        case ::irrigator::domain::UiScreen::MenuInfo:
+            renderMenuInfo(data);
+            break;
         case ::irrigator::domain::UiScreen::MenuTestAll:
             renderMenuTestAll();
             break;
@@ -442,6 +445,8 @@ void IrrigatorUi::renderMenuMain(const RenderData& data) {
                 snprintf(buffer, size, "Test all zones");
             } else if (index == layout.settingsIndex) {
                 snprintf(buffer, size, "Settings");
+            } else if (index == layout.infoIndex) {
+                snprintf(buffer, size, "Info");
             } else if (index == layout.backIndex) {
                 snprintf(buffer, size, "BACK");
             } else {
@@ -500,7 +505,26 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                 case Settings::kSettingsIndexScheduleActive:
                     snprintf(buffer, size, "Schedule: %s", data.scheduleActive ? "active" : "paused");
                     break;
-                case Settings::kSettingsIndexWifi: {
+                case Settings::kSettingsIndexRestart:
+                    snprintf(buffer, size, "Restart");
+                    break;
+                case Settings::kSettingsIndexBack:
+                    snprintf(buffer, size, "BACK");
+                    break;
+                default:
+                    buffer[0] = '\0';
+                    break;
+            }
+        });
+}
+
+void IrrigatorUi::renderMenuInfo(const RenderData& data) {
+    using Info = ::irrigator::domain::UiStateMachine;
+
+    drawMenuList(
+        "INFO", Info::kInfoItemCount, uiState_.selectedIndex(), [this, &data](uint8_t index, char* buffer, size_t size) {
+            switch (index) {
+                case Info::kInfoIndexWifi: {
                     const auto quality = ::irrigator::domain::wifiQualityFromRssi(data.wifiRssi);
                     snprintf(buffer,
                             size,
@@ -509,24 +533,24 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                             static_cast<int>(data.wifiRssi));
                     break;
                 }
-                case Settings::kSettingsIndexIp:
+                case Info::kInfoIndexIp:
                     snprintf(buffer, size, "IP: %s", data.deviceIp.toString().c_str());
                     break;
-                case Settings::kSettingsIndexMqtt:
+                case Info::kInfoIndexMqtt:
                     if (data.mqttBrokerText.length() == 0) {
                         snprintf(buffer, size, "MQTT: disabled");
                     } else {
                         snprintf(buffer, size, "MQTT: %s", data.mqttBrokerText.c_str());
                     }
                     break;
-                case Settings::kSettingsIndexTopic:
+                case Info::kInfoIndexTopic:
                     if (data.mqttBrokerText.length() == 0) {
                         snprintf(buffer, size, "Topic: -");
                     } else {
                         snprintf(buffer, size, "Topic: %s", data.mqttTopicText.c_str());
                     }
                     break;
-                case Settings::kSettingsIndexCity:
+                case Info::kInfoIndexCity:
                     snprintf(buffer,
                             size,
                             "City: %s",
@@ -534,14 +558,14 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                                 ? data.settings->city
                                 : "-");
                     break;
-                case Settings::kSettingsIndexCoordinates:
+                case Info::kInfoIndexCoordinates:
                     if (data.settings != nullptr && data.settings->locationKnown) {
                         snprintf(buffer, size, "Loc: %.2f,%.2f", data.settings->latitude, data.settings->longitude);
                     } else {
                         snprintf(buffer, size, "Loc: -");
                     }
                     break;
-                case Settings::kSettingsIndexLastUpdate:
+                case Info::kInfoIndexLastUpdate:
                     snprintf(buffer,
                             size,
                             "Wtr upd:%s",
@@ -549,13 +573,10 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                                 ? data.lastWeatherUpdateDisplay
                                 : "-");
                     break;
-                case Settings::kSettingsIndexFirmware:
+                case Info::kInfoIndexFirmware:
                     snprintf(buffer, size, "FW: v.%s", irrigator::board::FIRMWARE_VERSION);
                     break;
-                case Settings::kSettingsIndexRestart:
-                    snprintf(buffer, size, "Restart");
-                    break;
-                case Settings::kSettingsIndexBack:
+                case Info::kInfoIndexBack:
                     snprintf(buffer, size, "BACK");
                     break;
                 default:

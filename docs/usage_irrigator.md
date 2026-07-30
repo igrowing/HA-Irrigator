@@ -138,7 +138,7 @@ IP.42    2026-07-11 14:32:07
 
 - **Top line**: last part of the device's IP address, plus the current date and time.
 - **Dashes row**: a quick Wi-Fi signal strength meter — 0 dashes means little to no signal, 4
-  dashes means excellent. (You can check the exact signal strength in **Settings**, below.)
+  dashes means excellent. (You can check the exact signal strength in **Info**, below.)
 - **Middle line**: what's happening right now — a zone name, `PUMP`, or nothing if idle.
 - **Status line**: one of:
   - `IDLE-READY` — nothing running, nothing scheduled soon
@@ -198,6 +198,7 @@ MENU
   Schedule
   Test all zones
   Settings
+  Info
   BACK
 ```
 
@@ -256,9 +257,23 @@ TEST ALL ZONES
 
 ### Settings
 
+Everything here can be changed from the knob:
+
+```
+SETTINGS
+> Adjust: 100 %
+  Upper limit: 200 %
+  Lower limit: 40 %
+  Skip rain prob: 70 %
+  Skip rain amt: 4 mm
+  Schedule: active
+  Restart
+  BACK
+```
+
 - **Adjust**: a watering percentage (10–300%) that scales every scheduled run's duration up or
   down — handy for quickly cutting back watering in cooler weather without editing every program.
-  Once the device has a location (see **Loc**, below), this value is also recalculated
+  Once the device has a location (see **Loc** in Info, below), this value is also recalculated
   automatically once a day by weather-based auto-adjustment — see below.
 - **Upper limit** / **Lower limit**: the range auto-adjustment is allowed to move **Adjust**
   within (defaults 200% / 40%). If the computed percentage would fall below **Lower limit**, the
@@ -267,22 +282,40 @@ TEST ALL ZONES
 - **Skip rain prob** / **Skip rain amt**: the two thresholds that decide whether today's watering
   is skipped outright because of rain in the forecast (defaults 70% / 4mm) — see **Step 1** below
   for exactly how they're combined.
-- **City** / **Loc**: the city name and latitude/longitude auto-adjustment resolved from the
-  device's IP address (via ip-api.com) — display only, refreshed once, the first time the device is
-  online with no location saved yet.
-- **Last update**: the date (UTC) auto-adjustment last successfully fetched a forecast and applied
-  it — display only. Stays blank until the first successful cycle, and resets after every restart
-  (this isn't saved — a restart simply re-runs today's cycle rather than remembering it already
-  happened).
 - **Schedule**: turns the whole weekly schedule on or off.
-- **WiFi**: signal quality in plain words (e.g. `good`) plus the exact signal reading.
-- **IP** / **MQTT**: connection details, useful mainly if you're troubleshooting network issues.
-- **Topic**: the device's unique ID — only relevant if you're integrating with Home Assistant.
-- **FW**: the firmware version currently installed (display only).
 - **Restart**: reboots the device. Asks you to confirm first (`RESTART?  [NO]  YES` — turn to
   move onto `YES`, click to confirm), the same way **Stop**/**Stop all** do. Choosing `NO` (or
   backing out) returns you to the normal screen without restarting. No saved settings or schedule
   are affected — this is just a reboot, not a reset.
+
+### Info
+
+Everything here is read-only — nothing in this menu can be changed, it's just for checking status
+and troubleshooting:
+
+```
+INFO
+> WiFi: good (-58dB)
+  IP: 192.168.1.42
+  MQTT: 192.168.1.10
+  Topic: irrigator42
+  City: Springfield
+  Loc: 42.35,-71.06
+  Wtr upd:30-07 06:15
+  FW: v.1.4.0
+  BACK
+```
+
+- **WiFi**: signal quality in plain words (e.g. `good`) plus the exact signal reading.
+- **IP** / **MQTT**: connection details, useful mainly if you're troubleshooting network issues.
+- **Topic**: the device's unique ID — only relevant if you're integrating with Home Assistant.
+- **City** / **Loc**: the city name and latitude/longitude auto-adjustment resolved from the
+  device's IP address (via ip-api.com) — refreshed once, the first time the device is online with
+  no location saved yet.
+- **Wtr upd**: the date/time auto-adjustment last successfully fetched a forecast and applied it.
+  Stays blank until the first successful cycle, and resets after every restart (this isn't saved —
+  a restart simply re-runs today's cycle rather than remembering it already happened).
+- **FW**: the firmware version currently installed.
 
 ## Resetting to factory defaults
 
@@ -301,7 +334,7 @@ This requires physical access to the device, on purpose — it can't be triggere
 
 ## Autoadjustment of irrigation explained
 
-Once the device has resolved its location (see **City** / **Loc** in Settings, above), it checks
+Once the device has resolved its location (see **City** / **Loc** in Info, above), it checks
 the weather once a day — a few hours before your first scheduled watering — and either skips the
 day's watering entirely, or nudges the **Adjust** percentage up or down for that day. Two checks
 happen, always in this order, and the first one decides whether the second one runs at all.

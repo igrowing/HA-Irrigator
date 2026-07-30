@@ -88,6 +88,8 @@ UiIntent UiStateMachine::handleInput(UiInputEvent event, const Context& ctx, uin
             return handleMenuSchedule(event, ctx);
         case UiScreen::MenuSettings:
             return handleMenuSettings(event, ctx);
+        case UiScreen::MenuInfo:
+            return handleMenuInfo(event);
         case UiScreen::MenuTestAll:
             return handleMenuTestAll(event);
         case UiScreen::RestartConfirm:
@@ -252,14 +254,14 @@ UiIntent UiStateMachine::handleRestartConfirm(UiInputEvent event) {
 
 UiStateMachine::MenuMainLayout UiStateMachine::menuMainLayout(bool wateringActive) {
     if (wateringActive) {
-        return {6, 2, 3, 4, 5};
+        return {7, 2, 3, 4, 5, 6};
     }
-    return {4, 0, 1, 2, 3};
+    return {5, 0, 1, 2, 3, 4};
 }
 
 UiIntent UiStateMachine::handleMenuMain(UiInputEvent event, const Context& ctx) {
     // Item order, matching IrrigatorUi::renderMenuMain: [Stop, Stop all] (watering only),
-    // Schedule, Test all zones, Settings, BACK.
+    // Schedule, Test all zones, Settings, Info, BACK.
     const MenuMainLayout layout = menuMainLayout(ctx.wateringActive);
     UiIntent intent;
 
@@ -287,6 +289,9 @@ UiIntent UiStateMachine::handleMenuMain(UiInputEvent event, const Context& ctx) 
                 selectedIndex_ = 0;
             } else if (selectedIndex_ == layout.settingsIndex) {
                 screen_ = UiScreen::MenuSettings;
+                selectedIndex_ = 0;
+            } else if (selectedIndex_ == layout.infoIndex) {
+                screen_ = UiScreen::MenuInfo;
                 selectedIndex_ = 0;
             } else if (selectedIndex_ == layout.backIndex) {
                 screen_ = UiScreen::Normal;
@@ -578,7 +583,31 @@ UiIntent UiStateMachine::handleMenuSettings(UiInputEvent event, const Context& c
                 screen_ = UiScreen::MenuMain;
                 selectedIndex_ = 0;
             }
-            // WiFi/IP/MQTT/Topic/FW/City/Coordinates/LastUpdate rows are explicitly not clickable.
+            break;
+        case UiInputEvent::LongClick:
+            screen_ = UiScreen::MenuMain;
+            selectedIndex_ = 0;
+            break;
+    }
+    return intent;
+}
+
+UiIntent UiStateMachine::handleMenuInfo(UiInputEvent event) {
+    UiIntent intent;
+
+    switch (event) {
+        case UiInputEvent::Clockwise:
+            selectedIndex_ = stepIndex(selectedIndex_, kInfoItemCount, true);
+            break;
+        case UiInputEvent::CounterClockwise:
+            selectedIndex_ = stepIndex(selectedIndex_, kInfoItemCount, false);
+            break;
+        case UiInputEvent::Click:
+            if (selectedIndex_ == kInfoIndexBack) {
+                screen_ = UiScreen::MenuMain;
+                selectedIndex_ = 0;
+            }
+            // WiFi/IP/MQTT/Topic/City/Coordinates/LastUpdate/FW rows are display-only, not clickable.
             break;
         case UiInputEvent::LongClick:
             screen_ = UiScreen::MenuMain;

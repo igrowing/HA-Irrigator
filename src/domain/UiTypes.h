@@ -15,6 +15,7 @@ enum class UiScreen : uint8_t {
     MenuMain,
     MenuSchedule,
     MenuSettings,
+    MenuInfo,
     MenuTestAll,
     RestartConfirm,
     FactoryResetConfirm,

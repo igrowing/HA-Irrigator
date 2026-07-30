@@ -83,6 +83,7 @@ public:
         uint8_t scheduleIndex;
         uint8_t testAllIndex;
         uint8_t settingsIndex;
+        uint8_t infoIndex;
         uint8_t backIndex;
     };
     static MenuMainLayout menuMainLayout(bool wateringActive);
@@ -93,29 +94,35 @@ public:
     static constexpr uint8_t kTestAllIndexDuration = 1;
     static constexpr uint8_t kTestAllIndexBack = 2;
 
-    // MenuSettings: 16 rows. Only Adjust/UpperLimit/LowerLimit/RainSkipProbability/RainSkipAmount/
-    // Schedule/Restart/BACK are clickable (IP/MQTT/Topic/FW/WiFi/City/Coordinates/LastUpdate are
-    // display-only, per spec) but every row still gets a named index here so the renderer's switch
-    // and this class's click routing share one definition of the layout rather than two
-    // hand-kept-in-sync copies (this is exactly how the WiFi row's insertion previously broke
-    // BACK: the renderer's item count moved to 8 without this class's matching update).
-    static constexpr uint8_t kSettingsItemCount = 16;
+    // MenuSettings: 8 rows, all the settings that can actually change. All rows are clickable
+    // except BACK (see spec-comment on kInfoItemCount below for the read-only counterparts, split
+    // out into their own MenuInfo screen) but every row still gets a named index here so the
+    // renderer's switch and this class's click routing share one definition of the layout rather
+    // than two hand-kept-in-sync copies (this is exactly how the WiFi row's insertion previously
+    // broke BACK: the renderer's item count moved to 8 without this class's matching update).
+    static constexpr uint8_t kSettingsItemCount = 8;
     static constexpr uint8_t kSettingsIndexPercentage = 0;
     static constexpr uint8_t kSettingsIndexUpperLimit = 1;
     static constexpr uint8_t kSettingsIndexLowerLimit = 2;
     static constexpr uint8_t kSettingsIndexRainSkipProbability = 3;
     static constexpr uint8_t kSettingsIndexRainSkipAmount = 4;
     static constexpr uint8_t kSettingsIndexScheduleActive = 5;
-    static constexpr uint8_t kSettingsIndexWifi = 6;
-    static constexpr uint8_t kSettingsIndexIp = 7;
-    static constexpr uint8_t kSettingsIndexMqtt = 8;
-    static constexpr uint8_t kSettingsIndexTopic = 9;
-    static constexpr uint8_t kSettingsIndexCity = 10;
-    static constexpr uint8_t kSettingsIndexCoordinates = 11;
-    static constexpr uint8_t kSettingsIndexLastUpdate = 12;
-    static constexpr uint8_t kSettingsIndexFirmware = 13;
-    static constexpr uint8_t kSettingsIndexRestart = 14;
-    static constexpr uint8_t kSettingsIndexBack = 15;
+    static constexpr uint8_t kSettingsIndexRestart = 6;
+    static constexpr uint8_t kSettingsIndexBack = 7;
+
+    // MenuInfo: 9 rows, the read-only counterparts split out of MenuSettings (WiFi/IP/MQTT/Topic/
+    // City/Coordinates/LastUpdate/FW are all display-only, per spec) plus BACK. None of the
+    // display-only rows are clickable — only BACK is.
+    static constexpr uint8_t kInfoItemCount = 9;
+    static constexpr uint8_t kInfoIndexWifi = 0;
+    static constexpr uint8_t kInfoIndexIp = 1;
+    static constexpr uint8_t kInfoIndexMqtt = 2;
+    static constexpr uint8_t kInfoIndexTopic = 3;
+    static constexpr uint8_t kInfoIndexCity = 4;
+    static constexpr uint8_t kInfoIndexCoordinates = 5;
+    static constexpr uint8_t kInfoIndexLastUpdate = 6;
+    static constexpr uint8_t kInfoIndexFirmware = 7;
+    static constexpr uint8_t kInfoIndexBack = 8;
 
     UiIntent handleInput(UiInputEvent event, const Context& ctx, uint32_t nowMs);
 
@@ -176,6 +183,7 @@ private:
     UiIntent handleMenuSchedule(UiInputEvent event, const Context& ctx);
     UiIntent handleMenuScheduleEdit(UiInputEvent event, uint8_t fieldIndex, uint8_t recordIndex);
     UiIntent handleMenuSettings(UiInputEvent event, const Context& ctx);
+    UiIntent handleMenuInfo(UiInputEvent event);
     UiIntent handleMenuTestAll(UiInputEvent event);
     UiIntent handleRestartConfirm(UiInputEvent event);
     UiIntent handleFactoryResetConfirm(UiInputEvent event);
