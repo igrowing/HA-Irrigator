@@ -67,6 +67,10 @@ public:
     void publishAlert(const String& jsonOrTextPayload);
     void publishSchedule(const String& jsonPayload);
     void publishQueue(const String& jsonPayload);
+    // Publishes to `<prefix>/calibrate` in response to `<prefix>/cmd/calibrate` — one call per
+    // sensor (see main.ino's handleCalibrateCommand), since a combined valve+pump payload with
+    // both sensors' raw burst samples risks the MQTT buffer size.
+    void publishCalibrate(const String& jsonPayload);
     void publishScheduled(bool active);
     void publishAutoAdjustmentEnabled(bool enabled);
     void publishWateringPercentage(int16_t value);

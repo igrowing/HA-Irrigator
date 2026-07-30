@@ -6,29 +6,31 @@ namespace irrigator::drivers {
 
 class CurrentSensor {
 public:
-    // zeroOffsetMv: sensor output (in mV, via analogReadMilliVolts) at 0A — the DC bias most
-    // AC current-sensor breakout boards center their swing on. milliVoltsPerMilliAmp: sensor
-    // sensitivity. Both are hardware-specific and MUST be calibrated against the actual
-    // installed sensor module — the defaults in board_config.h are placeholders, not a
-    // real calibration (see agents.md Step 5: drivers/ needs hardware-in-the-loop verification).
-    CurrentSensor(uint8_t adcPin, uint16_t zeroOffsetMv, float milliVoltsPerMilliAmp)
-        : adcPin_(adcPin), zeroOffsetMv_(zeroOffsetMv), milliVoltsPerMilliAmp_(milliVoltsPerMilliAmp) {}
+    // No zero-offset/slope calibration here — see sampleRmsMv()'s comment for why neither is
+    // needed. Readings are only ever compared against a per-sensor "base" captured under real
+    // load (MQTT cmd/calibrate), never converted to a real mA value.
+    explicit CurrentSensor(uint8_t adcPin) : adcPin_(adcPin) {}
     void begin();
-    uint16_t readMilliAmps() const;
     uint16_t readRawMilliVolts() const;
 
-    // Overrides the constructor's calibration at runtime — used to apply a saved calibration
-    // result from settings.json (see domain::Settings) once it's loaded, or a fresh one pushed
-    // over MQTT (cmd/set_calibration).
-    void setCalibration(uint16_t zeroOffsetMv, float milliVoltsPerMilliAmp) {
-        zeroOffsetMv_ = zeroOffsetMv;
-        milliVoltsPerMilliAmp_ = milliVoltsPerMilliAmp;
-    }
+    // Blocking true-RMS burst: takes durationMs worth of raw ADC samples spaced sampleIntervalMs
+    // apart (1ms/1kHz spans several full 50/60Hz mains cycles) into rawMvOut (must be non-null,
+    // sized for at least durationMs/sampleIntervalMs entries; sampleCountOut reports how many were
+    // actually written). The zero-line is then derived from THIS burst's own (min+max)/2 rather
+    // than a fixed/assumed board constant — a periodic, roughly-symmetric AC waveform's own
+    // min/max midpoint approximates its true DC center, so this self-adjusts for bias drift
+    // between sensor units or with temperature instead of relying on a calibrated offset. Returns
+    // sqrt(mean((raw_mV - center_mV)^2)) — a virtual reference level in raw millivolts, not a real
+    // current value. This blocks for ~durationMs, so it must only be called from a background
+    // task, never from loop() or anything loop() calls.
+    uint16_t sampleRmsMv(uint16_t durationMs,
+                          uint16_t sampleIntervalMs,
+                          uint16_t* rawMvOut,
+                          uint16_t maxRawSamples,
+                          uint16_t& sampleCountOut) const;
 
 private:
     uint8_t adcPin_;
-    uint16_t zeroOffsetMv_;
-    float milliVoltsPerMilliAmp_;
 };
 
 }  // namespace irrigator::drivers

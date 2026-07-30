@@ -481,16 +481,24 @@
               - entity: input_text.irrigator_zone_11_name
               - entity: input_boolean.irrigator_zone_11_enabled
                 name: "Enabled"
+          # Read-only: valve/pump_current_base_level are device-owned (only cmd/calibrate sets
+          # them, via the button below) - see docs/technical.md's "cmd/calibrate" section. The two
+          # attribute rows reflect the last settings.json download; "Last Calibration Response" is
+          # the live cmd/calibrate reply (whichever sensor answered most recently).
           - type: entities
-            title: Valve Current Calibration
+            title: Current-Sensor Calibration
             entities:
-              - entity: input_number.irrigator_valve_zero_offset_mv
-              - entity: input_number.irrigator_valve_mv_per_ma
-          - type: entities
-            title: Pump Current Calibration
-            entities:
-              - entity: input_number.irrigator_pump_zero_offset_mv
-              - entity: input_number.irrigator_pump_mv_per_ma
+              - type: attribute
+                entity: sensor.irrigator_settings
+                attribute: valve_current_base_level
+                name: "Valve Base Level"
+              - type: attribute
+                entity: sensor.irrigator_settings
+                attribute: pump_current_base_level
+                name: "Pump Base Level"
+              - entity: sensor.irrigator_calibration_result
+                name: "Last Calibration Response"
+              - entity: button.irrigator_calibrate
           - type: tile
             entity: sensor.irrigator_address_2
           - type: tile

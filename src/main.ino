@@ -17,7 +17,6 @@
 #include "domain/AutoAdjustment.h"
 #include "domain/CalendarMath.h"
 #include "domain/ConfigStore.h"
-#include "domain/CurrentFaultMonitor.h"
 #include "domain/IrrigationStateMachine.h"
 #include "domain/RainSkip.h"
 #include "domain/Schedule.h"
@@ -53,12 +52,8 @@ AppMode appMode = AppMode::Booting;
 
 irrigator::drivers::FileStore fileStore;
 irrigator::drivers::RelayBank relayBank;
-irrigator::drivers::CurrentSensor valveCurrentSensor(VALVE_CURRENT_ADC_PIN,
-                                                     irrigator::board::VALVE_CURRENT_SENSOR_ZERO_OFFSET_MV,
-                                                     irrigator::board::VALVE_CURRENT_SENSOR_MV_PER_MA);
-irrigator::drivers::CurrentSensor pumpCurrentSensor(PUMP_CURRENT_ADC_PIN,
-                                                    irrigator::board::PUMP_CURRENT_SENSOR_ZERO_OFFSET_MV,
-                                                    irrigator::board::PUMP_CURRENT_SENSOR_MV_PER_MA);
+irrigator::drivers::CurrentSensor valveCurrentSensor(VALVE_CURRENT_ADC_PIN);
+irrigator::drivers::CurrentSensor pumpCurrentSensor(PUMP_CURRENT_ADC_PIN);
 irrigator::drivers::LedIndicator led(STATUS_LED_PIN);
 irrigator::drivers::Clock clockService;
 irrigator::drivers::FactoryResetButton factoryResetButton;
@@ -68,10 +63,6 @@ irrigator::domain::Settings settings;
 irrigator::domain::ScheduleList scheduleList;
 irrigator::domain::WateringQueue<irrigator::board::WATERING_QUEUE_DEPTH> wateringQueue;
 irrigator::domain::RainSkip rainSkip;
-irrigator::domain::CurrentFaultMonitor valveFaultMonitor({irrigator::board::VALVE_CURRENT_MIN_MA,
-                                                          irrigator::board::VALVE_CURRENT_MAX_MA});
-irrigator::domain::CurrentFaultMonitor pumpFaultMonitor({irrigator::board::PUMP_CURRENT_MIN_MA,
-                                                         irrigator::board::PUMP_CURRENT_MAX_MA});
 irrigator::domain::IrrigationStateMachine irrigation;
 irrigator::domain::ScheduleEngine scheduleEngine;
 
@@ -143,12 +134,88 @@ volatile uint16_t noiseFloorSampleCount = 0;
 
 irrigator::domain::IrrigationState previousIrrigationState = irrigator::domain::IrrigationState::Idle;
 
-bool valveWindowOpen = false;
-uint32_t valveWindowCloseAtMs = 0;
-bool valveFaultActive = false;
-bool pumpWindowOpen = false;
-uint32_t pumpWindowCloseAtMs = 0;
-bool pumpFaultActive = false;
+// True-RMS current sampling (see currentSamplingTask/updateCurrentSampling below). currentWindowOpen
+// and currentWindowCloseAtMs are main-loop-only state; currentSamplingWindowActive crosses into
+// currentSamplingTask's own task context — written from one side, read from the other, plain
+// volatile rather than a mutex, same tolerance as noiseFloorAccumulator above: worst case is one
+// stale/extra burst around a window transition, not a correctness bug.
+bool currentWindowOpen = false;
+uint32_t currentWindowCloseAtMs = 0;
+volatile bool currentSamplingWindowActive = false;
+// Zone the valve sensor's reading should be attributed to for the *next* burst — 0 while no zone
+// is open (pump-only run, or the post-valve-close pump-graceful-shutdown tail). Written every
+// loop() tick by updateCurrentSampling(), read once per burst by currentSamplingTask; same
+// single-word volatile tolerance as above.
+volatile uint8_t currentSamplingActiveZone = 0;
+TaskHandle_t currentSamplingTaskHandle = nullptr;
+
+constexpr uint16_t kCurrentBurstMaxSamples =
+    irrigator::board::CURRENT_RMS_BURST_DURATION_MS / irrigator::board::CURRENT_RMS_SAMPLE_INTERVAL_MS;
+
+// One burst's result, handed from currentSamplingTask to loop() via currentBurstResultQueue —
+// same producer/consumer shape as weatherResultQueue/weatherAutoAdjustTask below: the task only
+// computes, loop() is the only place that touches settings/MQTT/persisted state.
+struct CurrentBurstResult {
+    uint16_t valveRmsMv;
+    uint16_t pumpRmsMv;
+    uint8_t activeZone;
+    uint16_t valveRawMv[kCurrentBurstMaxSamples];
+    uint16_t pumpRawMv[kCurrentBurstMaxSamples];
+    uint16_t valveRawCount;
+    uint16_t pumpRawCount;
+};
+QueueHandle_t currentBurstResultQueue = nullptr;
+
+// Per-sensor ring of the most recent CURRENT_RMS_HISTORY_LEN burst RMS readings (~1 minute at the
+// 5s burst cadence) — cmd/calibrate averages whatever's currently in here as the new base. Reset
+// whenever a fresh on-window opens so a previous, unrelated run's readings don't bleed into a
+// calibration a minute later. Main-loop-only state (only ever touched while draining
+// currentBurstResultQueue), no cross-task synchronization needed.
+struct CurrentRmsHistory {
+    uint16_t samples[irrigator::board::CURRENT_RMS_HISTORY_LEN] = {};
+    uint8_t count = 0;
+    uint8_t nextIndex = 0;
+
+    void push(uint16_t value) {
+        samples[nextIndex] = value;
+        nextIndex = (nextIndex + 1) % irrigator::board::CURRENT_RMS_HISTORY_LEN;
+        if (count < irrigator::board::CURRENT_RMS_HISTORY_LEN) {
+            count++;
+        }
+    }
+    uint16_t average() const {
+        if (count == 0) {
+            return 0;
+        }
+        uint32_t sum = 0;
+        for (uint8_t i = 0; i < count; ++i) {
+            sum += samples[i];
+        }
+        return static_cast<uint16_t>(sum / count);
+    }
+    void reset() {
+        count = 0;
+        nextIndex = 0;
+    }
+};
+CurrentRmsHistory valveRmsHistory;
+CurrentRmsHistory pumpRmsHistory;
+
+// Most recent burst's raw per-sample readings, for cmd/calibrate's saturation-check response.
+// Main-loop-only, overwritten every time a burst result is drained.
+uint16_t lastValveBurstRawMv[kCurrentBurstMaxSamples] = {};
+uint16_t lastPumpBurstRawMv[kCurrentBurstMaxSamples] = {};
+uint16_t lastValveBurstRawCount = 0;
+uint16_t lastPumpBurstRawCount = 0;
+
+// Once-a-day dedup for over/undercurrent alerts (see checkCurrentFaults below) — same pattern as
+// lastWeatherFailureAlertDate/lastGeoFailureAlertDate above. Valve dedup is per-zone (the sensor
+// is shared across all 11 zones, but a stuck zone 3 today shouldn't silence a separately failing
+// zone 5 later the same day); the pump has no zone dimension, and no undercurrent check at all
+// (a lightly-loaded pump isn't the kind of fault a stuck/dry valve or jammed pump is).
+char lastValveOvercurrentAlertDate[irrigator::board::ZONE_COUNT][11] = {};
+char lastValveUndercurrentAlertDate[irrigator::board::ZONE_COUNT][11] = {};
+char lastPumpOvercurrentAlertDate[11] = {};
 
 String makeDevicePrefix() {
     uint8_t mac[6] = {0};
@@ -353,21 +420,10 @@ String buildStatusJson(uint32_t nowMs) {
         doc["last_weather_update"] = lastWeatherIso;
     }
 
-    JsonObject outputs = doc["outputs"].to<JsonObject>();
-    if (relayBank.isPumpOn()) {
-        JsonObject pumpObj = outputs["pump"].to<JsonObject>();
-        pumpObj["on"] = true;
-        pumpObj["current_ma"] = pumpCurrentSensor.readMilliAmps();
-    }
-    for (uint8_t zone = 1; zone <= irrigator::board::ZONE_COUNT; ++zone) {
-        if (relayBank.isZoneOn(zone)) {
-            char key[8];
-            snprintf(key, sizeof(key), "zone%u", static_cast<unsigned>(zone));
-            JsonObject zoneObj = outputs[key].to<JsonObject>();
-            zoneObj["on"] = true;
-            zoneObj["current_ma"] = valveCurrentSensor.readMilliAmps();
-        }
-    }
+    // outputs (which zone/pump is on, and its current) deliberately omitted — that duplicates
+    // /state (fired on every start/stop and on cmd/state) and current readings no longer have a
+    // meaningful absolute unit to report outside of cmd/calibrate's response; see
+    // docs/technical.md's True-RMS current sampling section.
 
     String payload;
     serializeJson(doc, payload);
@@ -465,11 +521,6 @@ bool persistSettings() {
             R"({"error":"settings write to flash failed; change will not survive a reboot"})");
     }
     return ok;
-}
-
-void applyCurrentCalibration() {
-    valveCurrentSensor.setCalibration(settings.valveCurrentZeroOffsetMv, settings.valveCurrentMvPerMa);
-    pumpCurrentSensor.setCalibration(settings.pumpCurrentZeroOffsetMv, settings.pumpCurrentMvPerMa);
 }
 
 // schedule_active change tracer. The flag has been flipping to false across reboots for reasons
@@ -643,6 +694,12 @@ void handleMqttUpload(const String& filename, const uint8_t* payload, size_t len
         merged.latitude = settings.latitude;
         merged.longitude = settings.longitude;
         snprintf(merged.city, sizeof(merged.city), "%s", settings.city);
+        // valve/pump_current_base_level are likewise device-owned: only cmd/calibrate ever sets
+        // them (see handleMqttCommand's "calibrate" branch / handleCalibrateCommand). mergeSettings()
+        // doesn't read them from the upload either, so this is belt-and-suspenders, same as the
+        // location fields above.
+        merged.valveCurrentBaseLevel = settings.valveCurrentBaseLevel;
+        merged.pumpCurrentBaseLevel = settings.pumpCurrentBaseLevel;
         settings = merged;
         // Persist the MERGED result (serialized from `settings`), NOT the raw uploaded bytes — those
         // may omit fields entirely (partial upload) or still contain the ignored schedule_active/
@@ -652,7 +709,6 @@ void handleMqttUpload(const String& filename, const uint8_t* payload, size_t len
             reportMqttError("upload", filename, "failed to write");
             return;
         }
-        applyCurrentCalibration();
         reportMqttFieldsRejected(filename, rejectedFields);
         return;
     }
@@ -1018,6 +1074,77 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
     }
 }
 
+// Captures one sensor's base_level from its calibration history (see CurrentRmsHistory above) and,
+// if accepted, publishes the cmd/calibrate response and sets `updated` for the caller to persist.
+// Rejects (leaving `baseLevel` untouched) an empty history or a too-low average — either way it
+// reports why via /alert rather than silently saving a bad calibration (agents.md's fail-loud
+// rule): a near-zero reading usually means the output wasn't actually drawing current (wiring
+// fault, relay not energizing), not a genuinely low-draw device.
+void calibrateOneSensor(const char* sensorName,
+                        CurrentRmsHistory& history,
+                        const uint16_t* rawMv,
+                        uint16_t rawCount,
+                        uint16_t& baseLevel,
+                        bool& updated) {
+    if (history.count == 0) {
+        char alertMsg[144];
+        snprintf(alertMsg, sizeof(alertMsg),
+                R"({"command":"calibrate","sensor":"%s","error":"no samples collected yet, try again in a few seconds"})",
+                sensorName);
+        mqtt.publishAlert(alertMsg);
+        return;
+    }
+
+    const uint16_t avg = history.average();
+    if (avg < irrigator::board::CURRENT_CALIBRATION_MIN_BASE_LEVEL) {
+        char alertMsg[192];
+        snprintf(alertMsg, sizeof(alertMsg),
+                R"({"command":"calibrate","sensor":"%s","error":"reading too low (%u); check wiring or that the relay is actually energizing"})",
+                sensorName, static_cast<unsigned>(avg));
+        mqtt.publishAlert(alertMsg);
+        return;
+    }
+
+    baseLevel = avg;
+    updated = true;
+
+    JsonDocument doc;
+    doc["sensor"] = sensorName;
+    doc["base_level"] = avg;
+    doc["sample_count"] = history.count;
+    JsonArray samples = doc["burst_samples_mv"].to<JsonArray>();
+    for (uint16_t i = 0; i < rawCount; ++i) {
+        samples.add(rawMv[i]);
+    }
+    String payload;
+    serializeJson(doc, payload);
+    mqtt.publishCalibrate(payload);
+}
+
+// MQTT cmd/calibrate: captures each sensor's base as the average of its last
+// CURRENT_RMS_HISTORY_LEN burst readings, saved to settings (see Settings.h's doc on why these
+// two fields are device-owned). Requires an actual watering run — not just the pump alone — so
+// the captured base reflects real load rather than a dry/idle reading; a pump-only run still
+// energizes the pump but proves nothing about typical loaded current.
+void handleCalibrateCommand(uint32_t nowMs) {
+    const auto snapshot = irrigation.snapshot(nowMs);
+    if (snapshot.state != irrigator::domain::IrrigationState::Watering) {
+        reportMqttError("command", "calibrate",
+                        "Make sure the valve is open - better if the pump is running too.");
+        return;
+    }
+
+    bool updated = false;
+    calibrateOneSensor("valve", valveRmsHistory, lastValveBurstRawMv, lastValveBurstRawCount,
+                       settings.valveCurrentBaseLevel, updated);
+    calibrateOneSensor("pump", pumpRmsHistory, lastPumpBurstRawMv, lastPumpBurstRawCount,
+                       settings.pumpCurrentBaseLevel, updated);
+
+    if (updated) {
+        persistSettings();
+    }
+}
+
 void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t length, uint32_t nowMs) {
     const String body(reinterpret_cast<const char*>(payload), length);
 
@@ -1207,24 +1334,8 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
         return;
     }
 
-    if (commandName == "set_calibration") {
-        JsonDocument doc;
-        if (deserializeJson(doc, body)) {
-            reportMqttError("command", commandName, "invalid JSON payload");
-            return;
-        }
-        irrigator::domain::Settings updated = settings;
-        updated.valveCurrentZeroOffsetMv = doc["valve_zero_mv"] | settings.valveCurrentZeroOffsetMv;
-        updated.valveCurrentMvPerMa = doc["valve_mv_per_ma"] | settings.valveCurrentMvPerMa;
-        updated.pumpCurrentZeroOffsetMv = doc["pump_zero_mv"] | settings.pumpCurrentZeroOffsetMv;
-        updated.pumpCurrentMvPerMa = doc["pump_mv_per_ma"] | settings.pumpCurrentMvPerMa;
-        if (!irrigator::domain::validateSettings(updated)) {
-            reportMqttError("command", commandName, "calibration value out of range");
-            return;
-        }
-        settings = updated;
-        persistSettings();
-        applyCurrentCalibration();
+    if (commandName == "calibrate") {
+        handleCalibrateCommand(nowMs);
         return;
     }
 
@@ -1299,7 +1410,6 @@ void enterOperationalMode() {
     appMode = AppMode::Operational;
 
     loadOrCreateSettings();
-    applyCurrentCalibration();
     loadSchedule();
     connectWifiOnce();
 
@@ -1718,60 +1828,169 @@ void runScheduleEngine(uint32_t nowMs) {
     }
 }
 
-// Measurement windows per spec: sampling for a given output starts the moment it's commanded on
-// and keeps running until board::CURRENT_MEASURE_POST_OFF_MS after it turns off. Fault alerting
-// (via CurrentFaultMonitor's begin/endActiveCycle bracket) tracks the same window, which is also
-// what gives the "only once per cycle, until the alert clears" de-duplication for free.
-void updateCurrentMonitoring(uint32_t nowMs) {
-    const auto snapshot = irrigation.snapshot(nowMs);
-    const bool valveOn = snapshot.state == irrigator::domain::IrrigationState::Watering;
-    const bool pumpOn = snapshot.pumpOn;
-
-    if (valveOn) {
-        if (!valveWindowOpen) {
-            valveWindowOpen = true;
-            valveFaultMonitor.beginActiveCycle();
+// Runs for the lifetime of the device (created once in setup(), never deleted). Blocks on its own
+// notification while idle so it costs nothing between waterings (event-driven per agents.md,
+// rather than a busy poll) — updateCurrentSampling() below wakes it exactly once per window-open
+// transition. Once active it bursts both sensors back-to-back (~200ms of the ~5s period) and
+// sleeps the remainder, re-checking currentSamplingWindowActive each cycle so it winds back down
+// to blocking-on-notify as soon as the window (including its CURRENT_MEASURE_POST_OFF_MS tail)
+// closes. Both burst calls block for real, which is exactly why this work lives in its own task
+// instead of loop() or a Ticker callback (see agents.md's no-blocking-in-loop /
+// Ticker-callback-discipline rules) — loop() only ever drains currentBurstResultQueue below;
+// settings/MQTT/persisted state are never touched from here.
+void currentSamplingTask(void*) {
+    CurrentBurstResult result;
+    for (;;) {
+        if (!currentSamplingWindowActive) {
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            continue;
         }
-        valveWindowCloseAtMs = nowMs + irrigator::board::CURRENT_MEASURE_POST_OFF_MS;
-
-        const uint16_t currentMa = valveCurrentSensor.readMilliAmps();
-        if (valveFaultMonitor.checkAndConsumeAlert(currentMa)) {
-            valveFaultActive = true;
-            char alertMsg[80];
-            snprintf(alertMsg,
-                    sizeof(alertMsg),
-                    R"({"valve":%u,"current":%u,"units":"mA"})",
-                    static_cast<unsigned>(snapshot.activeZone),
-                    static_cast<unsigned>(currentMa));
-            mqtt.publishAlert(alertMsg);
+        const uint32_t burstStartMs = millis();
+        result.activeZone = currentSamplingActiveZone;
+        result.valveRmsMv = valveCurrentSensor.sampleRmsMv(irrigator::board::CURRENT_RMS_BURST_DURATION_MS,
+                                                            irrigator::board::CURRENT_RMS_SAMPLE_INTERVAL_MS,
+                                                            result.valveRawMv,
+                                                            kCurrentBurstMaxSamples,
+                                                            result.valveRawCount);
+        result.pumpRmsMv = pumpCurrentSensor.sampleRmsMv(irrigator::board::CURRENT_RMS_BURST_DURATION_MS,
+                                                          irrigator::board::CURRENT_RMS_SAMPLE_INTERVAL_MS,
+                                                          result.pumpRawMv,
+                                                          kCurrentBurstMaxSamples,
+                                                          result.pumpRawCount);
+        if (currentBurstResultQueue != nullptr) {
+            // Non-blocking; if loop() hasn't drained the previous burst yet (queue depth > 1
+            // covers normal jitter), drop rather than stall the sampling cadence on a slow loop().
+            xQueueSend(currentBurstResultQueue, &result, 0);
         }
-    } else if (valveWindowOpen && nowMs >= valveWindowCloseAtMs) {
-        valveWindowOpen = false;
-        valveFaultActive = false;
-        valveFaultMonitor.endActiveCycle();
+
+        const uint32_t elapsedMs = millis() - burstStartMs;
+        const uint32_t remainingMs = elapsedMs >= irrigator::board::CURRENT_RMS_BURST_PERIOD_MS
+                                          ? 0
+                                          : irrigator::board::CURRENT_RMS_BURST_PERIOD_MS - elapsedMs;
+        vTaskDelay(pdMS_TO_TICKS(remainingMs));
     }
+}
 
-    if (pumpOn) {
-        if (!pumpWindowOpen) {
-            pumpWindowOpen = true;
-            pumpFaultMonitor.beginActiveCycle();
-        }
-        pumpWindowCloseAtMs = nowMs + irrigator::board::CURRENT_MEASURE_POST_OFF_MS;
+// Combined valve-or-pump on-window (same CURRENT_MEASURE_POST_OFF_MS tail the old per-output
+// fault-monitor windows used) driving currentSamplingTask's burst cadence for the duration of a
+// run. currentSamplingActiveZone tracks which zone (0 = none — pump-only, or the
+// pump-graceful-shutdown tail after the valve's already closed) the *next* burst's valve reading
+// should be attributed to; see drainCurrentBurstResults() below for how that's used.
+void updateCurrentSampling(uint32_t nowMs) {
+    const auto snapshot = irrigation.snapshot(nowMs);
+    const bool active = snapshot.state == irrigator::domain::IrrigationState::Watering || snapshot.pumpOn;
+    currentSamplingActiveZone =
+        snapshot.state == irrigator::domain::IrrigationState::Watering ? snapshot.activeZone : 0;
 
-        const uint16_t currentMa = pumpCurrentSensor.readMilliAmps();
-        if (pumpFaultMonitor.checkAndConsumeAlert(currentMa)) {
-            pumpFaultActive = true;
-            char alertMsg[64];
-            snprintf(alertMsg,
-                    sizeof(alertMsg),
-                    R"({"pump":0,"current":%u,"units":"mA"})",
-                    static_cast<unsigned>(currentMa));
-            mqtt.publishAlert(alertMsg);
+    if (active) {
+        if (!currentWindowOpen) {
+            currentWindowOpen = true;
+            currentSamplingWindowActive = true;
+            // Fresh window, fresh calibration history — don't let a previous, unrelated run's
+            // readings bleed into this one (see CurrentRmsHistory's comment above).
+            valveRmsHistory.reset();
+            pumpRmsHistory.reset();
+            if (currentSamplingTaskHandle != nullptr) {
+                xTaskNotifyGive(currentSamplingTaskHandle);
+            }
         }
-    } else if (pumpWindowOpen && nowMs >= pumpWindowCloseAtMs) {
-        pumpWindowOpen = false;
-        pumpFaultActive = false;
-        pumpFaultMonitor.endActiveCycle();
+        currentWindowCloseAtMs = nowMs + irrigator::board::CURRENT_MEASURE_POST_OFF_MS;
+    } else if (currentWindowOpen && nowMs >= currentWindowCloseAtMs) {
+        currentWindowOpen = false;
+        currentSamplingWindowActive = false;
+    }
+}
+
+// Sets `lastAlertDate` to `today` and returns true, but only the first time on a given calendar
+// day — a repeat call on the same day returns false without touching `lastAlertDate` again. Same
+// once-a-day-per-fault idiom as lastWeatherFailureAlertDate/lastGeoFailureAlertDate above.
+bool consumeDailyAlertGate(char* lastAlertDate, size_t lastAlertDateSize, const char* today) {
+    if (strcmp(lastAlertDate, today) == 0) {
+        return false;
+    }
+    snprintf(lastAlertDate, lastAlertDateSize, "%s", today);
+    return true;
+}
+
+// Drains currentBurstResultQueue — loop()-context only, the sole place settings/MQTT/persisted
+// state get touched (see currentSamplingTask's comment above for why). Per burst: folds the
+// reading into its sensor's calibration history (CurrentRmsHistory, for cmd/calibrate's average),
+// keeps the raw samples around for cmd/calibrate's saturation check, and — while a base is
+// calibrated (0 = not yet, skip) — checks the reading against base*CURRENT_OVERCURRENT_MULTIPLIER
+// (both sensors) and base*CURRENT_VALVE_UNDERCURRENT_MULTIPLIER (valve only), each gated to one
+// /alert per calendar day (consumeDailyAlertGate). Valve dedup is per-zone — the sensor is shared
+// across all 11 zones, but which zone is responsible for any given burst is always known (only one
+// zone is ever open at a time), so a stuck zone 3 today doesn't silence a separately failing zone 5
+// later the same day.
+void drainCurrentBurstResults() {
+    if (currentBurstResultQueue == nullptr) {
+        return;
+    }
+    CurrentBurstResult result;
+    while (xQueueReceive(currentBurstResultQueue, &result, 0) == pdTRUE) {
+        pumpRmsHistory.push(result.pumpRmsMv);
+        lastPumpBurstRawCount = result.pumpRawCount;
+        memcpy(lastPumpBurstRawMv, result.pumpRawMv, result.pumpRawCount * sizeof(uint16_t));
+
+        // Only a real zone's reading belongs in the valve's calibration history — excludes the
+        // pump-graceful-shutdown tail (valve already closed, activeZone back to 0), so it can't
+        // drag a fresh calibration average toward zero right as the window is ending.
+        if (result.activeZone != 0) {
+            valveRmsHistory.push(result.valveRmsMv);
+        }
+        lastValveBurstRawCount = result.valveRawCount;
+        memcpy(lastValveBurstRawMv, result.valveRawMv, result.valveRawCount * sizeof(uint16_t));
+
+        struct tm timeinfo;
+        if (!clockService.now(timeinfo)) {
+            continue;  // Can't safely dedup an alert without a valid calendar date.
+        }
+        char today[11];
+        snprintf(today, sizeof(today), "%04d-%02d-%02d",
+                timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
+
+        if (result.activeZone != 0 && settings.valveCurrentBaseLevel != 0) {
+            const uint8_t zoneIndex = result.activeZone - 1;
+            const uint16_t overThreshold = static_cast<uint16_t>(
+                settings.valveCurrentBaseLevel * irrigator::board::CURRENT_OVERCURRENT_MULTIPLIER);
+            const uint16_t underThreshold = static_cast<uint16_t>(
+                settings.valveCurrentBaseLevel * irrigator::board::CURRENT_VALVE_UNDERCURRENT_MULTIPLIER);
+            if (result.valveRmsMv > overThreshold &&
+                consumeDailyAlertGate(lastValveOvercurrentAlertDate[zoneIndex],
+                                      sizeof(lastValveOvercurrentAlertDate[zoneIndex]), today)) {
+                char alertMsg[128];
+                snprintf(alertMsg, sizeof(alertMsg),
+                        R"({"valve":%u,"fault":"overcurrent","level":%u,"base":%u})",
+                        static_cast<unsigned>(result.activeZone),
+                        static_cast<unsigned>(result.valveRmsMv),
+                        static_cast<unsigned>(settings.valveCurrentBaseLevel));
+                mqtt.publishAlert(alertMsg);
+            } else if (result.valveRmsMv < underThreshold &&
+                       consumeDailyAlertGate(lastValveUndercurrentAlertDate[zoneIndex],
+                                             sizeof(lastValveUndercurrentAlertDate[zoneIndex]), today)) {
+                char alertMsg[128];
+                snprintf(alertMsg, sizeof(alertMsg),
+                        R"({"valve":%u,"fault":"undercurrent","level":%u,"base":%u})",
+                        static_cast<unsigned>(result.activeZone),
+                        static_cast<unsigned>(result.valveRmsMv),
+                        static_cast<unsigned>(settings.valveCurrentBaseLevel));
+                mqtt.publishAlert(alertMsg);
+            }
+        }
+
+        if (settings.pumpCurrentBaseLevel != 0) {
+            const uint16_t overThreshold = static_cast<uint16_t>(
+                settings.pumpCurrentBaseLevel * irrigator::board::CURRENT_OVERCURRENT_MULTIPLIER);
+            if (result.pumpRmsMv > overThreshold &&
+                consumeDailyAlertGate(lastPumpOvercurrentAlertDate, sizeof(lastPumpOvercurrentAlertDate), today)) {
+                char alertMsg[112];
+                snprintf(alertMsg, sizeof(alertMsg),
+                        R"({"pump":0,"fault":"overcurrent","level":%u,"base":%u})",
+                        static_cast<unsigned>(result.pumpRmsMv),
+                        static_cast<unsigned>(settings.pumpCurrentBaseLevel));
+                mqtt.publishAlert(alertMsg);
+            }
+        }
     }
 }
 
@@ -1785,9 +2004,9 @@ void updateOutputsFromDomain() {
         relayBank.setZone(zone, zoneOn);
     }
 
-    if (valveFaultActive || pumpFaultActive) {
-        led.setMode(irrigator::drivers::LedMode::Alert);
-    } else if (snapshot.state == irrigator::domain::IrrigationState::Watering) {
+    // Current-fault alerting (drainCurrentBurstResults) is MQTT-only for now — not wired to the
+    // LED yet.
+    if (snapshot.state == irrigator::domain::IrrigationState::Watering) {
         led.setMode(irrigator::drivers::LedMode::Breathe);
     } else if (snapshot.pumpOn) {
         led.setMode(irrigator::drivers::LedMode::SolidOn);
@@ -1814,6 +2033,21 @@ void setup() {
     relayBank.begin();
     valveCurrentSensor.begin();
     pumpCurrentSensor.begin();
+    // Depth 3 comfortably covers normal loop() jitter between drains; currentSamplingTask drops a
+    // burst outright (see its comment) rather than blocking if this ever fills up.
+    currentBurstResultQueue = xQueueCreate(3, sizeof(CurrentBurstResult));
+    if (currentBurstResultQueue == nullptr) {
+        irrigator::drivers::Log.error("Failed to create current-RMS burst result queue");
+    }
+    // Idle (blocked on its own notification) until the first valve/pump run wakes it — see
+    // currentSamplingTask's comment above. Created unconditionally, before the captive-portal
+    // early-return below, since it costs nothing while idle either way.
+    const BaseType_t currentSamplingTaskCreated = xTaskCreate(
+        currentSamplingTask, "currentRms", 4096, nullptr, tskIDLE_PRIORITY + 1, &currentSamplingTaskHandle);
+    if (currentSamplingTaskCreated != pdPASS) {
+        irrigator::drivers::Log.error("Failed to start current-RMS sampling task");
+        currentSamplingTaskHandle = nullptr;
+    }
     led.begin();
     ui.begin();
     factoryResetButton.begin();
@@ -1882,7 +2116,8 @@ void loop() {
                 // case above if nothing was queued in time.
                 pumpQueue(nowMs);
             }
-            // updateCurrentMonitoring(nowMs);  // Disabled for now, until measurement circuit is tested in HW and calibrated..
+            updateCurrentSampling(nowMs);
+            drainCurrentBurstResults();
             updateOutputsFromDomain();
             sampleWifiRssiIfDue(nowMs);
             sampleNoiseFloorIfDue(nowMs);

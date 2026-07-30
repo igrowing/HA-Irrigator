@@ -17,17 +17,15 @@ firmware architecture, and how to build, flash, and test it. For end-user setup 
 | Factory-reset (BOOT) button | GPIO 0                | Board's built-in BOOT button, repurposed — hold 10s to wipe config (see `FactoryResetButton`) |
 | DS3231 RTC                | I2C, addr 0x68          |                                                      |
 | SSD1309 OLED (128x64)     | I2C, addr 0x3C          |                                                      |
-| 24VAC current sense       | GPIO 32 (ADC)           | Valve current, expected range 20–800mA               |
-| 230VAC current sense      | GPIO 33 (ADC)           | Pump current, expected range 200–1800mA              |
+| 24VAC current sense       | GPIO 32 (ADC)           | Valve current — no fixed mA range; see **True-RMS current sampling** under **MQTT**, below |
+| 230VAC current sense      | GPIO 33 (ADC)           | Pump current — no fixed mA range; see **True-RMS current sampling** under **MQTT**, below |
 
 All of the above lives exclusively in `include/board_config.h` — it's the **only** file in the
 project allowed to hardcode a GPIO number, I2C address, or similar board-specific constant. If
 this firmware is ever ported to a different board revision, that file (and only that file) should
 need to change. It also holds the operating constants worth knowing about: current-fault
-thresholds, JSON file size caps, schedule/duration limits, and the current-sensor calibration
-placeholders (`*_ZERO_OFFSET_MV` / `*_MV_PER_MA`) — those two are **not real calibration values**,
-just defaults; see **Current-sensor calibration** under **MQTT**, below, for calibrating them
-against your actual installed sensor hardware.
+thresholds (as multipliers of a calibrated base, not fixed mA — see **True-RMS current sampling**
+below), JSON file size caps, and schedule/duration limits.
 
 ## Firmware architecture
 
@@ -130,11 +128,11 @@ device's actual prefix in every example below.
 | `/cmd/watering_percentage` | integer | `/watering_percentage` | integer | Sets the schedule-wide watering multiplier (0–300%), persisted to `settings.json`. |
 | `/cmd/skip_rain_until` | `"2026-07-12T06:00:00"` |  `/skip_rain_until` | `"2026-07-12T06:00:00"` | Suppresses **scheduled** runs until this UTC timestamp (manual/MQTT runs are never affected — this only gates the schedule engine). |
 |  |  | `/online` |  boolean (LWT on ungraceful disconnect, or explicitly before a deliberate restart). | **Retained message**. Matches Home Assistant's default MQTT `availability_topic` convention. |
-| `/cmd/status` | "" | `/status`  | JSON: `datetime`, `firmware_version`, `boot_reason`, `ip`, `uptime_s`, `rssi_db`, `wifi_quality` (verbal, `miserable`/`poor`/`fair`/`good`/`excellent`), `free_heap_bytes`, `free_storage_bytes`, `cpu_temp_c`, `outputs` (only lists zones/pump that are currently on, each with `current_ma`). | ~15s after boot and on request.  |
+| `/cmd/status` | "" | `/status`  | JSON: `datetime`, `firmware_version`, `boot_reason`, `ip`, `uptime_s`, `rssi_db`, `wifi_quality` (verbal, `miserable`/`poor`/`fair`/`good`/`excellent`), `free_heap_bytes`, `free_storage_bytes`, `cpu_temp_c`. No `outputs`/current section — which zone/pump is on is `/state`'s job (fired on every start/stop, and on `cmd/state`), and current readings only have a meaningful number outside `cmd/calibrate`'s response as a comparison against a calibrated base; see **True-RMS current sampling** below. | ~15s after boot and on request.  |
 |  |  | `/alert` | see **Error reporting** below | Fire-and-forget notices: current out of expected range, watering queue full, OTA result, and any command/topic error. Not retained, not queued for delivery guarantees. Every alert carries a `datetime` field — JSON alerts get it spliced in alongside their other keys, plain-text alerts are wrapped as `{"datetime":"...","message":"..."}`. |
 | `/cmd/restart` | "" |  |  | **No special response** Publishes `false` to `online`, then restarts. |
 | `/cmd/ota` | FW `.bin` URL | `/ota_started` then `/ota_completed` | `"true"`, then `"2026-07-12T06:00:00"` |  `/ota_started` fires the instant the command is accepted (before the HTTP GET), separately from success/failure - `cmd/#` is only delivered at QoS 0, so a caller can't tell "broker accepted my publish" from "device actually received it" without a distinct receipt signal (see [ota.md](ota.md)'s retry logic, built on exactly this). Downloads and flashes the URL, restarts on success. Blocking by design — see [agents.md](../agents.md) for why. See [ota.md](ota.md) for the higher-level tooling built on top of this. |
-| `/cmd/set_calibration` | `{"valve_zero_mv":1650,`<br>`"valve_mv_per_ma":1.0,`<br>`"pump_zero_mv":1650,`<br>`"pump_mv_per_ma":1.0}` |   |  | **No special response** Any subset of the four fields; updates the live current-sensor calibration and persists it to `settings.json`. See **Current-sensor calibration** below — the factory defaults are *not* real calibration values. |
+| `/cmd/calibrate` | "" | `/calibrate` (one message per sensor) | JSON: `sensor` (`"valve"`/`"pump"`), `base_level`, `sample_count`, `burst_samples_mv` (the most recent burst's raw ADC readings, for spotting saturation). | Requires an active watering run (valve open — see **True-RMS current sampling** below); rejected with `/alert` otherwise. |
 | `/cmd/download/<filename>` | "" | `/download/<filename>` | String | Reads that file from flash and publishes it. |
 | `/cmd/upload/<filename>` | new file content |  |  | Writes that file to flash. |
 | `/cmd/delete/<filename>` | `true` |  |  | **No special response, alert either way.** Deletes that file (and its `.bak`, if any) from flash. Payload must be the literal string `true` — anything else is rejected outright as a missing confirmation, not treated as a no-op. See **JSON file formats** below for why you'd want this. |
@@ -149,7 +147,8 @@ silently dropped or coerced. A malformed payload, an out-of-range value, an unre
 
 ```json
 {"command":"run","error":"duration out of range (1-120)"}
-{"command":"set_calibration","error":"calibration value out of range"}
+{"command":"calibrate","error":"Make sure the valve is open - better if the pump is running too."}
+{"command":"calibrate","sensor":"valve","error":"reading too low (12); check wiring or that the relay is actually energizing"}
 {"command":"nonexistent_command","error":"unknown command"}
 {"download":"missing.json","error":"not found"}
 {"download":"settings.json","error":"failed to read"}
@@ -232,10 +231,8 @@ again since there's no Wi-Fi config left to load.
   "watering_percentage": 100,
   "schedule_active": false,
   "default_manual_duration": 5,
-  "valve_current_zero_offset_mv": 1650,
-  "valve_current_mv_per_ma": 1,
-  "pump_current_zero_offset_mv": 1650,
-  "pump_current_mv_per_ma": 1,
+  "valve_current_base_level": 0,
+  "pump_current_base_level": 0,
   "auto_adjustment_enabled": true,
   "location_known": false,
   "latitude": 0,
@@ -289,51 +286,117 @@ again since there's no Wi-Fi config left to load.
 }
 ```
 
-### Current-sensor calibration
+### True-RMS current sampling
 
-`readMilliAmps()` on both current sensors is a linear `(mV_read - zero_offset_mv) / mv_per_mA`
-conversion (see `src/drivers/CurrentSensor.cpp`). The zero-offset and sensitivity are
-**placeholders** in firmware (`board_config.h`) until you calibrate against your actual installed
-sensor hardware:
+A raw AC current-sensor signal read once is close to meaningless without either analog
+rectification/smoothing on the sensor board itself or proper RMS math in firmware — a lone ADC
+sample just catches a random point on the 50/60Hz waveform. There is also no mA conversion
+anywhere in this design — readings are never turned into a real current value, only compared
+against a per-sensor reference level captured under real load (`cmd/calibrate`, below). A
+dedicated background FreeRTOS task (`currentSamplingTask` in `src/main.ino`) does the sampling:
 
-1. With the corresponding output (valve or pump) fully off, note the raw millivolt reading — read
-   it via `readRawMilliVolts()` (exposed over `/status`'s current sensor data while a zone/pump is
-   on, or add a temporary log line) — that's your `zero_mv`.
-2. Turn the output on with a known load and note the millivolt delta per known milliamp — that's
-   `mv_per_ma`.
-3. Push the result via `/cmd/set_calibration`, e.g.:
-   ```
-   mosquitto_pub -t irrigatorF4/cmd/set_calibration -m '{"valve_zero_mv":1650,"valve_mv_per_ma":2.2,"pump_zero_mv":1650,"pump_mv_per_ma":1.65}'
-   ```
-   It's saved to `settings.json` and survives reboots (re-applied on every boot before anything
-   reads current), and you can send any subset of the four fields — omitted ones keep their
-   current value.
+1. **Burst**: `CurrentSensor::sampleRmsMv()` (`src/drivers/CurrentSensor.cpp`) takes
+   `CURRENT_RMS_BURST_DURATION_MS` (100ms) worth of raw ADC samples spaced
+   `CURRENT_RMS_SAMPLE_INTERVAL_MS` (1ms, ~1kHz) apart — several full mains cycles. The zero-line
+   isn't a fixed board constant: it's `(min+max)/2` of *that same burst's* own samples — for a
+   periodic, roughly-symmetric AC waveform this midpoint approximates the true DC center, so it
+   self-adjusts for bias drift between sensor units or with temperature instead of relying on a
+   calibrated offset. The burst's result is `sqrt(mean((raw_mV - center_mV)^2))` — a virtual
+   reference level in raw millivolts, not amps. Per-sample deviations are *not* clamped to zero — a
+   bipolar AC signal needs both polarities to square into a valid RMS.
+2. **Cadence**: one burst per sensor every `CURRENT_RMS_BURST_PERIOD_MS` (5s), for as long as a
+   valve or pump is on, plus a `CURRENT_MEASURE_POST_OFF_MS` (10s) tail after it turns off — not
+   just while nominally "on" — which also catches a valve that fails to fully close.
+3. **Handoff**: each burst (RMS values for both sensors, the zone the valve reading should be
+   attributed to, and both sensors' raw samples) is pushed onto `currentBurstResultQueue` for
+   `loop()` to drain (`drainCurrentBurstResults()`) — same producer/consumer split as
+   `weatherAutoAdjustTask`/`weatherResultQueue`. Settings, MQTT, and persisted state are only ever
+   touched from that drain, never from the task itself.
+
+The task is idle — blocked on a FreeRTOS task notification, not polling — whenever nothing is
+running, and is woken exactly once per on-window transition. It has to live in its own task rather
+than `loop()` or a `Ticker` callback specifically because both burst calls block for real (~100ms
+each): [agents.md](../agents.md)'s Ticker-callback-discipline and no-blocking-in-loop rules both
+rule that out anywhere but a dedicated task.
+
+`/status` doesn't report current at all — see its row in **Command/response** above. The only way
+to see a reading is `cmd/calibrate`, next.
+
+### cmd/calibrate
+
+`/cmd/calibrate` captures each sensor's **base** — the reference level everything else in this
+section compares against — as the average of its last `CURRENT_RMS_HISTORY_LEN` (12) bursts, a
+trailing ~1 minute at the 5s burst cadence (`CurrentRmsHistory` in `main.ino`, fed by
+`drainCurrentBurstResults()`). It requires an actual watering run — `IrrigationState::Watering`,
+not just the pump alone — so the captured base reflects a real loaded valve+pump, not a dry/idle
+pump-only reading; otherwise it's rejected with `/alert`:
+```json
+{"command":"calibrate","error":"Make sure the valve is open - better if the pump is running too."}
+```
+
+Per sensor, the captured average is also rejected (nothing is saved) if:
+- **No bursts yet** — the run just started and the history is still empty.
+- **Reading below `CURRENT_CALIBRATION_MIN_BASE_LEVEL`** (30, placeholder — needs tuning against
+  real hardware, see `board_config.h`) — a real valve/pump under load should read well above ADC
+  noise, so a near-zero average usually means the output wasn't actually drawing current (wiring
+  fault, relay not energizing), not a genuinely low-draw device. Silently accepting it would mean
+  every future burst reads as "over 1.3x this near-zero base" — this is agents.md's fail-loud rule,
+  not a guess dressed up as a calibration.
+
+Either rejection publishes `/alert` with the reason instead of saving:
+```json
+{"command":"calibrate","sensor":"valve","error":"reading too low (12); check wiring or that the relay is actually energizing"}
+```
+
+On success, the base is saved to `settings.json` (`valve_current_base_level`/
+`pump_current_base_level` — device-owned, like `location_known`/`latitude`/`longitude`/`city`: only
+`cmd/calibrate` ever writes them, never an uploaded `settings.json`, so HA's full-settings-replace
+flow can't clobber a calibration) and a response is published **per sensor** (two separate
+messages, not one combined payload — keeps each comfortably under the MQTT buffer size, since the
+raw-samples array alone can be ~100 entries):
+```
+mosquitto_pub -t irrigatorF4/cmd/calibrate -m ""
+```
+```json
+{"sensor":"valve","base_level":734,"sample_count":12,"burst_samples_mv":[1652,1889,2041,...]}
+{"sensor":"pump","base_level":612,"sample_count":12,"burst_samples_mv":[1648,1701,1810,...]}
+```
+`burst_samples_mv` is the most recent burst's raw ADC readings (not deviations) — inspect it to
+tell a genuinely low reading apart from one where the signal is clipping against the ADC's rail
+(saturation), which `base_level` alone can't distinguish.
+
+Re-running `cmd/calibrate` overwrites the previous base — there's no separate "reset calibration"
+command; recapture is how you update it. The valve sensor is shared across all 11 zones (one
+physical sensor), but because only one zone is ever open at a time, every burst is unambiguously
+attributable to whichever zone was active — see **Current-fault alerting** below for how that
+attribution is used.
 
 ### Current-fault alerting
 
-`CurrentFaultMonitor` (`src/domain/CurrentFaultMonitor.h`, wired up in `updateCurrentMonitoring()`
-in `src/main.ino`) watches each running output's current draw against a `{minMa, maxMa}` band —
-`VALVE_CURRENT_MIN_MA`/`MAX_MA` (20–800mA) for zones and `PUMP_CURRENT_MIN_MA`/`MAX_MA`
-(200–1800mA) for the pump, both in `board_config.h`. A reading outside that band (too low usually
-means a disconnected/failed valve or dry-running pump; too high usually means a stuck valve,
-jammed pump, or wiring fault) triggers `/alert`:
+Once a sensor has a calibrated base (0 = never calibrated = no check), `drainCurrentBurstResults()`
+compares *every burst* — not a windowed average — against it:
+- **Overcurrent** (valve and pump): reading > `base * CURRENT_OVERCURRENT_MULTIPLIER` (1.3).
+- **Undercurrent** (valve only): reading < `base * CURRENT_VALVE_UNDERCURRENT_MULTIPLIER` (0.5).
+  Not checked for the pump — a lightly-loaded pump isn't the kind of fault a stuck/dry valve or
+  jammed pump is.
+
+A trip publishes `/alert`:
 ```json
-{"valve":3,"current":950,"units":"mA"}
-{"pump":0,"current":50,"units":"mA"}
+{"valve":3,"fault":"overcurrent","level":950,"base":700}
+{"pump":0,"fault":"overcurrent","level":1400,"base":1000}
 ```
 
-The **measurement window** for a given output starts the instant it's commanded on and keeps
-running until `CURRENT_MEASURE_POST_OFF_MS` (10s) after it turns off — not just while it's
-nominally "on" — which also catches a valve that fails to fully close. `CurrentFaultMonitor`'s
-`beginActiveCycle()`/`endActiveCycle()` bracket that exact same window, which is what gives **one
-alert per cycle, not one per bad reading**, for free: `checkAndConsumeAlert()` only fires once
-until the window closes and reopens, so a valve stuck out-of-range for an entire 15-minute run
-raises exactly one `/alert`, not one on every sample. Don't mistake "no repeated alerts" for "the
-fault stopped happening."
+Each fault is gated to **one `/alert` per calendar day**, not one per bad burst — a valve stuck
+out-of-range for an entire 15-minute run raises exactly one alert, not one every 5 seconds
+(`consumeDailyAlertGate()`, same idiom as `lastWeatherFailureAlertDate`/`lastGeoFailureAlertDate`
+elsewhere in `main.ino`). Don't mistake "no repeated alerts" for "the fault stopped happening." The
+valve's dedup is **per-zone** (`lastValveOvercurrentAlertDate`/`lastValveUndercurrentAlertDate`,
+indexed by zone), not global for the sensor — since every burst is attributable to a specific zone
+(see **cmd/calibrate** above), a stuck zone 3 today doesn't silence a separately failing zone 5
+later the same day. The pump has no zone dimension, so its dedup is a single shared date.
 
-A live current fault also overrides the status LED's normal pattern — in `updateOutputsFromDomain()`,
-`led.setMode(Alert)` takes priority over the watering (`Breathe`) and pump-only (`SolidOn`)
-patterns, so a fault is visible on the unit itself even with no MQTT client watching.
+This is MQTT-only for now — unlike the earlier per-output fault monitor this design replaces, it
+doesn't drive the status LED's alert pattern.
 
 ## Weather-based irrigation auto-adjustment
 
@@ -500,8 +563,10 @@ want a one-click button scoped to a single test file instead of the whole suite.
 
 ## Known limitations
 
-- Current-sensor calibration constants ship as placeholders — readings are meaningless until
-  calibrated per **Current-sensor calibration** under **MQTT**, above.
+- Current-fault alerting is inert until `cmd/calibrate` has been run for each sensor at least once
+  (base defaults to 0 = uncalibrated = no check) — see **cmd/calibrate** under **MQTT**, above.
+  `CURRENT_CALIBRATION_MIN_BASE_LEVEL` (`board_config.h`) is also an untuned placeholder pending
+  real hardware verification.
 - The SSD1309 U8g2 driver variant (`NONAME0` vs `NONAME2`) hasn't been verified against a real
   panel; if the display shows garbage or inverted colors on first boot, swap the constructor in
   `src/ui/IrrigatorUi.h`.

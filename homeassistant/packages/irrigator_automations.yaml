@@ -163,26 +163,11 @@ automation:
           entity_id: input_number.irrigator_default_manual_duration
         data:
           value: "{{ state_attr('sensor.irrigator_settings', 'default_manual_duration') | int(5) }}"
-      - action: input_number.set_value
-        target:
-          entity_id: input_number.irrigator_valve_zero_offset_mv
-        data:
-          value: "{{ state_attr('sensor.irrigator_settings', 'valve_current_zero_offset_mv') | int(1650) }}"
-      - action: input_number.set_value
-        target:
-          entity_id: input_number.irrigator_valve_mv_per_ma
-        data:
-          value: "{{ state_attr('sensor.irrigator_settings', 'valve_current_mv_per_ma') | float(1.0) }}"
-      - action: input_number.set_value
-        target:
-          entity_id: input_number.irrigator_pump_zero_offset_mv
-        data:
-          value: "{{ state_attr('sensor.irrigator_settings', 'pump_current_zero_offset_mv') | int(1650) }}"
-      - action: input_number.set_value
-        target:
-          entity_id: input_number.irrigator_pump_mv_per_ma
-        data:
-          value: "{{ state_attr('sensor.irrigator_settings', 'pump_current_mv_per_ma') | float(1.0) }}"
+      # valve_current_base_level/pump_current_base_level are deliberately NOT synced to a local
+      # helper here - there isn't one. They're device-owned (only cmd/calibrate ever sets them),
+      # read-only, and already visible directly via sensor.irrigator_settings' own attributes (this
+      # sensor IS the sync target for everything else) and sensor.irrigator_calibration (the live
+      # cmd/calibrate response) - see irrigator.yaml.
       - action: input_number.set_value
         target:
           entity_id: input_number.irrigator_upper_limit
@@ -243,14 +228,16 @@ automation:
         target:
           entity_id: input_boolean.irrigator_syncing_from_device
 
-  # HA -> device: any zone-name / enabled / default-duration / calibration
-  # edit republishes the FULL settings.json (see script.irrigator_publish_settings
-  # for why these fields have no dedicated partial-update MQTT topic, and
-  # why calibration is folded in here too rather than using its own
-  # cmd/set_calibration script+automation).
+  # HA -> device: any zone-name / enabled / default-duration edit republishes
+  # the FULL settings.json (see script.irrigator_publish_settings for why
+  # these fields have no dedicated partial-update MQTT topic). Current-sensor
+  # calibration is NOT among these triggers - valve/pump_current_base_level
+  # are device-owned (only cmd/calibrate sets them, via the "Irrigator
+  # Calibrate" button - see irrigator.yaml), so there's no local helper for
+  # them to edit in the first place.
   #
   # Guarded on sensor.irrigator_settings already holding real device data:
-  # these 15 helpers are created fresh (at their YAML `initial:` placeholder
+  # these helpers are created fresh (at their YAML `initial:` placeholder
   # values) on a virgin deploy, and that creation fires a state-changed
   # event just like a real edit would - without this guard, package install
   # would immediately publish those placeholders over the device's real
@@ -270,7 +257,7 @@ automation:
   # helpers" reading state mid-update; `mode: restart` guarantees at most one run of this automation
   # is ever live, so there's nothing left to race. Trade-off: any single edit now takes 3s longer to
   # reach the device than before - fine here since these are all HA-side "settings" (zone names,
-  # calibration, watering percentage), never anything on the run/stop critical path.
+  # limits, watering percentage), never anything on the run/stop critical path.
   - alias: "Irrigator - republish settings on local helper change"
     mode: restart
     triggers:
@@ -299,10 +286,6 @@ automation:
           - input_boolean.irrigator_zone_10_enabled
           - input_boolean.irrigator_zone_11_enabled
           - input_number.irrigator_default_manual_duration
-          - input_number.irrigator_valve_zero_offset_mv
-          - input_number.irrigator_valve_mv_per_ma
-          - input_number.irrigator_pump_zero_offset_mv
-          - input_number.irrigator_pump_mv_per_ma
           - input_number.irrigator_upper_limit
           - input_number.irrigator_lower_limit
           - input_number.irrigator_rain_skip_probability

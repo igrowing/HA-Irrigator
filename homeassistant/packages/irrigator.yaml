@@ -120,6 +120,23 @@ mqtt:
       device: *irrigator_device
       availability: *irrigator_availability
 
+    # cmd/calibrate's response — see docs/technical.md's "cmd/calibrate" section. Fires twice per
+    # button press (once per sensor: valve, then pump), so this just shows whichever arrived last;
+    # json_attributes_topic carries the full payload (sensor/base_level/sample_count/
+    # burst_samples_mv — the last raw burst, for spotting ADC saturation) for anything needing more
+    # than the headline number. The persisted base itself also round-trips into
+    # sensor.irrigator_settings' valve_current_base_level/pump_current_base_level attributes on the
+    # next settings.json download (e.g. "Refresh From Device") — this sensor is the live response,
+    # that one is the durable record.
+    - name: "Calibration Result"
+      unique_id: irrigator_calibration_result
+      icon: mdi:tune-variant
+      state_topic: "irrigatorF4/calibrate"
+      value_template: "{{ value_json.sensor }}: {{ value_json.base_level }}"
+      json_attributes_topic: "irrigatorF4/calibrate"
+      device: *irrigator_device
+      availability: *irrigator_availability
+
     - name: "Queue"
       unique_id: irrigator_queue
       icon: mdi:format-list-numbered
@@ -790,6 +807,14 @@ template:
         icon: mdi:stop-circle-outline
         press:
           - action: script.irrigator_stop_all
+      # Requires an actual watering run (valve open, not just the pump alone) to be in progress -
+      # the device rejects it with /alert otherwise (see sensor.irrigator_last_alert). See
+      # docs/technical.md's "cmd/calibrate" section.
+      - name: "Irrigator Calibrate"
+        unique_id: irrigator_calibrate_button
+        icon: mdi:tune-variant
+        press:
+          - action: script.irrigator_calibrate
 
 # -----------------------------------------------------------------------
 # Manual-run duration sliders (1-120 min), one per pump/zone card.
@@ -908,41 +933,6 @@ input_number:
     mode: box
     unit_of_measurement: "mm"
     initial: 4
-
-  irrigator_valve_zero_offset_mv:
-    name: "Valve Current Zero Offset"
-    icon: mdi:current-ac
-    min: 0
-    max: 3300
-    step: 1
-    mode: box
-    unit_of_measurement: mV
-    initial: 1650
-  irrigator_valve_mv_per_ma:
-    name: "Valve Current mV/mA"
-    icon: mdi:sine-wave
-    min: 0.01
-    max: 20
-    step: 0.01
-    mode: box
-    initial: 1.0
-  irrigator_pump_zero_offset_mv:
-    name: "Pump Current Zero Offset"
-    icon: mdi:current-ac
-    min: 0
-    max: 3300
-    step: 1
-    mode: box
-    unit_of_measurement: mV
-    initial: 1650
-  irrigator_pump_mv_per_ma:
-    name: "Pump Current mV/mA"
-    icon: mdi:sine-wave
-    min: 0.01
-    max: 20
-    step: 0.01
-    mode: box
-    initial: 1.0
 
   # Schedule editor panel field (Schedule tab) - see script.irrigator_schedule_save.
   irrigator_edit_duration_min:
@@ -1165,6 +1155,14 @@ script:
                     topic: "irrigatorF4/cmd/run"
                     payload: "{{ {'zone': repeat.item, 'duration': duration} | tojson }}"
 
+  irrigator_calibrate:
+    alias: "Irrigator: capture current-sensor calibration base"
+    sequence:
+      - action: script.irrigator_enqueue_or_publish
+        data:
+          topic: "irrigatorF4/cmd/calibrate"
+          payload: ""
+
   irrigator_request_downloads:
     alias: "Irrigator: request status + settings.json + schedule.json"
     sequence:
@@ -1178,32 +1176,27 @@ script:
   # Full settings.json replace. Must include every field every time - the
   # firmware fills anything missing with factory defaults (parseSettings()),
   # it does not merge against what's currently on flash. This is the ONLY
-  # settings-writing script: the firmware also exposes a narrower
-  # cmd/set_calibration topic that merges just the 4 calibration fields
-  # server-side, but since this script already has to build a full
-  # settings.json for the fields that have no dedicated topic (zone names/
-  # enabled, default_manual_duration), routing calibration changes through
-  # it too - instead of a second script + a second automation for
-  # cmd/set_calibration - is one less thing to maintain for no real loss:
-  # both paths depend equally on the local input_number helpers being
-  # correct, so the "narrower topic" isn't actually a safety win here.
+  # settings-writing script.
   #
   # watering_percentage is read from input_number.irrigator_watering_percentage
-  # (a plain local helper, same as default_manual_duration/calibration below)
-  # rather than from any device echo - see that helper's comment in
-  # `input_number:` above for why.
+  # (a plain local helper, same as default_manual_duration below) rather than
+  # from any device echo - see that helper's comment in `input_number:` above
+  # for why.
   #
-  # schedule_active is a device-owned field: the FIRMWARE ignores whatever a
-  # settings upload carries for it (it is changed only via cmd/scheduled - see
-  # handleMqttUpload's SETTINGS_FILE_PATH branch in main.ino, which overwrites
-  # parsed.scheduleActive with the device's own current value before
-  # persisting). So the value sent here is cosmetic - it cannot change the
-  # device. It's still included, sourced from sensor.irrigator_settings' own
-  # last-downloaded attribute, purely so the JSON stays a faithful full
-  # snapshot; it is deliberately NOT read from switch.irrigator_schedule_active
-  # (whose echo sensor reads a spurious `false` while `unavailable` during a
-  # reconnect - the exact stale value that used to get uploaded and disable the
-  # schedule before the firmware started ignoring it).
+  # schedule_active, valve_current_base_level, and pump_current_base_level are
+  # device-owned fields: the FIRMWARE ignores whatever a settings upload
+  # carries for them (schedule_active is changed only via cmd/scheduled; the
+  # two current bases only via cmd/calibrate - see mergeSettings()'s doc in
+  # Settings.h and handleMqttUpload's SETTINGS_FILE_PATH branch in main.ino,
+  # which overwrites all three with the device's own current values before
+  # persisting). So the values sent here are cosmetic - they cannot change the
+  # device. They're still included, sourced from sensor.irrigator_settings'
+  # own last-downloaded attributes, purely so the JSON stays a faithful full
+  # snapshot; schedule_active specifically is deliberately NOT read from
+  # switch.irrigator_schedule_active (whose echo sensor reads a spurious
+  # `false` while `unavailable` during a reconnect - the exact stale value
+  # that used to get uploaded and disable the schedule before the firmware
+  # started ignoring it).
   #
   # watering_percentage is NOT device-owned in the same way - it's a plain
   # input_number helper the user edits (see its comment in `input_number:`
@@ -1234,10 +1227,8 @@ script:
               'schedule_active': state_attr('sensor.irrigator_settings', 'schedule_active') | default(true),
               'auto_adjustment_enabled': state_attr('sensor.irrigator_settings', 'auto_adjustment_enabled') | default(true),
               'default_manual_duration': states('input_number.irrigator_default_manual_duration') | int(5),
-              'valve_current_zero_offset_mv': states('input_number.irrigator_valve_zero_offset_mv') | int(1650),
-              'valve_current_mv_per_ma': states('input_number.irrigator_valve_mv_per_ma') | float(1.0),
-              'pump_current_zero_offset_mv': states('input_number.irrigator_pump_zero_offset_mv') | int(1650),
-              'pump_current_mv_per_ma': states('input_number.irrigator_pump_mv_per_ma') | float(1.0),
+              'valve_current_base_level': state_attr('sensor.irrigator_settings', 'valve_current_base_level') | default(0),
+              'pump_current_base_level': state_attr('sensor.irrigator_settings', 'pump_current_base_level') | default(0),
               'upper_limit': states('input_number.irrigator_upper_limit') | int(200),
               'lower_limit': states('input_number.irrigator_lower_limit') | int(40),
               'rain_skip_probability_percent': states('input_number.irrigator_rain_skip_probability') | int(70),

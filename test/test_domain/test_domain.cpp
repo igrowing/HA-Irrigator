@@ -6,7 +6,6 @@
 #include "../../src/domain/CalendarMath.h"
 #include "../../src/domain/WeatherSummary.h"
 #include "../../src/domain/ConfigStore.h"
-#include "../../src/domain/CurrentFaultMonitor.h"
 #include "../../src/domain/DstRules.h"
 #include "../../src/domain/DurationAdjuster.h"
 #include "../../src/domain/IrrigationStateMachine.h"
@@ -252,17 +251,6 @@ void test_rain_skip_self_expires() {
     TEST_ASSERT_TRUE(rainSkip.shouldSkipScheduledRun(1999));
     TEST_ASSERT_FALSE(rainSkip.shouldSkipScheduledRun(2000));
     TEST_ASSERT_FALSE(rainSkip.shouldSkipScheduledRun(2001));
-}
-
-void test_current_fault_alert_only_once_per_cycle() {
-    irrigator::domain::CurrentFaultMonitor monitor({20, 800});
-    monitor.beginActiveCycle();
-    TEST_ASSERT_FALSE(monitor.checkAndConsumeAlert(200));
-    TEST_ASSERT_TRUE(monitor.checkAndConsumeAlert(10));
-    TEST_ASSERT_FALSE(monitor.checkAndConsumeAlert(10));
-    monitor.endActiveCycle();
-    monitor.beginActiveCycle();
-    TEST_ASSERT_TRUE(monitor.checkAndConsumeAlert(900));
 }
 
 // void test_zone_run_starts_pump_before_watering_then_gracefully_stops() {
@@ -1322,7 +1310,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_schedule_record_validation);
     RUN_TEST(test_watering_queue_capacity_and_fifo);
     RUN_TEST(test_rain_skip_self_expires);
-    RUN_TEST(test_current_fault_alert_only_once_per_cycle);
     // RUN_TEST(test_zone_run_starts_pump_before_watering_then_gracefully_stops);
     RUN_TEST(test_pump_only_does_not_enter_grace_period);
     RUN_TEST(test_abort_while_watering_still_gives_pump_its_graceful_shutdown);

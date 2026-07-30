@@ -198,6 +198,10 @@ void MqttService::publishQueue(const String& jsonPayload) {
     publishRaw("/queue", jsonPayload, false);
 }
 
+void MqttService::publishCalibrate(const String& jsonPayload) {
+    publishRaw("/calibrate", withDatetime(jsonPayload), false);
+}
+
 // Retained: HA's switch.irrigator_schedule_active display reads this echo (via
 // binary_sensor.irrigator_scheduled_state) and no longer gets it re-pushed from a settings sync,
 // so the last value must persist on the broker for HA to recover it after an HA restart or a

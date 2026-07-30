@@ -17,13 +17,14 @@ struct Settings {
     bool scheduleActive = true;
     uint8_t defaultManualDuration = board::DEFAULT_MANUAL_DURATION_MINUTES;
 
-    // Current-sensor calibration (see drivers::CurrentSensor). Board-config constants are only
-    // the pre-calibration fallback used until a real calibration result is saved here (e.g. via
-    // MQTT cmd/set_calibration).
-    uint16_t valveCurrentZeroOffsetMv = board::VALVE_CURRENT_SENSOR_ZERO_OFFSET_MV;
-    float valveCurrentMvPerMa = board::VALVE_CURRENT_SENSOR_MV_PER_MA;
-    uint16_t pumpCurrentZeroOffsetMv = board::PUMP_CURRENT_SENSOR_ZERO_OFFSET_MV;
-    float pumpCurrentMvPerMa = board::PUMP_CURRENT_SENSOR_MV_PER_MA;
+    // True-RMS current "base" per sensor (see drivers::CurrentSensor::sampleRmsMv) — a virtual
+    // reference level, not a real mA value, captured by MQTT cmd/calibrate while a zone/pump is
+    // under normal running load. 0 means "never calibrated": main.ino's over/undercurrent checks
+    // skip a sensor entirely until this is set. Device-owned, same as
+    // location_known/latitude/longitude/city below — only cmd/calibrate ever writes these, never
+    // an uploaded settings.json (see mergeSettings's doc below).
+    uint16_t valveCurrentBaseLevel = 0;
+    uint16_t pumpCurrentBaseLevel = 0;
 
     // Weather-based auto-adjustment. Master on/off switch for the whole feature (both the
     // percentage recalculation and the rain-skip check) — defaults true so upgrading an existing
@@ -75,9 +76,10 @@ size_t serializeSettings(const Settings& settings, char* buffer, size_t bufferSi
 // an upload naming only zone 3 doesn't disturb zones 1, 2, 4... upper_limit/lower_limit are
 // validated together (upper >= lower), matching validateSettings().
 //
-// location_known/latitude/longitude/city are device-owned (populated only by the device's own
-// geolocation resolution — see main.ino's resolveGeolocationIfNeeded()) and are deliberately
-// never read from `json` here; `out` always keeps `existing`'s values for those four. Callers
+// location_known/latitude/longitude/city, and valve/pump_current_base_level, are device-owned
+// (the former populated only by the device's own geolocation resolution — see main.ino's
+// resolveGeolocationIfNeeded() — the latter only by cmd/calibrate) and are deliberately never read
+// from `json` here; `out` always keeps `existing`'s values for those six. Callers
 // that also guard schedule_active/auto_adjustment_enabled as device-owned (see main.ino's
 // handleMqttUpload) still need to do that themselves after calling this — those two are still
 // merged like any other field here.

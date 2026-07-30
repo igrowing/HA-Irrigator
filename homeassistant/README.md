@@ -75,16 +75,25 @@ empty "Garden" tab (`sections: - type: grid cards: []`) in your dashboard.
    schedule editor works" below for why this replaced an earlier
    Local-Calendar-based design.
 4. **Settings** - schedule-active toggle and watering-percentage number are
-   live MQTT entities (direct topic round-trip). Zone name/enabled,
-   default-manual-duration, and calibration all republish the *entire*
-   `settings.json` via `script.irrigator_publish_settings` - see the comment
-   on that script for why a partial payload would be dangerous (the
-   firmware fills any missing field with its factory default, not with the
-   value already on flash) and why calibration goes through the same script
-   rather than the firmware's narrower `cmd/set_calibration` topic. This is
-   guarded against the same virgin-deploy race as the schedule tab, but
-   automatically rather than with a manual toggle - see "How the download/
-   sync model works" below.
+   live MQTT entities (direct topic round-trip). Zone name/enabled and
+   default-manual-duration republish the *entire* `settings.json` via
+   `script.irrigator_publish_settings` - see the comment on that script for
+   why a partial payload would be dangerous (the firmware fills any missing
+   field with its factory default, not with the value already on flash).
+   This is guarded against the same virgin-deploy race as the schedule tab,
+   but automatically rather than with a manual toggle - see "How the
+   download/sync model works" below. Current-sensor calibration is separate
+   from all of this - see #5 below.
+5. **Current-sensor calibration** - `valve_current_base_level`/
+   `pump_current_base_level` are device-owned (only `cmd/calibrate` ever sets
+   them, same as `latitude`/`longitude`/`city`) and read-only in HA: the
+   "Irrigator Calibrate" button (`button.irrigator_calibrate`) publishes
+   `cmd/calibrate`, and the two base levels update via the next
+   `sensor.irrigator_settings` download plus the live
+   `sensor.irrigator_calibration_result` (the `cmd/calibrate` response
+   itself - fires once per sensor). There's no local `input_number` for
+   either value; editing them any other way isn't possible by design. See
+   `docs/technical.md`'s "cmd/calibrate" section for the full protocol.
 
 Zone names, everywhere they appear (Status, History, Schedule, Settings),
 come from exactly one place: `sensor.irrigator_settings`' `zone_names`
@@ -422,9 +431,14 @@ sent.
   `input_number.irrigator_default_manual_duration`,
   `input_number.irrigator_watering_percentage` - settings that require a full
   `settings.json` republish (see above).
-- `input_number.irrigator_valve_zero_offset_mv` / `_valve_mv_per_ma` /
-  `_pump_zero_offset_mv` / `_pump_mv_per_ma` - current-sensor calibration,
-  also folded into the full `settings.json` republish (see above).
+- `button.irrigator_calibrate` - publishes `cmd/calibrate`; requires an active
+  watering run (valve open) or the device rejects it via `/alert`.
+- `sensor.irrigator_calibration_result` - live `cmd/calibrate` response
+  (fires once per sensor: `sensor`, `base_level`, `sample_count`,
+  `burst_samples_mv` as attributes). Read-only, not part of the
+  `settings.json` republish - `valve_current_base_level`/
+  `pump_current_base_level` are device-owned, same as
+  `latitude`/`longitude`/`city`.
 - `input_select.irrigator_schedule_picker`, `input_select.irrigator_edit_zone`,
   `input_select.irrigator_edit_day`, `input_datetime.irrigator_edit_start_time`,
   `input_number.irrigator_edit_duration_min`, `input_boolean.irrigator_edit_active`

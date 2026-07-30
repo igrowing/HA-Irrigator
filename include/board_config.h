@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.1.3"
+#define APP_VERSION "1.1.4"
 #endif
 
 namespace irrigator::board {
@@ -41,22 +41,34 @@ static constexpr uint8_t VALVE_CURRENT_ADC_PIN = 32;
 static constexpr uint8_t PUMP_CURRENT_ADC_PIN = 33;
 static constexpr uint8_t ADC_RESOLUTION_BITS = 12;
 
-static constexpr uint16_t VALVE_CURRENT_MIN_MA = 20;
-static constexpr uint16_t VALVE_CURRENT_MAX_MA = 800;
-static constexpr uint16_t PUMP_CURRENT_MIN_MA = 200;
-static constexpr uint16_t PUMP_CURRENT_MAX_MA = 1800;
-
-// PLACEHOLDERS — not a real calibration. Tune against the actual installed current-sensor
-// modules on real hardware (see agents.md Step 5); readMilliAmps() is meaningless until then.
-static constexpr uint16_t VALVE_CURRENT_SENSOR_ZERO_OFFSET_MV = 1650;
-static constexpr float VALVE_CURRENT_SENSOR_MV_PER_MA = 1.0f;
-static constexpr uint16_t PUMP_CURRENT_SENSOR_ZERO_OFFSET_MV = 1650;
-static constexpr float PUMP_CURRENT_SENSOR_MV_PER_MA = 1.0f;
-
 static constexpr uint16_t ACTIVE_INTERACTION_TIMEOUT_MS = 20000;
 static constexpr uint16_t PUMP_PRESTART_MS = 500;
 static constexpr uint32_t PUMP_GRACEFUL_SHUTDOWN_MS = 60000UL;
 static constexpr uint16_t CURRENT_MEASURE_POST_OFF_MS = 10000;
+// True-RMS current sampling: a background task bursts CURRENT_RMS_SAMPLE_INTERVAL_MS-spaced ADC
+// reads for CURRENT_RMS_BURST_DURATION_MS (at 1ms/1kHz that's ~5-6 full 50/60Hz mains cycles,
+// comfortably enough to compute a real RMS rather than an instantaneous single-sample guess),
+// repeating every CURRENT_RMS_BURST_PERIOD_MS while a valve/pump is on (plus the
+// CURRENT_MEASURE_POST_OFF_MS tail above). Each burst's RMS is a "virtual" level in raw millivolts,
+// zeroed against that same burst's own (min+max)/2 rather than a fixed board constant — there's no
+// mA conversion at all (see cmd/calibrate below); a burst's level is only ever compared against a
+// per-sensor base captured under real load. See src/drivers/CurrentSensor.h's sampleRmsMv().
+static constexpr uint16_t CURRENT_RMS_BURST_DURATION_MS = 100;
+static constexpr uint16_t CURRENT_RMS_SAMPLE_INTERVAL_MS = 1;
+static constexpr uint32_t CURRENT_RMS_BURST_PERIOD_MS = 5000;
+// MQTT cmd/calibrate captures a sensor's "base" as the average of the most recent bursts — at one
+// burst per CURRENT_RMS_BURST_PERIOD_MS (5s), 12 covers the trailing ~minute.
+static constexpr uint8_t CURRENT_RMS_HISTORY_LEN = 12;
+// cmd/calibrate rejects (doesn't save) a captured average below this floor — a real valve/pump
+// under load should read well above ADC noise, so a near-zero average usually means the output
+// wasn't actually drawing current (wiring fault, relay not energizing) rather than a genuinely
+// low-draw device. PLACEHOLDER — needs tuning against real hardware noise floor (agents.md Step 5).
+static constexpr uint16_t CURRENT_CALIBRATION_MIN_BASE_LEVEL = 30;
+// Fault thresholds as multipliers of the calibrated base (see above), not fixed mA bands — checked
+// per burst while a base is set (0 = uncalibrated = no check). Pump undercurrent is deliberately
+// not checked: a lightly-loaded pump isn't a fault the way a stuck/dry valve or jammed pump is.
+static constexpr float CURRENT_OVERCURRENT_MULTIPLIER = 1.3f;
+static constexpr float CURRENT_VALVE_UNDERCURRENT_MULTIPLIER = 0.5f;
 // 15 covers "Test all zones" queuing up to ZONE_COUNT (11) requests behind whatever's already
 // running/queued, with headroom to spare. WateringRequest is a few bytes, so the extra slots
 // cost tens of bytes total — a non-issue against the ESP32's RAM budget.
