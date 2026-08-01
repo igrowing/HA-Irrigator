@@ -19,11 +19,15 @@
               name: Pending Commands (waiting to reach the device)
               icon: mdi:playlist-clock
               color: orange
-          # Pump + each zone: switch and remaining time in an entities card, with the manual-run
-          # Duration as its own tile below (numeric-input feature = a "- N +" stepper, nicer and
-          # easier to nudge than a plain mode:box row) - the two wrapped in a vertical-stack so
-          # each pump/zone still reads as one grouped unit. The Duration tile references the same
-          # input_number.irrigator_*_duration helpers as before; only the presentation changed.
+          - type: tile
+            entity: sensor.irrigator_watering_state
+          - type: tile
+            entity: sensor.irrigator_watering_percentage_echo
+            name: Current watering adjustment
+            icon: mdi:water-percent
+            grid_options:
+              columns: 6
+              rows: 1
           - type: vertical-stack
             cards:
               - type: entities
@@ -279,7 +283,7 @@
               target:
                 entity_id: button.irrigator_stop_all
               confirmation:
-                text: "Stop watering now?"
+                text: Stop watering now?
       - type: grid
         cards:
           - type: heading
@@ -311,16 +315,28 @@
           - type: markdown
             title: Device Schedule (last known)
             content: >-
-              {%- set day_names = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] -%}
-              {%- set zone_names = state_attr('sensor.irrigator_settings', 'zone_names') or {} -%}
-              {%- set recs = state_attr('sensor.irrigator_schedule', 'records') or [] -%}
-              {%- set sort_key = states('input_select.irrigator_schedule_sort_by') -%}
-              {%- set ns = namespace(items=[]) -%}
-              {%- for r in recs -%} {%- set zname = zone_names.get(r.zone | string, {}).get('name', '#' ~ r.zone ~ ' (no name)') -%} {%- set tagged = r | combine({'_idx': loop.index0, '_name': zname, '_day': day_names[r.day_of_week - 1]}) -%} {%- set ns.items = ns.items + [tagged] -%} {%- endfor -%}
-              {%- if sort_key == 'Zone' -%} {%- set sorted_items = ns.items | sort(attribute='zone') -%} {%- elif sort_key == 'Name' -%} {%- set sorted_items = ns.items | sort(attribute='_name') -%} {%- elif sort_key == 'Start' -%} {%- set sorted_items = ns.items | sort(attribute='start_time') -%} {%- elif sort_key == 'Duration' -%} {%- set sorted_items = ns.items | sort(attribute='duration_min') -%} {%- elif sort_key == 'Active' -%} {%- set sorted_items = ns.items | sort(attribute='active') -%} {%- else -%} {%- set sorted_items = ns.items | sort(attribute='day_of_week') -%} {%- endif -%}
-              {%- if sorted_items | length == 0 -%}
-              No schedule currently loaded on the device.
-              {%- else -%}
+              {%- set day_names = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
+              -%} {%- set zone_names = state_attr('sensor.irrigator_settings',
+              'zone_names') or {} -%} {%- set recs =
+              state_attr('sensor.irrigator_schedule', 'records') or [] -%} {%-
+              set sort_key = states('input_select.irrigator_schedule_sort_by')
+              -%} {%- set ns = namespace(items=[]) -%} {%- for r in recs -%} {%-
+              set zname = zone_names.get(r.zone | string, {}).get('name', '#' ~
+              r.zone ~ ' (no name)') -%} {%- set tagged = r | combine({'_idx':
+              loop.index0, '_name': zname, '_day': day_names[r.day_of_week -
+              1]}) -%} {%- set ns.items = ns.items + [tagged] -%} {%- endfor -%}
+              {%- if sort_key == 'Zone' -%} {%- set sorted_items = ns.items |
+              sort(attribute='zone') -%} {%- elif sort_key == 'Name' -%} {%- set
+              sorted_items = ns.items | sort(attribute='_name') -%} {%- elif
+              sort_key == 'Start' -%} {%- set sorted_items = ns.items |
+              sort(attribute='start_time') -%} {%- elif sort_key == 'Duration'
+              -%} {%- set sorted_items = ns.items |
+              sort(attribute='duration_min') -%} {%- elif sort_key == 'Active'
+              -%} {%- set sorted_items = ns.items | sort(attribute='active') -%}
+              {%- else -%} {%- set sorted_items = ns.items |
+              sort(attribute='day_of_week') -%} {%- endif -%} {%- if
+              sorted_items | length == 0 -%} No schedule currently loaded on the
+              device. {%- else -%}
 
               | Num | Zone | Name | Day | Start | Duration | Active | 
 
@@ -339,17 +355,17 @@
             title: Edit Schedule Record
             entities:
               - entity: input_select.irrigator_schedule_picker
-                name: "Schedule Record"
+                name: Schedule Record
               - entity: input_select.irrigator_edit_zone
-                name: "Zone"
+                name: Zone
               - entity: input_select.irrigator_edit_day
-                name: "Day"
+                name: Day
               - entity: input_datetime.irrigator_edit_start_time
-                name: "Start Time"
+                name: Start Time
               - entity: input_number.irrigator_edit_duration_min
-                name: "Duration (min)"
+                name: Duration (min)
               - entity: input_boolean.irrigator_edit_active
-                name: "Active"
+                name: Active
           - type: horizontal-stack
             cards:
               - type: tile
@@ -375,18 +391,11 @@
                   target:
                     entity_id: button.irrigator_delete_schedule_record
                   confirmation:
-                    text: "Delete the selected schedule record?"
+                    text: Delete the selected schedule record?
       - type: grid
         cards:
           - type: heading
             heading: Settings
-          - type: tile
-            entity: sensor.irrigator_watering_percentage_echo
-            name: Current watering adjustment
-            icon: mdi:water-percent
-            grid_options:
-              columns: 12
-              rows: 1
           - type: tile
             entity: input_number.irrigator_watering_percentage
             features:
@@ -421,90 +430,107 @@
             title: Auto-adjustment by the Weather
             entities:
               - entity: switch.irrigator_auto_adjustment
-                name: "Auto-adjustment"
+                name: Auto-adjustment
               - entity: sensor.irrigator_city
-                name: "City"
+                name: City
               - entity: sensor.irrigator_coordinates
-                name: "Coordinates"
+                name: Coordinates
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_1_name
               - entity: input_boolean.irrigator_zone_1_enabled
-                name: "Enabled"
+                name: Enabled
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_2_name
               - entity: input_boolean.irrigator_zone_2_enabled
-                name: "Enabled"
+                name: Enabled
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_3_name
               - entity: input_boolean.irrigator_zone_3_enabled
-                name: "Enabled"
+                name: Enabled
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_4_name
               - entity: input_boolean.irrigator_zone_4_enabled
-                name: "Enabled"
+                name: Enabled
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_5_name
               - entity: input_boolean.irrigator_zone_5_enabled
-                name: "Enabled"
+                name: Enabled
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_6_name
               - entity: input_boolean.irrigator_zone_6_enabled
-                name: "Enabled"
+                name: Enabled
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_7_name
               - entity: input_boolean.irrigator_zone_7_enabled
-                name: "Enabled"
+                name: Enabled
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_8_name
               - entity: input_boolean.irrigator_zone_8_enabled
-                name: "Enabled"
+                name: Enabled
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_9_name
               - entity: input_boolean.irrigator_zone_9_enabled
-                name: "Enabled"
+                name: Enabled
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_10_name
               - entity: input_boolean.irrigator_zone_10_enabled
-                name: "Enabled"
+                name: Enabled
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_11_name
               - entity: input_boolean.irrigator_zone_11_enabled
-                name: "Enabled"
-          # Read-only: valve/pump_current_base_level are device-owned (only cmd/calibrate sets
-          # them, via the button below) - see docs/technical.md's "cmd/calibrate" section. The two
-          # attribute rows reflect the last settings.json download; "Last Calibration Response" is
-          # the live cmd/calibrate reply (whichever sensor answered most recently).
+                name: Enabled
           - type: entities
             title: Current-Sensor Calibration
             entities:
               - type: attribute
                 entity: sensor.irrigator_settings
                 attribute: valve_current_base_level
-                name: "Valve Base Level"
+                name: Valve Base Level
               - type: attribute
                 entity: sensor.irrigator_settings
                 attribute: pump_current_base_level
-                name: "Pump Base Level"
+                name: Pump Base Level
               - entity: sensor.irrigator_calibration_result
-                name: "Last Calibration Response"
+                name: Last Calibration Response
               - entity: button.irrigator_calibrate
+                icon: mdi:abacus
+                name: Calibrate Current Sensors
+          - type: tile
+            entity: button.irrigator_refresh_from_device
+            icon: mdi:cloud-download-outline
+            tap_action:
+              action: perform-action
+              perform_action: button.press
+              target:
+                entity_id: button.irrigator_refresh_from_device
+            features:
+              - type: button
+            grid_options:
+              columns: 12
+              rows: 2
+      - type: grid
+        cards:
+          - type: heading
+            heading: Diagnostics
+            heading_style: title
+            icon: mdi:stethoscope
           - type: tile
             entity: sensor.irrigator_address_2
-          - type: tile
-            entity: sensor.irrigator_watering_state
+            grid_options:
+              columns: 12
+              rows: 1
           - type: entities
-            title: Diagnostics
             entities:
               - entity: binary_sensor.irrigator_online
               - entity: sensor.irrigator_command_queue
@@ -563,16 +589,3 @@
                 attribute: free_storage_bytes
                 name: Free Storage
                 suffix: " bytes"
-          - type: tile
-            entity: button.irrigator_refresh_from_device
-            icon: mdi:cloud-download-outline
-            tap_action:
-              action: perform-action
-              perform_action: button.press
-              target:
-                entity_id: button.irrigator_refresh_from_device
-            features:
-              - type: button
-            grid_options:
-              columns: 12
-              rows: 2
