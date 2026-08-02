@@ -33,6 +33,19 @@ ESP32 DevKit Pinout:
 | J4, J5          | 19-pin headers                    | ESP32 devkit sockets                                                                   | 2   |
 | J7–J9           | Screw terminal / JST connectors   | Mains AC in, PSU AC in, PSU DC out wiring                                              | 3   |
 
+### About the relay modules
+There are 2 types of "cheap" 4x relay modules on the market:
+
+| PCB color | Blue | Red |
+|--|--|--|
+| Connectivity | 0.1" header | Terminal blocks |
+| Active | Low | Configurable with jumper High/Low |
+| Dimensions | Slightly larger | Slightly smaller |
+| Optocopler | Less sensitive | Very sensitive |
+| Assembly | simple | requires voltage drop diodes |
+
+Red boards require volrage drop diodes to set the optocouplers in high state (non-active) when the MCU is high. All boards require pullups.
+
 ## Mechanical design
 
 ![Irrigator device](../docs/irrigator.jpg)
@@ -41,6 +54,8 @@ ESP32 DevKit Pinout:
 - [Lid](irrigator%20lid.stl)
 
 ## Installation wiring
+
+In industrial irrigators the 24VAC transformer is often integrated into the irrigator. This reduces the customer flexibility where to mount the irrigator and what type of valves to use. Also, always connected transformer has parasitic current consumptions which hits customer wallet and hurts to the ecology. Our irrigator allows using any 24VAC transformer. It can be mounted on DIN rail or standalone. And it can be driven together with pump, i.e. it is not always connected to mains. This means **more flexibility, less electricilty bill, and less environment impact**.
 
 ### Simple
 
@@ -51,3 +66,21 @@ ESP32 DevKit Pinout:
 ![Eco Wiring](irrigator%20wiring-eco.png)
 
 ![Separated Eco Wiring](irrigator%20wiring-eco%20separated.png)
+
+## Current sensing
+
+There are only 2 current sensors in the irrigator:
+- For the pump, 220-240VAC, high current up to 12A.
+- For valves, 24VAC, sub-amper current, typically 250mA.
+
+The current measurement is not mandatory for the irrigator functionality. However, it can be useful to detect overcurrent and under current events:
+- Overcurrent:
+  - Pump blocked.
+  - Valve wiring short circuit.
+- Undercurrent: circuit discontinuity resulting non-fucntioning pump and/or valve.
+
+In both cases there is a risk of over-drying of your garden.
+
+One valve current sensor is enough for 11 valves because valves are never opened together, only 1 zone works at every given moment. So it is easy to correlate which valve is malfunctioning.
+
+The current sensing becomes functional only after [current sensor calibration](../docs/usage_irrigator.md#current-sensor-calibration-explained).
