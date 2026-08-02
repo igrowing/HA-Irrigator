@@ -960,7 +960,34 @@ void test_ui_state_machine_settings_upper_lower_limit_edit() {
     TEST_ASSERT_EQUAL_INT16(30, lowerIntent.percentage);
 }
 
-void test_ui_state_machine_settings_auto_adjustment_toggle_is_first_item() {
+void test_ui_state_machine_settings_schedule_active_toggle_is_first_item() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.scheduleActive = true;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Schedule -> Test all zones
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Test all zones -> Settings
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexScheduleActive,
+                            ui.selectedIndex());
+
+    // Direct toggle — no separate edit step.
+    const irrigator::domain::UiIntent offIntent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);
+    TEST_ASSERT_TRUE(offIntent.type == irrigator::domain::UiIntentType::ToggleScheduleActive);
+    TEST_ASSERT_FALSE(offIntent.boolValue);
+    TEST_ASSERT_FALSE(ui.editing());
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuSettings);
+
+    ctx.scheduleActive = false;
+    const irrigator::domain::UiIntent onIntent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);
+    TEST_ASSERT_TRUE(onIntent.type == irrigator::domain::UiIntentType::ToggleScheduleActive);
+    TEST_ASSERT_TRUE(onIntent.boolValue);
+}
+
+void test_ui_state_machine_settings_auto_adjustment_toggle_is_second_item() {
     irrigator::domain::UiStateMachine ui;
     irrigator::domain::UiStateMachine::Context ctx;
     ctx.autoAdjustmentEnabled = true;
@@ -969,6 +996,7 @@ void test_ui_state_machine_settings_auto_adjustment_toggle_is_first_item() {
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Schedule -> Test all zones
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Test all zones -> Settings
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 350);  // Schedule active -> Auto-adjust
     TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexAutoAdjustment,
                             ui.selectedIndex());
 
@@ -1062,6 +1090,75 @@ void test_ui_state_machine_settings_restart_confirm_flow() {
     const irrigator::domain::UiIntent yesIntent =
         ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1400);
     TEST_ASSERT_TRUE(yesIntent.type == irrigator::domain::UiIntentType::RestartDevice);
+}
+
+void test_ui_state_machine_settings_calibrate_confirm_flow() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Schedule -> Test all zones
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Test all zones -> Settings
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
+
+    for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexCalibrate; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 400 + i);
+    }
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexCalibrate, ui.selectedIndex());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);  // -> CalibrateConfirm
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::CalibrateConfirm);
+    TEST_ASSERT_FALSE(ui.calibrateConfirmYesSelected());
+
+    // NO stays selected by default; confirming without toggling to YES must not start calibration.
+    const irrigator::domain::UiIntent noIntent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 600);
+    TEST_ASSERT_TRUE(noIntent.type == irrigator::domain::UiIntentType::None);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
+
+    // Re-enter and confirm with YES this time.
+    ui.wake(700);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 800);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 900);
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 950);
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1000);  // -> MenuSettings
+    for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexCalibrate; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 1100 + i);
+    }
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1200);  // -> CalibrateConfirm
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 1300);
+    TEST_ASSERT_TRUE(ui.calibrateConfirmYesSelected());
+
+    const irrigator::domain::UiIntent yesIntent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1400);
+    TEST_ASSERT_TRUE(yesIntent.type == irrigator::domain::UiIntentType::CalibrateCurrentSensors);
+    // Unlike the NO path above, YES does NOT transition screen_ itself (same as
+    // handleRestartConfirm) — the caller (main.ino's handleUiIntent) is expected to run the
+    // calibration and then call showCalibrateResult(), which is what actually moves the screen on.
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::CalibrateConfirm);
+}
+
+void test_ui_state_machine_calibrate_result_shows_outcome_and_ok_returns_to_normal() {
+    irrigator::domain::UiStateMachine ui;
+    ui.wake(0);
+
+    ui.showCalibrateResult(true, 734, "", false, 0, "too low (12)", 100);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::CalibrateResult);
+    TEST_ASSERT_TRUE(ui.calibrateValveSucceeded());
+    TEST_ASSERT_EQUAL_UINT16(734, ui.calibrateValveBaseLevel());
+    TEST_ASSERT_FALSE(ui.calibratePumpSucceeded());
+    TEST_ASSERT_EQUAL_STRING("too low (12)", ui.calibratePumpMessage());
+
+    // Rotation is a no-op on this screen — nothing to navigate to.
+    irrigator::domain::UiStateMachine::Context ctx;
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 150);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::CalibrateResult);
+
+    // Click (the OK button) dismisses back to Normal.
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::None);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
 }
 
 void test_ui_state_machine_info_menu_is_separate_from_settings_and_read_only() {
@@ -1353,9 +1450,12 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_stop_all_confirm_no_cancels_without_intent);
     RUN_TEST(test_ui_state_machine_settings_percentage_edit);
     RUN_TEST(test_ui_state_machine_settings_upper_lower_limit_edit);
-    RUN_TEST(test_ui_state_machine_settings_auto_adjustment_toggle_is_first_item);
+    RUN_TEST(test_ui_state_machine_settings_schedule_active_toggle_is_first_item);
+    RUN_TEST(test_ui_state_machine_settings_auto_adjustment_toggle_is_second_item);
     RUN_TEST(test_ui_state_machine_settings_rain_skip_threshold_edit);
     RUN_TEST(test_ui_state_machine_settings_restart_confirm_flow);
+    RUN_TEST(test_ui_state_machine_settings_calibrate_confirm_flow);
+    RUN_TEST(test_ui_state_machine_calibrate_result_shows_outcome_and_ok_returns_to_normal);
     RUN_TEST(test_ui_state_machine_info_menu_is_separate_from_settings_and_read_only);
     RUN_TEST(test_ui_state_machine_test_all_zones_flow);
     RUN_TEST(test_ui_state_machine_schedule_duration_edit);

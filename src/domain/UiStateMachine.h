@@ -95,24 +95,28 @@ public:
     static constexpr uint8_t kTestAllIndexDuration = 1;
     static constexpr uint8_t kTestAllIndexBack = 2;
 
-    // MenuSettings: 9 rows, all the settings that can actually change. All rows are clickable
+    // MenuSettings: 10 rows, all the settings that can actually change. All rows are clickable
     // except BACK (see spec-comment on kInfoItemCount below for the read-only counterparts, split
     // out into their own MenuInfo screen) but every row still gets a named index here so the
     // renderer's switch and this class's click routing share one definition of the layout rather
     // than two hand-kept-in-sync copies (this is exactly how the WiFi row's insertion previously
     // broke BACK: the renderer's item count moved to 8 without this class's matching update).
-    // Auto-adjustment is deliberately first: it's the master on/off for the whole weather feature,
-    // so it reads before any of the fields it affects (Adjust/Upper/Lower/rain-skip thresholds).
-    static constexpr uint8_t kSettingsItemCount = 9;
-    static constexpr uint8_t kSettingsIndexAutoAdjustment = 0;
-    static constexpr uint8_t kSettingsIndexPercentage = 1;
-    static constexpr uint8_t kSettingsIndexUpperLimit = 2;
-    static constexpr uint8_t kSettingsIndexLowerLimit = 3;
-    static constexpr uint8_t kSettingsIndexRainSkipProbability = 4;
-    static constexpr uint8_t kSettingsIndexRainSkipAmount = 5;
-    static constexpr uint8_t kSettingsIndexScheduleActive = 6;
-    static constexpr uint8_t kSettingsIndexRestart = 7;
-    static constexpr uint8_t kSettingsIndexBack = 8;
+    // Schedule is deliberately first: weather-based auto-adjustment only makes sense when the
+    // schedule itself is active — with scheduling off, watering is manual/on-demand, and there's
+    // nothing for the daily Adjust% recalculation to apply to. Auto-adjustment reads second, still
+    // before the fields it affects when enabled (Adjust/Upper/Lower/rain-skip thresholds); with it
+    // off, Adjust% is a plain manual value instead.
+    static constexpr uint8_t kSettingsItemCount = 10;
+    static constexpr uint8_t kSettingsIndexScheduleActive = 0;
+    static constexpr uint8_t kSettingsIndexAutoAdjustment = 1;
+    static constexpr uint8_t kSettingsIndexPercentage = 2;
+    static constexpr uint8_t kSettingsIndexUpperLimit = 3;
+    static constexpr uint8_t kSettingsIndexLowerLimit = 4;
+    static constexpr uint8_t kSettingsIndexRainSkipProbability = 5;
+    static constexpr uint8_t kSettingsIndexRainSkipAmount = 6;
+    static constexpr uint8_t kSettingsIndexCalibrate = 7;
+    static constexpr uint8_t kSettingsIndexRestart = 8;
+    static constexpr uint8_t kSettingsIndexBack = 9;
 
     // MenuInfo: 9 rows, the read-only counterparts split out of MenuSettings (WiFi/IP/MQTT/Topic/
     // City/Coordinates/LastUpdate/FW are all display-only, per spec) plus BACK. None of the
@@ -147,6 +151,23 @@ public:
     // Shows the Success/Failure outcome after the caller has actually performed the reset.
     void showFactoryResetResult(bool success, uint32_t nowMs);
 
+    // Shows the outcome of a current-sensor calibration run (see main.ino's
+    // handleCalibrateCommand, the same logic MQTT cmd/calibrate uses) after the caller has
+    // actually performed it. Unlike showFactoryResetResult (whose caller immediately forces a
+    // restart, so there's no further poll() left to redraw), this screen just sits until the user
+    // clicks OK (back to Normal, see handleCalibrateResult) or the regular 20s inactivity timeout
+    // blanks the display — nothing auto-dismisses it. valve/pumpMessage are only meaningful when
+    // the corresponding succeeded flag is false (a short reason: "no data", "too low", etc. — see
+    // calibrateOneSensor's messageOut in main.ino); both false with the same message means the
+    // whole run was rejected outright (e.g. valve not open) before either sensor was attempted.
+    void showCalibrateResult(bool valveSucceeded,
+                             uint16_t valveBaseLevel,
+                             const char* valveMessage,
+                             bool pumpSucceeded,
+                             uint16_t pumpBaseLevel,
+                             const char* pumpMessage,
+                             uint32_t nowMs);
+
     UiScreen screen() const { return screen_; }
     uint8_t selectedIndex() const { return selectedIndex_; }
     bool editing() const { return editing_; }
@@ -164,6 +185,13 @@ public:
     bool factoryResetConfirmYesSelected() const { return factoryResetConfirmYes_; }
     bool factoryResetSucceeded() const { return factoryResetSucceeded_; }
     bool restartConfirmYesSelected() const { return restartConfirmYes_; }
+    bool calibrateConfirmYesSelected() const { return calibrateConfirmYes_; }
+    bool calibrateValveSucceeded() const { return calibrateValveSucceeded_; }
+    uint16_t calibrateValveBaseLevel() const { return calibrateValveBaseLevel_; }
+    const char* calibrateValveMessage() const { return calibrateValveMessage_; }
+    bool calibratePumpSucceeded() const { return calibratePumpSucceeded_; }
+    uint16_t calibratePumpBaseLevel() const { return calibratePumpBaseLevel_; }
+    const char* calibratePumpMessage() const { return calibratePumpMessage_; }
 
     uint8_t pendingScheduleZone() const { return pendingScheduleZone_; }
     uint8_t pendingScheduleDay() const { return pendingScheduleDay_; }
@@ -191,6 +219,8 @@ private:
     UiIntent handleMenuTestAll(UiInputEvent event);
     UiIntent handleRestartConfirm(UiInputEvent event);
     UiIntent handleFactoryResetConfirm(UiInputEvent event);
+    UiIntent handleCalibrateConfirm(UiInputEvent event);
+    UiIntent handleCalibrateResult(UiInputEvent event);
 
     static uint8_t stepIndex(uint8_t current, uint8_t count, bool forward);
 
@@ -226,6 +256,14 @@ private:
     bool factoryResetConfirmYes_ = false;
     bool factoryResetSucceeded_ = false;
     bool restartConfirmYes_ = false;
+
+    bool calibrateConfirmYes_ = false;
+    bool calibrateValveSucceeded_ = false;
+    uint16_t calibrateValveBaseLevel_ = 0;
+    char calibrateValveMessage_[16] = {};
+    bool calibratePumpSucceeded_ = false;
+    uint16_t calibratePumpBaseLevel_ = 0;
+    char calibratePumpMessage_[16] = {};
 
     bool active_ = false;  // Active-interaction vs. display-off.
     uint32_t interactionDeadlineMs_ = 0;

@@ -324,6 +324,13 @@ to see a reading is `cmd/calibrate`, next.
 
 ### cmd/calibrate
 
+Also reachable from the device itself, with no MQTT client needed: the rotary UI's Settings menu
+has a **Calibrate CS** item (`UiStateMachine::kSettingsIndexCalibrate`, right before Restart) that
+asks for the usual YES/NO confirmation, then runs the exact same `handleCalibrateCommand()` logic below
+— including the same rejections — and shows the outcome on the SSD1309 (each sensor's new base
+level, or its short rejection reason) with an OK button to dismiss back to the normal screen. See
+`src/ui/IrrigatorUi.cpp`'s `renderCalibrateConfirm()`/`renderCalibrateResult()`.
+
 `/cmd/calibrate` captures each sensor's **base** — the reference level everything else in this
 section compares against — as the average of its last `CURRENT_RMS_HISTORY_LEN` (12) bursts, a
 trailing ~1 minute at the 5s burst cadence (`CurrentRmsHistory` in `main.ino`, fed by
@@ -444,7 +451,8 @@ direction explicitly: `avgPastTempC`/`rainPastDaysMm` (historical) vs.
 whole feature, checked first thing in both `runAutoAdjustmentIfDue()` and
 `weatherAutoAdjustStatus()` — when `false`, the daily cycle never runs and scheduled watering keeps
 using the manual `watering_percentage` unmodified, exactly as if the feature didn't exist. It's
-editable from the device's own rotary UI (Settings menu, first item) or Home Assistant's
+editable from the device's own rotary UI (Settings menu, second item — right after Schedule, since
+auto-adjustment only makes sense while the schedule itself is active) or Home Assistant's
 `switch.irrigator_auto_adjustment`; either path writes through `/cmd/auto_adjustment` semantics and
 persists immediately (see **MQTT**, above). Geolocation resolution (`tryGeolocateIfDue()`) is
 deliberately *not* gated by this — it's cheap, one-time, and its result (city/coordinates) is still

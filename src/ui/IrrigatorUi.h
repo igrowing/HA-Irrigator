@@ -57,6 +57,17 @@ public:
     // and restart, so there's no further poll() cycle left to pick the change up naturally).
     void showFactoryResetResult(bool success, uint32_t nowMs);
 
+    // Shows the current-sensor calibration outcome (see UiStateMachine::showCalibrateResult's doc
+    // for the parameters) and redraws immediately — called from main.ino's handleUiIntent right
+    // after it runs handleCalibrateCommand() for the UiIntentType::CalibrateCurrentSensors intent.
+    void showCalibrateResult(bool valveSucceeded,
+                             uint16_t valveBaseLevel,
+                             const char* valveMessage,
+                             bool pumpSucceeded,
+                             uint16_t pumpBaseLevel,
+                             const char* pumpMessage,
+                             uint32_t nowMs);
+
     // Polls the rotary input, advances the UI state machine, renders the current screen
     // (throttled — see kRenderIntervalMs), and returns whatever intent the state machine
     // produced this call (UiIntentType::None if nothing actionable happened).
@@ -79,6 +90,8 @@ private:
     void renderRestartConfirm();
     void renderFactoryResetConfirm();
     void renderFactoryResetResult();
+    void renderCalibrateConfirm();
+    void renderCalibrateResult();
     void drawMenuList(const char* title, uint8_t itemCount, uint8_t selectedIndex,
                       const MenuLabelBuilder& labelBuilder);
 

@@ -53,6 +53,18 @@ void IrrigatorUi::showFactoryResetResult(bool success, uint32_t nowMs) {
     render(nowMs, RenderData{});
 }
 
+void IrrigatorUi::showCalibrateResult(bool valveSucceeded,
+                                      uint16_t valveBaseLevel,
+                                      const char* valveMessage,
+                                      bool pumpSucceeded,
+                                      uint16_t pumpBaseLevel,
+                                      const char* pumpMessage,
+                                      uint32_t nowMs) {
+    uiState_.showCalibrateResult(
+        valveSucceeded, valveBaseLevel, valveMessage, pumpSucceeded, pumpBaseLevel, pumpMessage, nowMs);
+    render(nowMs, RenderData{});
+}
+
 void IrrigatorUi::showCaptivePortal(const String& apSsid, const IPAddress& ip) {
     display_.clearBuffer();
     display_.setFont(u8g2_font_6x10_tr);
@@ -198,6 +210,12 @@ void IrrigatorUi::render(uint32_t nowMs, const RenderData& data) {
             break;
         case ::irrigator::domain::UiScreen::FactoryResetResult:
             renderFactoryResetResult();
+            break;
+        case ::irrigator::domain::UiScreen::CalibrateConfirm:
+            renderCalibrateConfirm();
+            break;
+        case ::irrigator::domain::UiScreen::CalibrateResult:
+            renderCalibrateResult();
             break;
         case ::irrigator::domain::UiScreen::DisplayOff:
         default:
@@ -390,6 +408,52 @@ void IrrigatorUi::renderFactoryResetResult() {
     display_.sendBuffer();
 }
 
+void IrrigatorUi::renderCalibrateConfirm() {
+    display_.clearBuffer();
+    display_.setFont(u8g2_font_helvB08_tr);
+    drawCentered(display_, 20, "CALIBRATE CS?");
+    display_.setFont(u8g2_font_6x10_tr);
+    drawCentered(display_, 32, "Needs valve+pump");
+    drawCentered(display_, 42, "actively running.");
+
+    display_.setFont(u8g2_font_helvB10_tr);
+    const uint16_t noWidth = display_.getStrWidth(noText);
+    const uint16_t yesWidth = display_.getStrWidth(yesText);
+    if (!uiState_.calibrateConfirmYesSelected()) {
+        display_.drawFrame(noX - 4, 48, noWidth + 8, 16);
+    } else {
+        display_.drawFrame(yesX - 4, 48, yesWidth + 8, 16);
+    }
+    display_.drawStr(noX, 60, noText);
+    display_.drawStr(yesX, 60, yesText);
+    display_.sendBuffer();
+}
+
+void IrrigatorUi::renderCalibrateResult() {
+    display_.clearBuffer();
+    display_.setFont(u8g2_font_6x10_tr);
+    drawCentered(display_, 10, "CALIBRATION");
+
+    char line[24];
+    if (uiState_.calibrateValveSucceeded()) {
+        snprintf(line, sizeof(line), "Valve base: %u", static_cast<unsigned>(uiState_.calibrateValveBaseLevel()));
+    } else {
+        snprintf(line, sizeof(line), "Valve: %s", uiState_.calibrateValveMessage());
+    }
+    drawCentered(display_, 26, line);
+
+    if (uiState_.calibratePumpSucceeded()) {
+        snprintf(line, sizeof(line), "Pump base: %u", static_cast<unsigned>(uiState_.calibratePumpBaseLevel()));
+    } else {
+        snprintf(line, sizeof(line), "Pump: %s", uiState_.calibratePumpMessage());
+    }
+    drawCentered(display_, 40, line);
+
+    display_.setFont(u8g2_font_helvB10_tr);
+    drawCentered(display_, 60, "[ OK ]");
+    display_.sendBuffer();
+}
+
 void IrrigatorUi::drawMenuList(const char* title,
                                uint8_t itemCount,
                                uint8_t selectedIndex,
@@ -514,6 +578,9 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                     break;
                 case Settings::kSettingsIndexRestart:
                     snprintf(buffer, size, "Restart");
+                    break;
+                case Settings::kSettingsIndexCalibrate:
+                    snprintf(buffer, size, "Calibrate CS");
                     break;
                 case Settings::kSettingsIndexBack:
                     snprintf(buffer, size, "BACK");

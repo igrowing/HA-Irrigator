@@ -20,6 +20,8 @@ enum class UiScreen : uint8_t {
     RestartConfirm,
     FactoryResetConfirm,
     FactoryResetResult,
+    CalibrateConfirm,
+    CalibrateResult,
 };
 
 enum class UiIntentType : uint8_t {
@@ -42,6 +44,7 @@ enum class UiIntentType : uint8_t {
     RunAllZonesTest,
     RestartDevice,
     FactoryReset,
+    CalibrateCurrentSensors,
 };
 
 struct UiIntent {

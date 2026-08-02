@@ -217,6 +217,30 @@ char lastValveOvercurrentAlertDate[irrigator::board::ZONE_COUNT][11] = {};
 char lastValveUndercurrentAlertDate[irrigator::board::ZONE_COUNT][11] = {};
 char lastPumpOvercurrentAlertDate[11] = {};
 
+// Structured outcome of one handleCalibrateCommand() run, for callers that need more than the
+// MQTT side-effects (currently just the Settings-menu "Calibrate CS" flow — see UiIntentType::
+// CalibrateCurrentSensors in handleUiIntent — which mirrors it onto the display via
+// IrrigatorUi::showCalibrateResult). preconditionFailed means neither sensor was even attempted
+// (e.g. valve not open); otherwise each sensor's succeeded/baseLevel/message is independent — one
+// can succeed while the other is rejected. message is only meaningful when succeeded is false, and
+// deliberately short (unlike the verbose /alert text calibrateOneSensor() still publishes over
+// MQTT regardless of this struct) so it fits the SSD1309's ~21-char line width.
+struct CalibrateOutcome {
+    bool preconditionFailed = false;
+    bool valveSucceeded = false;
+    uint16_t valveBaseLevel = 0;
+    char valveMessage[16] = {};
+    bool pumpSucceeded = false;
+    uint16_t pumpBaseLevel = 0;
+    char pumpMessage[16] = {};
+};
+
+// Explicit forward declaration: the default argument on this signature confuses the Arduino
+// build's automatic prototype generation (it never emits a prototype for this one, leading to a
+// "not declared in this scope" at handleUiIntent's earlier call site otherwise). The default is
+// only ever specified once, here — see handleCalibrateCommand's actual definition below.
+void handleCalibrateCommand(uint32_t nowMs, CalibrateOutcome* outcome = nullptr);
+
 String makeDevicePrefix() {
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
@@ -1068,6 +1092,13 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
             ESP.restart();
             break;
         }
+        case UiIntentType::CalibrateCurrentSensors: {
+            CalibrateOutcome outcome;
+            handleCalibrateCommand(nowMs, &outcome);
+            ui.showCalibrateResult(outcome.valveSucceeded, outcome.valveBaseLevel, outcome.valveMessage,
+                                   outcome.pumpSucceeded, outcome.pumpBaseLevel, outcome.pumpMessage, nowMs);
+            break;
+        }
         case UiIntentType::None:
         default:
             break;
@@ -1079,19 +1110,27 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
 // Rejects (leaving `baseLevel` untouched) an empty history or a too-low average — either way it
 // reports why via /alert rather than silently saving a bad calibration (agents.md's fail-loud
 // rule): a near-zero reading usually means the output wasn't actually drawing current (wiring
-// fault, relay not energizing), not a genuinely low-draw device.
+// fault, relay not energizing), not a genuinely low-draw device. succeededOut/messageOut mirror
+// the outcome for handleCalibrateCommand's optional CalibrateOutcome (messageOut is a short,
+// display-friendly reason — see CalibrateOutcome's doc — distinct from the verbose /alert text
+// published below).
 void calibrateOneSensor(const char* sensorName,
                         CurrentRmsHistory& history,
                         const uint16_t* rawMv,
                         uint16_t rawCount,
                         uint16_t& baseLevel,
-                        bool& updated) {
+                        bool& updated,
+                        bool& succeededOut,
+                        char* messageOut,
+                        size_t messageOutSize) {
+    succeededOut = false;
     if (history.count == 0) {
         char alertMsg[144];
         snprintf(alertMsg, sizeof(alertMsg),
                 R"({"command":"calibrate","sensor":"%s","error":"no samples collected yet, try again in a few seconds"})",
                 sensorName);
         mqtt.publishAlert(alertMsg);
+        snprintf(messageOut, messageOutSize, "no data yet");
         return;
     }
 
@@ -1102,11 +1141,13 @@ void calibrateOneSensor(const char* sensorName,
                 R"({"command":"calibrate","sensor":"%s","error":"reading too low (%u); check wiring or that the relay is actually energizing"})",
                 sensorName, static_cast<unsigned>(avg));
         mqtt.publishAlert(alertMsg);
+        snprintf(messageOut, messageOutSize, "too low (%u)", static_cast<unsigned>(avg));
         return;
     }
 
     baseLevel = avg;
     updated = true;
+    succeededOut = true;
 
     JsonDocument doc;
     doc["sensor"] = sensorName;
@@ -1121,24 +1162,43 @@ void calibrateOneSensor(const char* sensorName,
     mqtt.publishCalibrate(payload);
 }
 
-// MQTT cmd/calibrate: captures each sensor's base as the average of its last
+// MQTT cmd/calibrate AND the Settings-menu "Calibrate CS" item share this exact logic (see
+// CalibrateOutcome's doc) — captures each sensor's base as the average of its last
 // CURRENT_RMS_HISTORY_LEN burst readings, saved to settings (see Settings.h's doc on why these
 // two fields are device-owned). Requires an actual watering run — not just the pump alone — so
 // the captured base reflects real load rather than a dry/idle reading; a pump-only run still
-// energizes the pump but proves nothing about typical loaded current.
-void handleCalibrateCommand(uint32_t nowMs) {
+// energizes the pump but proves nothing about typical loaded current. `outcome`, if non-null, is
+// filled in for callers that need more than the MQTT side-effects this always performs.
+void handleCalibrateCommand(uint32_t nowMs, CalibrateOutcome* outcome) {
     const auto snapshot = irrigation.snapshot(nowMs);
     if (snapshot.state != irrigator::domain::IrrigationState::Watering) {
         reportMqttError("command", "calibrate",
                         "Make sure the valve is open - better if the pump is running too.");
+        if (outcome != nullptr) {
+            outcome->preconditionFailed = true;
+            snprintf(outcome->valveMessage, sizeof(outcome->valveMessage), "not open");
+            snprintf(outcome->pumpMessage, sizeof(outcome->pumpMessage), "not running");
+        }
         return;
     }
 
     bool updated = false;
+    bool valveSucceeded = false;
+    bool pumpSucceeded = false;
+    char valveMessage[16] = {};
+    char pumpMessage[16] = {};
     calibrateOneSensor("valve", valveRmsHistory, lastValveBurstRawMv, lastValveBurstRawCount,
-                       settings.valveCurrentBaseLevel, updated);
+                       settings.valveCurrentBaseLevel, updated, valveSucceeded, valveMessage, sizeof(valveMessage));
     calibrateOneSensor("pump", pumpRmsHistory, lastPumpBurstRawMv, lastPumpBurstRawCount,
-                       settings.pumpCurrentBaseLevel, updated);
+                       settings.pumpCurrentBaseLevel, updated, pumpSucceeded, pumpMessage, sizeof(pumpMessage));
+    if (outcome != nullptr) {
+        outcome->valveSucceeded = valveSucceeded;
+        outcome->valveBaseLevel = settings.valveCurrentBaseLevel;
+        snprintf(outcome->valveMessage, sizeof(outcome->valveMessage), "%s", valveMessage);
+        outcome->pumpSucceeded = pumpSucceeded;
+        outcome->pumpBaseLevel = settings.pumpCurrentBaseLevel;
+        snprintf(outcome->pumpMessage, sizeof(outcome->pumpMessage), "%s", pumpMessage);
+    }
 
     if (updated) {
         persistSettings();

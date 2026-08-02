@@ -74,9 +74,11 @@ Two things matter for either sensor to read correctly:
 - Pass the wire through the clamp once (a single loop), not several times, and note the direction
   arrow printed on the sensor if it has one.
 
-Fresh current sensors read placeholder values until calibrated against your actual hardware setup
-(see **Current-sensor calibration** in [technical.md](technical.md)) — don't worry if the raw
-readings look off before that step.
+Current readings work out of the box — there's nothing to pre-calibrate before they're meaningful.
+Calibration is a separate, optional step (Settings > **Calibrate CS**) that teaches the device what
+*normal* draw looks like for your specific valves and pump, so it can warn you later if something
+draws abnormally more or less than that — see **Current-sensor calibration explained**, near the
+end of this document.
 
 ### Connecting the zone valves
 
@@ -261,22 +263,27 @@ Everything here can be changed from the knob:
 
 ```
 SETTINGS
-> Auto-adjust: on
+> Schedule: active
+  Auto-adjust: on
   Adjust: 100 %
   Upper limit: 200 %
   Lower limit: 40 %
   Skip rain prob: 70 %
   Skip rain amt: 4 mm
-  Schedule: active
+  Calibrate CS
   Restart
   BACK
 ```
 
+- **Schedule**: turns the whole weekly schedule on or off. First in the list because weather-based
+  auto-adjustment (next) only makes sense while the schedule itself is active — with scheduling
+  off, watering is manual/on-demand, and there's nothing for the daily **Adjust** recalculation to
+  apply to.
 - **Auto-adjust**: the master on/off switch for the whole weather-based auto-adjustment feature
   (both the daily percentage recalculation and the rain-skip check, below) — click to flip it.
-  Turning it off freezes **Adjust** at whatever it's currently set to until turned back on; it's
-  also available as `switch.irrigator_auto_adjustment` in Home Assistant, topmost in the
-  **Auto-adjustment Weather Data** card.
+  Turning it off freezes **Adjust** at whatever it's currently set to (a plain manual value) until
+  turned back on; it's also available as `switch.irrigator_auto_adjustment` in Home Assistant,
+  topmost in the **Auto-adjustment Weather Data** card.
 - **Adjust**: a watering percentage (10–300%) that scales every scheduled run's duration up or
   down — handy for quickly cutting back watering in cooler weather without editing every program.
   Once the device has a location (see **Loc** in Info, below) and **Auto-adjust** is on, this value
@@ -288,7 +295,13 @@ SETTINGS
 - **Skip rain prob** / **Skip rain amt**: the two thresholds that decide whether today's watering
   is skipped outright because of rain in the forecast (defaults 70% / 4mm) — see **Step 1** below
   for exactly how they're combined.
-- **Schedule**: turns the whole weekly schedule on or off.
+- **Calibrate CS**: captures the valve and pump current-sensor calibration base used for
+  over/undercurrent alerting, from whatever's actually running right now. Needs an active watering
+  run (valve open — not just the pump alone), and asks for confirmation first
+  (`CALIBRATE CS?  [NO]  YES`, same turn-and-click gesture as **Restart**). On confirming, it shows
+  each sensor's new base level (or a short rejection reason, e.g. "too low") on screen — click the
+  `[ OK ]` that appears to return to the normal screen. Same effect as MQTT `cmd/calibrate`; see
+  `docs/technical.md`'s **cmd/calibrate** section for the full protocol.
 - **Restart**: reboots the device. Asks you to confirm first (`RESTART?  [NO]  YES` — turn to
   move onto `YES`, click to confirm), the same way **Stop**/**Stop all** do. Choosing `NO` (or
   backing out) returns you to the normal screen without restarting. No saved settings or schedule
@@ -416,4 +429,83 @@ A couple of things worth knowing about these numbers:
   boundary and are *not* skipped — only a result strictly below the limit skips the day.
   Anything colder or rainier than those crosses into skip territory.
 
+
+## Current-sensor calibration explained
+
+The Irrigator watches how much current the valve and the pump actually draw while running, so it
+can warn you later if something's wrong — a stuck or jammed valve draws noticeably more than
+normal, a disconnected valve or dry-running pump draws noticeably less. But "normal" is different
+for every installation (valve model, wire length, pump size), so the device doesn't assume a
+number — you permit it to learn your installation, once, by calibrating.
+
+### Why it's needed
+
+Current readings work fine on their own, with no calibration required for them to be meaningful —
+see the note under **Wiring the current sensors**, above. What calibration adds is a **reference
+point**: the device records what your valve and pump draw during a real, healthy run, then quietly
+compares every later reading against that baseline. Skip calibration entirely and nothing breaks —
+you simply don't get the early warning if a valve or the pump ever starts drawing abnormally more
+or less current than it used to.
+
+### How to start it
+
+1. **Start an actual watering run first** — a manual zone, a scheduled one, or one triggered from
+   Home Assistant/MQTT. Calibration needs to see the valve and pump actually running under normal
+   load; it won't run against an idle system, and the pump running alone (without a zone open)
+   doesn't count either.
+2. While that run is active, **hold the button down** to open the menu, turn to **Settings**, click
+   in, then turn to **Calibrate CS** and click it.
+3. Confirm: `CALIBRATE CS?  [NO]  YES` — turn to move onto `YES`, click to confirm (turn back to
+   `NO` and click, or just hold the button down, to back out without doing anything).
+
+### What success looks like
+
+A few seconds after confirming, the screen shows both sensors' new baseline readings:
+
+```
+CALIBRATION
+  Valve base: 734
+  Pump base: 612
+       [ OK ]
+```
+
+These numbers aren't amps or any other real-world unit — they're just the device's own internal
+reference level for "normal" on your particular hardware (see **cmd/calibrate** in
+[technical.md](technical.md) if you're curious about the math behind them). Click to return to the
+normal screen; the new baselines take effect immediately.
+
+### What failure looks like
+
+**Nothing running yet**: if you click **Calibrate CS** without an actual zone watering (the pump
+running alone doesn't count), both lines show the same reason and nothing is saved:
+
+```
+CALIBRATION
+  Valve: not open
+  Pump: not running
+       [ OK ]
+```
+
+Start a real zone and try again.
+
+**Per-sensor rejection**: once a real zone is running, each sensor is judged independently — one
+can succeed while the other doesn't:
+
+```
+CALIBRATION
+  Valve base: 734
+  Pump: too low (4)
+       [ OK ]
+```
+
+- **"no data yet"** — the run only just started; the device needs a few seconds of readings before
+  it has anything to average. Wait a moment and try again.
+- **"too low (N)"** — the reading was too close to zero to trust as a real baseline, usually a
+  wiring problem or a relay that isn't actually energizing that sensor's circuit — worth checking
+  before you try again.
+
+Re-running **Calibrate CS** always overwrites the previous baseline for whichever sensor(s)
+succeed this time — there's no separate "reset calibration" step. The same calibration is also
+reachable remotely over MQTT (`cmd/calibrate`) with an identical outcome; see
+[technical.md](technical.md) for that path and the full technical detail behind these numbers.
 

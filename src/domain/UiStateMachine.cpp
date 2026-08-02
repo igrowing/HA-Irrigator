@@ -1,5 +1,7 @@
 #include "UiStateMachine.h"
 
+#include <stdio.h>
+
 #include "DurationAdjuster.h"
 #include "board_config.h"
 
@@ -59,6 +61,23 @@ void UiStateMachine::showFactoryResetResult(bool success, uint32_t nowMs) {
     factoryResetSucceeded_ = success;
 }
 
+void UiStateMachine::showCalibrateResult(bool valveSucceeded,
+                                         uint16_t valveBaseLevel,
+                                         const char* valveMessage,
+                                         bool pumpSucceeded,
+                                         uint16_t pumpBaseLevel,
+                                         const char* pumpMessage,
+                                         uint32_t nowMs) {
+    armTimeout(nowMs);
+    screen_ = UiScreen::CalibrateResult;
+    calibrateValveSucceeded_ = valveSucceeded;
+    calibrateValveBaseLevel_ = valveBaseLevel;
+    snprintf(calibrateValveMessage_, sizeof(calibrateValveMessage_), "%s", valveMessage == nullptr ? "" : valveMessage);
+    calibratePumpSucceeded_ = pumpSucceeded;
+    calibratePumpBaseLevel_ = pumpBaseLevel;
+    snprintf(calibratePumpMessage_, sizeof(calibratePumpMessage_), "%s", pumpMessage == nullptr ? "" : pumpMessage);
+}
+
 void UiStateMachine::tick(uint32_t nowMs) {
     if (active_ && screen_ != UiScreen::DisplayOff && nowMs >= interactionDeadlineMs_) {
         enterDisplayOff();
@@ -96,6 +115,10 @@ UiIntent UiStateMachine::handleInput(UiInputEvent event, const Context& ctx, uin
             return handleRestartConfirm(event);
         case UiScreen::FactoryResetConfirm:
             return handleFactoryResetConfirm(event);
+        case UiScreen::CalibrateConfirm:
+            return handleCalibrateConfirm(event);
+        case UiScreen::CalibrateResult:
+            return handleCalibrateResult(event);
         case UiScreen::FactoryResetResult:
         case UiScreen::DisplayOff:
         default:
@@ -250,6 +273,41 @@ UiIntent UiStateMachine::handleRestartConfirm(UiInputEvent event) {
             break;
     }
     return intent;
+}
+
+UiIntent UiStateMachine::handleCalibrateConfirm(UiInputEvent event) {
+    UiIntent intent;
+    switch (event) {
+        case UiInputEvent::Clockwise:
+        case UiInputEvent::CounterClockwise:
+            calibrateConfirmYes_ = !calibrateConfirmYes_;
+            break;
+        case UiInputEvent::Click:
+            if (calibrateConfirmYes_) {
+                intent.type = UiIntentType::CalibrateCurrentSensors;
+            } else {
+                screen_ = UiScreen::Normal;
+            }
+            calibrateConfirmYes_ = false;
+            break;
+        case UiInputEvent::LongClick:
+            calibrateConfirmYes_ = false;
+            screen_ = UiScreen::Normal;
+            break;
+    }
+    return intent;
+}
+
+// The result screen is a single dead-end "OK" action, not a navigable list — Clockwise/
+// CounterClockwise are no-ops (nothing to scroll to), and either Click or LongClick dismisses it
+// back to Normal. main.ino is expected to have already called showCalibrateResult() with this
+// screen's content before the UiIntentType::CalibrateCurrentSensors round-trip that got here lands.
+UiIntent UiStateMachine::handleCalibrateResult(UiInputEvent event) {
+    if (event == UiInputEvent::Click || event == UiInputEvent::LongClick) {
+        screen_ = UiScreen::Normal;
+        selectedIndex_ = 0;
+    }
+    return {};
 }
 
 UiStateMachine::MenuMainLayout UiStateMachine::menuMainLayout(bool wateringActive) {
@@ -582,6 +640,9 @@ UiIntent UiStateMachine::handleMenuSettings(UiInputEvent event, const Context& c
             } else if (selectedIndex_ == kSettingsIndexRestart) {
                 restartConfirmYes_ = false;
                 screen_ = UiScreen::RestartConfirm;
+            } else if (selectedIndex_ == kSettingsIndexCalibrate) {
+                calibrateConfirmYes_ = false;
+                screen_ = UiScreen::CalibrateConfirm;
             } else if (selectedIndex_ == kSettingsIndexBack) {
                 screen_ = UiScreen::MenuMain;
                 selectedIndex_ = 0;
