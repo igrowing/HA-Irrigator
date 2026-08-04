@@ -317,7 +317,7 @@
             content: >-
               {%- set day_names = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun']
               -%} {%- set zone_names = state_attr('sensor.irrigator_settings',
-              'zone_names') or {} -%} {%- set recs =
+              'Zones') or {} -%} {%- set recs =
               state_attr('sensor.irrigator_schedule', 'records') or [] -%} {%-
               set sort_key = states('input_select.irrigator_schedule_sort_by')
               -%} {%- set ns = namespace(items=[]) -%} {%- for r in recs -%} {%-
@@ -493,16 +493,31 @@
           - type: entities
             title: Current-Sensor Calibration
             entities:
-              - type: attribute
+              # valve/pump_current_base_level live under settings.json's Current_sensor group now
+              # (see Settings.h) - a plain `type: attribute` row can't drill into a nested
+              # attribute, so these read it via a template instead.
+              - type: template
                 entity: sensor.irrigator_settings
-                attribute: valve_current_base_level
                 name: Valve Base Level
-              - type: attribute
+                state: >-
+                  {{ (state_attr('sensor.irrigator_settings', 'Current_sensor') or {}).get('valve_current_base_level', 0) }}
+              - type: template
                 entity: sensor.irrigator_settings
-                attribute: pump_current_base_level
                 name: Pump Base Level
+                state: >-
+                  {{ (state_attr('sensor.irrigator_settings', 'Current_sensor') or {}).get('pump_current_base_level', 0) }}
               - entity: sensor.irrigator_calibration_result
                 name: Last Calibration Response
+              # Only meaningful once the corresponding sensor is calibrated (base level above is
+              # nonzero) - see Settings::alertPumpUc/etc and drainCurrentBurstResults() in main.ino.
+              - entity: input_boolean.irrigator_alert_pump_uc
+                name: Alert Pump Under-current
+              - entity: input_boolean.irrigator_alert_pump_oc
+                name: Alert Pump Over-current
+              - entity: input_boolean.irrigator_alert_valve_uc
+                name: Alert Valve Under-current
+              - entity: input_boolean.irrigator_alert_valve_oc
+                name: Alert Valve Over-current
               - entity: button.irrigator_calibrate
                 icon: mdi:abacus
                 name: Calibrate Current Sensors
@@ -550,29 +565,29 @@
               - type: attribute
                 entity: sensor.irrigator_address_2
                 attribute: rssi_db
-                name: WiFi RSSI
+                name: Wi-Fi RSSI
                 suffix: " dB"
               - type: attribute
                 entity: sensor.irrigator_address_2
-                attribute: wifi_quality
-                name: WiFi Quality
+                attribute: Wi-Fi_quality
+                name: Wi-Fi Quality
               - type: attribute
                 entity: sensor.irrigator_address_2
                 attribute: bssid
-                name: WiFi BSSID
+                name: Wi-Fi BSSID
               - type: attribute
                 entity: sensor.irrigator_address_2
-                attribute: wifi_channel
-                name: WiFi Channel
+                attribute: Wi-Fi_channel
+                name: Wi-Fi Channel
               - type: attribute
                 entity: sensor.irrigator_address_2
                 attribute: noise_floor_db
-                name: WiFi Noise Floor
+                name: Wi-Fi Noise Floor
                 suffix: " dB"
               - type: attribute
                 entity: sensor.irrigator_address_2
                 attribute: snr_db
-                name: WiFi SNR
+                name: Wi-Fi SNR
                 suffix: " dB"
               - type: attribute
                 entity: sensor.irrigator_address_2

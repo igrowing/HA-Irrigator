@@ -637,6 +637,18 @@ UiIntent UiStateMachine::handleMenuSettings(UiInputEvent event, const Context& c
             } else if (selectedIndex_ == kSettingsIndexScheduleActive) {
                 intent.type = UiIntentType::ToggleScheduleActive;
                 intent.boolValue = !ctx.scheduleActive;
+            } else if (selectedIndex_ == kSettingsIndexAlertPumpUc) {
+                intent.type = UiIntentType::ToggleAlertPumpUc;
+                intent.boolValue = !ctx.alertPumpUc;
+            } else if (selectedIndex_ == kSettingsIndexAlertPumpOc) {
+                intent.type = UiIntentType::ToggleAlertPumpOc;
+                intent.boolValue = !ctx.alertPumpOc;
+            } else if (selectedIndex_ == kSettingsIndexAlertValveUc) {
+                intent.type = UiIntentType::ToggleAlertValveUc;
+                intent.boolValue = !ctx.alertValveUc;
+            } else if (selectedIndex_ == kSettingsIndexAlertValveOc) {
+                intent.type = UiIntentType::ToggleAlertValveOc;
+                intent.boolValue = !ctx.alertValveOc;
             } else if (selectedIndex_ == kSettingsIndexRestart) {
                 restartConfirmYes_ = false;
                 screen_ = UiScreen::RestartConfirm;

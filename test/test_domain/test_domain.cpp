@@ -412,6 +412,8 @@ void test_config_store_allows_mqtt_fields_blank() {
         irrigator::domain::parseConfig(brokerWithoutPort, strlen(brokerWithoutPort), config));
 }
 
+// Pre-restructuring flat settings.json (no Zones/Location/Current_sensor/Watering groups) — the
+// per-field fallback (see Settings.h's parseSettings doc) must still recover its real values.
 void test_settings_store_defaults_missing_zone_names() {
     const char* json = R"({"watering_percentage":80,"zone_names":{"1":"Grass"}})";
     irrigator::domain::Settings settings;
@@ -422,7 +424,7 @@ void test_settings_store_defaults_missing_zone_names() {
 }
 
 void test_settings_store_rejects_out_of_range_percentage() {
-    const char* json = R"({"watering_percentage":999})";
+    const char* json = R"({"Watering":{"watering_percentage":999}})";
     irrigator::domain::Settings settings;
     TEST_ASSERT_FALSE(irrigator::domain::parseSettings(json, strlen(json), settings));
 }
@@ -432,6 +434,8 @@ void test_settings_store_round_trips() {
     settings.wateringPercentage = 120;
     settings.scheduleActive = false;
     settings.autoAdjustmentEnabled = false;
+    settings.alertPumpUc = false;
+    settings.alertValveOc = false;
 
     char buffer[irrigator::board::SETTINGS_JSON_MAX_BYTES];
     const size_t written = irrigator::domain::serializeSettings(settings, buffer, sizeof(buffer));
@@ -442,6 +446,10 @@ void test_settings_store_round_trips() {
     TEST_ASSERT_EQUAL_INT16(120, roundTripped.wateringPercentage);
     TEST_ASSERT_FALSE(roundTripped.scheduleActive);
     TEST_ASSERT_FALSE(roundTripped.autoAdjustmentEnabled);
+    TEST_ASSERT_FALSE(roundTripped.alertPumpUc);
+    TEST_ASSERT_TRUE(roundTripped.alertPumpOc);
+    TEST_ASSERT_TRUE(roundTripped.alertValveUc);
+    TEST_ASSERT_FALSE(roundTripped.alertValveOc);
 }
 
 // A settings.json written before auto_adjustment_enabled existed (or any upload that omits it)
@@ -452,6 +460,48 @@ void test_settings_store_defaults_auto_adjustment_enabled_to_true_when_missing()
     irrigator::domain::Settings settings;
     TEST_ASSERT_TRUE(irrigator::domain::parseSettings(json, strlen(json), settings));
     TEST_ASSERT_TRUE(settings.autoAdjustmentEnabled);
+}
+
+// The 4 new alert toggles have no pre-restructuring flat key to fall back to — a settings.json
+// missing them entirely (old file, or a nested file predating this feature) must default true.
+void test_settings_store_defaults_alert_toggles_to_true_when_missing() {
+    const char* json = R"({"Watering":{"watering_percentage":80}})";
+    irrigator::domain::Settings settings;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(json, strlen(json), settings));
+    TEST_ASSERT_TRUE(settings.alertPumpUc);
+    TEST_ASSERT_TRUE(settings.alertPumpOc);
+    TEST_ASSERT_TRUE(settings.alertValveUc);
+    TEST_ASSERT_TRUE(settings.alertValveOc);
+}
+
+// A full pre-restructuring flat settings.json — one field from each of the four new groups —
+// must recover every real value via the fallback, not just the ones exercised individually above.
+void test_settings_store_migrates_full_flat_json_via_fallback() {
+    const char* json = R"({
+        "watering_percentage":85,
+        "schedule_active":false,
+        "location_known":true,
+        "latitude":40.7,
+        "longitude":-74.0,
+        "city":"Testville",
+        "valve_current_base_level":700,
+        "pump_current_base_level":900,
+        "zone_names":{"1":{"name":"Front","enabled":false}}
+    })";
+    irrigator::domain::Settings settings;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(json, strlen(json), settings));
+    TEST_ASSERT_EQUAL_INT16(85, settings.wateringPercentage);
+    TEST_ASSERT_FALSE(settings.scheduleActive);
+    TEST_ASSERT_TRUE(settings.locationKnown);
+    TEST_ASSERT_EQUAL_FLOAT(40.7f, settings.latitude);
+    TEST_ASSERT_EQUAL_FLOAT(-74.0f, settings.longitude);
+    TEST_ASSERT_EQUAL_STRING("Testville", settings.city);
+    TEST_ASSERT_EQUAL_UINT16(700, settings.valveCurrentBaseLevel);
+    TEST_ASSERT_EQUAL_UINT16(900, settings.pumpCurrentBaseLevel);
+    TEST_ASSERT_EQUAL_STRING("Front", settings.zoneNames[0]);
+    TEST_ASSERT_FALSE(settings.zoneEnabled[0]);
+    // New toggles still default true even though everything else in this file is pre-restructuring.
+    TEST_ASSERT_TRUE(settings.alertPumpUc);
 }
 
 void test_merge_config_keeps_untouched_fields_and_updates_present_ones() {
@@ -516,7 +566,7 @@ void test_merge_settings_keeps_untouched_fields_and_updates_present_ones() {
     existing.wateringPercentage = 100;
     snprintf(existing.zoneNames[2], sizeof(existing.zoneNames[2]), "%s", "Trees");
 
-    const char* json = R"({"watering_percentage":150})";
+    const char* json = R"({"Watering":{"watering_percentage":150}})";
     irrigator::domain::Settings merged;
     char rejected[256];
     TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
@@ -532,12 +582,12 @@ void test_merge_settings_rejects_bad_type_field_and_alerts_but_keeps_rest() {
     existing.wateringPercentage = 100;
 
     // -1 for a boolean field is a type mismatch, not just an out-of-range number.
-    const char* json = R"({"watering_percentage":300,"auto_adjustment_enabled":-1})";
+    const char* json = R"({"Watering":{"watering_percentage":300,"auto_adjustment_enabled":-1}})";
     irrigator::domain::Settings merged;
     char rejected[256];
     TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
                                                       sizeof(rejected)));
-    TEST_ASSERT_EQUAL_STRING("auto_adjustment_enabled", rejected);
+    TEST_ASSERT_EQUAL_STRING("Watering.auto_adjustment_enabled", rejected);
     TEST_ASSERT_EQUAL_INT16(300, merged.wateringPercentage);
     TEST_ASSERT_TRUE(merged.autoAdjustmentEnabled);
 }
@@ -547,12 +597,12 @@ void test_merge_settings_rejects_out_of_range_numeric_field() {
     existing.wateringPercentage = 100;
 
     // 500 is above the hard 0-300 clamp on watering_percentage.
-    const char* json = R"({"watering_percentage":500})";
+    const char* json = R"({"Watering":{"watering_percentage":500}})";
     irrigator::domain::Settings merged;
     char rejected[256];
     TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
                                                       sizeof(rejected)));
-    TEST_ASSERT_EQUAL_STRING("watering_percentage", rejected);
+    TEST_ASSERT_EQUAL_STRING("Watering.watering_percentage", rejected);
     TEST_ASSERT_EQUAL_INT16(100, merged.wateringPercentage);
 }
 
@@ -562,7 +612,7 @@ void test_merge_settings_updates_single_zone_without_disturbing_others() {
     snprintf(existing.zoneNames[2], sizeof(existing.zoneNames[2]), "%s", "Back");
     existing.zoneEnabled[2] = true;
 
-    const char* json = R"({"zone_names":{"3":{"enabled":false}}})";
+    const char* json = R"({"Zones":{"3":{"enabled":false}}})";
     irrigator::domain::Settings merged;
     char rejected[256];
     TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
@@ -579,12 +629,12 @@ void test_merge_settings_upper_lower_limit_cross_validated_together() {
     existing.lowerLimitPercent = 40;
 
     // upper < lower makes no sense together; both must be rejected and neither applied.
-    const char* json = R"({"upper_limit":30,"lower_limit":40})";
+    const char* json = R"({"Watering":{"upper_limit":30,"lower_limit":40}})";
     irrigator::domain::Settings merged;
     char rejected[256];
     TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
                                                       sizeof(rejected)));
-    TEST_ASSERT_EQUAL_STRING("upper_limit,lower_limit", rejected);
+    TEST_ASSERT_EQUAL_STRING("Watering.upper_limit,Watering.lower_limit", rejected);
     TEST_ASSERT_EQUAL_INT16(200, merged.upperLimitPercent);
     TEST_ASSERT_EQUAL_INT16(40, merged.lowerLimitPercent);
 }
@@ -597,7 +647,7 @@ void test_merge_settings_never_reads_device_owned_location_fields() {
     snprintf(existing.city, sizeof(existing.city), "%s", "Testville");
 
     const char* json =
-        R"({"location_known":false,"latitude":0.0,"longitude":0.0,"city":"Somewhere Else"})";
+        R"({"Location":{"location_known":false,"latitude":0.0,"longitude":0.0,"city":"Somewhere Else"}})";
     irrigator::domain::Settings merged;
     char rejected[256];
     TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
@@ -607,6 +657,26 @@ void test_merge_settings_never_reads_device_owned_location_fields() {
     TEST_ASSERT_EQUAL_FLOAT(12.5f, merged.latitude);
     TEST_ASSERT_EQUAL_FLOAT(-3.5f, merged.longitude);
     TEST_ASSERT_EQUAL_STRING("Testville", merged.city);
+}
+
+void test_merge_settings_updates_current_sensor_alert_toggles() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    TEST_ASSERT_TRUE(existing.alertPumpUc);
+    TEST_ASSERT_TRUE(existing.alertPumpOc);
+    TEST_ASSERT_TRUE(existing.alertValveUc);
+    TEST_ASSERT_TRUE(existing.alertValveOc);
+
+    const char* json =
+        R"({"Current_sensor":{"alert_pump_uc":false,"alert_valve_oc":false}})";
+    irrigator::domain::Settings merged;
+    char rejected[256];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("", rejected);
+    TEST_ASSERT_FALSE(merged.alertPumpUc);
+    TEST_ASSERT_TRUE(merged.alertPumpOc);
+    TEST_ASSERT_TRUE(merged.alertValveUc);
+    TEST_ASSERT_FALSE(merged.alertValveOc);
 }
 
 void test_schedule_store_round_trips_valid_list() {
@@ -1015,6 +1085,57 @@ void test_ui_state_machine_settings_auto_adjustment_toggle_is_second_item() {
     TEST_ASSERT_TRUE(onIntent.boolValue);
 }
 
+// The 4 alert toggles sit directly above Calibrate CS, same direct-toggle shape as
+// ScheduleActive/AutoAdjustment (no separate edit step).
+void test_ui_state_machine_settings_alert_toggles_sit_above_calibrate() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.alertPumpUc = true;
+    ctx.alertPumpOc = true;
+    ctx.alertValveUc = true;
+    ctx.alertValveOc = true;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Schedule -> Test all zones
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Test all zones -> Settings
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
+
+    for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexAlertPumpUc; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 350 + i);
+    }
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexAlertPumpUc, ui.selectedIndex());
+    const irrigator::domain::UiIntent pumpUcOff =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);
+    TEST_ASSERT_TRUE(pumpUcOff.type == irrigator::domain::UiIntentType::ToggleAlertPumpUc);
+    TEST_ASSERT_FALSE(pumpUcOff.boolValue);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuSettings);
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 450);  // -> Alert pump OC
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexAlertPumpOc, ui.selectedIndex());
+    const irrigator::domain::UiIntent pumpOcOff =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);
+    TEST_ASSERT_TRUE(pumpOcOff.type == irrigator::domain::UiIntentType::ToggleAlertPumpOc);
+    TEST_ASSERT_FALSE(pumpOcOff.boolValue);
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 550);  // -> Alert valve UC
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexAlertValveUc, ui.selectedIndex());
+    const irrigator::domain::UiIntent valveUcOff =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 600);
+    TEST_ASSERT_TRUE(valveUcOff.type == irrigator::domain::UiIntentType::ToggleAlertValveUc);
+    TEST_ASSERT_FALSE(valveUcOff.boolValue);
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 650);  // -> Alert valve OC
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexAlertValveOc, ui.selectedIndex());
+    const irrigator::domain::UiIntent valveOcOff =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 700);
+    TEST_ASSERT_TRUE(valveOcOff.type == irrigator::domain::UiIntentType::ToggleAlertValveOc);
+    TEST_ASSERT_FALSE(valveOcOff.boolValue);
+
+    // One more step must land on Calibrate CS — confirms the 4 new rows sit directly above it.
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 750);
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexCalibrate, ui.selectedIndex());
+}
+
 void test_ui_state_machine_settings_rain_skip_threshold_edit() {
     irrigator::domain::UiStateMachine ui;
     irrigator::domain::UiStateMachine::Context ctx;
@@ -1421,6 +1542,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_settings_store_rejects_out_of_range_percentage);
     RUN_TEST(test_settings_store_round_trips);
     RUN_TEST(test_settings_store_defaults_auto_adjustment_enabled_to_true_when_missing);
+    RUN_TEST(test_settings_store_defaults_alert_toggles_to_true_when_missing);
+    RUN_TEST(test_settings_store_migrates_full_flat_json_via_fallback);
     RUN_TEST(test_merge_config_keeps_untouched_fields_and_updates_present_ones);
     RUN_TEST(test_merge_config_null_or_empty_fields_do_not_change_existing);
     RUN_TEST(test_merge_config_rejects_out_of_range_field_but_keeps_rest);
@@ -1431,6 +1554,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_merge_settings_updates_single_zone_without_disturbing_others);
     RUN_TEST(test_merge_settings_upper_lower_limit_cross_validated_together);
     RUN_TEST(test_merge_settings_never_reads_device_owned_location_fields);
+    RUN_TEST(test_merge_settings_updates_current_sensor_alert_toggles);
     RUN_TEST(test_schedule_store_round_trips_valid_list);
     RUN_TEST(test_schedule_store_rejects_whole_file_on_one_bad_record);
     RUN_TEST(test_schedule_engine_fires_matching_record_once_per_minute);
@@ -1452,6 +1576,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_settings_upper_lower_limit_edit);
     RUN_TEST(test_ui_state_machine_settings_schedule_active_toggle_is_first_item);
     RUN_TEST(test_ui_state_machine_settings_auto_adjustment_toggle_is_second_item);
+    RUN_TEST(test_ui_state_machine_settings_alert_toggles_sit_above_calibrate);
     RUN_TEST(test_ui_state_machine_settings_rain_skip_threshold_edit);
     RUN_TEST(test_ui_state_machine_settings_restart_confirm_flow);
     RUN_TEST(test_ui_state_machine_settings_calibrate_confirm_flow);

@@ -111,7 +111,7 @@ automation:
         entity_id: sensor.irrigator_settings
     conditions:
       - condition: template
-        value_template: "{{ trigger.to_state.attributes.zone_names is defined }}"
+        value_template: "{{ trigger.to_state.attributes.Zones is defined }}"
     actions:
       # Held for the whole sync below - see "Irrigator - republish settings
       # on local helper change" further down, whose trigger list is exactly
@@ -144,12 +144,12 @@ automation:
                 entity_id: "input_text.irrigator_zone_{{ repeat.item }}_name"
               data:
                 value: >-
-                  {{ ((state_attr('sensor.irrigator_settings', 'zone_names') or {}).get(repeat.item | string, {}).get('name', '#' ~ repeat.item ~ ' (no name)')) | truncate(15, True, '', 0) }}
+                  {{ ((state_attr('sensor.irrigator_settings', 'Zones') or {}).get(repeat.item | string, {}).get('name', '#' ~ repeat.item ~ ' (no name)')) | truncate(15, True, '', 0) }}
             - choose:
                 - conditions:
                     - condition: template
                       value_template: >-
-                        {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get(repeat.item | string, {}).get('enabled', true) }}
+                        {{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get(repeat.item | string, {}).get('enabled', true) }}
                   sequence:
                     - action: input_boolean.turn_on
                       target:
@@ -162,7 +162,7 @@ automation:
         target:
           entity_id: input_number.irrigator_default_manual_duration
         data:
-          value: "{{ state_attr('sensor.irrigator_settings', 'default_manual_duration') | int(5) }}"
+          value: "{{ (state_attr('sensor.irrigator_settings', 'Watering') or {}).get('default_manual_duration', 5) }}"
       # valve_current_base_level/pump_current_base_level are deliberately NOT synced to a local
       # helper here - there isn't one. They're device-owned (only cmd/calibrate ever sets them),
       # read-only, and already visible directly via sensor.irrigator_settings' own attributes (this
@@ -172,27 +172,44 @@ automation:
         target:
           entity_id: input_number.irrigator_upper_limit
         data:
-          value: "{{ state_attr('sensor.irrigator_settings', 'upper_limit') | int(200) }}"
+          value: "{{ (state_attr('sensor.irrigator_settings', 'Watering') or {}).get('upper_limit', 200) }}"
       - action: input_number.set_value
         target:
           entity_id: input_number.irrigator_lower_limit
         data:
-          value: "{{ state_attr('sensor.irrigator_settings', 'lower_limit') | int(40) }}"
+          value: "{{ (state_attr('sensor.irrigator_settings', 'Watering') or {}).get('lower_limit', 40) }}"
       - action: input_number.set_value
         target:
           entity_id: input_number.irrigator_rain_skip_probability
         data:
-          value: "{{ state_attr('sensor.irrigator_settings', 'rain_skip_probability_percent') | int(70) }}"
+          value: "{{ (state_attr('sensor.irrigator_settings', 'Watering') or {}).get('rain_skip_probability_percent', 70) }}"
       - action: input_number.set_value
         target:
           entity_id: input_number.irrigator_rain_skip_amount
         data:
-          value: "{{ state_attr('sensor.irrigator_settings', 'rain_skip_amount_mm') | int(4) }}"
+          value: "{{ (state_attr('sensor.irrigator_settings', 'Watering') or {}).get('rain_skip_amount_mm', 4) }}"
       - action: input_text.set_value
         target:
           entity_id: input_text.irrigator_weatherapi_key
         data:
-          value: "{{ state_attr('sensor.irrigator_settings', 'weatherapi_key') | default('') }}"
+          value: "{{ (state_attr('sensor.irrigator_settings', 'Watering') or {}).get('weatherapi_key', '') }}"
+      # Current_sensor group's 4 alert toggles - same sync pattern as the zone-enabled loop above.
+      - action: >-
+          input_boolean.turn_{{ 'on' if (state_attr('sensor.irrigator_settings', 'Current_sensor') or {}).get('alert_pump_uc', true) else 'off' }}
+        target:
+          entity_id: input_boolean.irrigator_alert_pump_uc
+      - action: >-
+          input_boolean.turn_{{ 'on' if (state_attr('sensor.irrigator_settings', 'Current_sensor') or {}).get('alert_pump_oc', true) else 'off' }}
+        target:
+          entity_id: input_boolean.irrigator_alert_pump_oc
+      - action: >-
+          input_boolean.turn_{{ 'on' if (state_attr('sensor.irrigator_settings', 'Current_sensor') or {}).get('alert_valve_uc', true) else 'off' }}
+        target:
+          entity_id: input_boolean.irrigator_alert_valve_uc
+      - action: >-
+          input_boolean.turn_{{ 'on' if (state_attr('sensor.irrigator_settings', 'Current_sensor') or {}).get('alert_valve_oc', true) else 'off' }}
+        target:
+          entity_id: input_boolean.irrigator_alert_valve_oc
       # schedule_active is deliberately NOT touched here anymore. It used to
       # be "self-set" via switch.turn_on/off from settings.json's value - but
       # switch.irrigator_schedule_active's turn_on/off PUBLISHES cmd/scheduled
@@ -223,7 +240,7 @@ automation:
         target:
           entity_id: input_number.irrigator_watering_percentage
         data:
-          value: "{{ state_attr('sensor.irrigator_settings', 'watering_percentage') | int(100) }}"
+          value: "{{ (state_attr('sensor.irrigator_settings', 'Watering') or {}).get('watering_percentage', 100) }}"
       - action: input_boolean.turn_off
         target:
           entity_id: input_boolean.irrigator_syncing_from_device
@@ -292,6 +309,10 @@ automation:
           - input_number.irrigator_rain_skip_amount
           - input_text.irrigator_weatherapi_key
           - input_number.irrigator_watering_percentage
+          - input_boolean.irrigator_alert_pump_uc
+          - input_boolean.irrigator_alert_pump_oc
+          - input_boolean.irrigator_alert_valve_uc
+          - input_boolean.irrigator_alert_valve_oc
     conditions:
       - condition: template
         value_template: "{{ states('sensor.irrigator_settings') not in ['unknown', 'unavailable'] }}"
@@ -329,7 +350,7 @@ automation:
         entity_id: sensor.irrigator_settings
     actions:
       - variables:
-          zone_names: "{{ state_attr('sensor.irrigator_settings', 'zone_names') or {} }}"
+          zone_names: "{{ state_attr('sensor.irrigator_settings', 'Zones') or {} }}"
           day_names: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
           records: "{{ state_attr('sensor.irrigator_schedule', 'records') or [] }}"
       - variables:
@@ -373,7 +394,7 @@ automation:
           picker: "{{ trigger.to_state.state }}"
           idx: "{{ (picker.split(']')[0].split('[')[1] | int) if picker.startswith('[') else -1 }}"
           records: "{{ state_attr('sensor.irrigator_schedule', 'records') or [] }}"
-          zone_names: "{{ state_attr('sensor.irrigator_settings', 'zone_names') or {} }}"
+          zone_names: "{{ state_attr('sensor.irrigator_settings', 'Zones') or {} }}"
           day_names: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
       - if:
           - condition: template
@@ -438,3 +459,33 @@ automation:
           - action: input_boolean.turn_on
             target:
               entity_id: input_boolean.irrigator_edit_active
+
+  # Current-fault alerts (over/under-current on the pump or a valve - see main.ino's
+  # drainCurrentBurstResults()) forwarded to WhatsApp + the logbook. Triggers directly on the
+  # device's /alert topic rather than sensor.irrigator_last_alert's state, since that sensor's
+  # value_template collapses every alert shape to a plain string - the `fault` key needed to tell
+  # a current-fault alert apart from the device's other alert shapes (plain message, command+error,
+  # upload+alert, delete+info) is still available as JSON on the raw topic. The per-fault
+  # input_boolean toggles (irrigator_alert_pump_uc/oc, irrigator_alert_valve_uc/oc) already gate
+  # whether the device publishes these at all (Settings::alertPumpUc/etc - see Settings.h) - this
+  # automation forwards whatever does arrive, unconditionally.
+  - alias: "Irrigator - forward current-fault alerts to WhatsApp + logbook"
+    triggers:
+      - trigger: mqtt
+        topic: "irrigatorF4/alert"
+    conditions:
+      - condition: template
+        value_template: "{{ trigger.payload_json.fault is defined }}"
+    actions:
+      - variables:
+          fault_msg: >-
+            {% set p = trigger.payload_json %}
+            {% set source = 'Pump' if p.pump is defined else ('Valve ' ~ p.valve) %}
+            Irrigator: {{ source }} {{ p.fault }} (level {{ p.level }}, base {{ p.base }})
+      - action: notify.greenapi
+        data:
+          message: "{{ fault_msg }}"
+      - action: logbook.log
+        data:
+          name: "Irrigator Alert"
+          message: "{{ fault_msg }}"

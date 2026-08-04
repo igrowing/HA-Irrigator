@@ -165,7 +165,7 @@ mqtt:
       unique_id: irrigator_settings
       icon: mdi:cog-outline
       state_topic: "irrigatorF4/download/settings.json"
-      value_template: "{{ value_json.watering_percentage }}"
+      value_template: "{{ value_json.Watering.watering_percentage }}"
       unit_of_measurement: "%"
       json_attributes_topic: "irrigatorF4/download/settings.json"
       device: *irrigator_device
@@ -259,7 +259,7 @@ template:
           - action: script.irrigator_stop
 
       - name: >-
-          {{ ('1. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('1', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('1', {}).get('name') else 'Irrigator Zone 1' }}
+          {{ ('1. ' ~ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('1', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('1', {}).get('name') else 'Irrigator Zone 1' }}
         unique_id: irrigator_switch_zone_1
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 1 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
@@ -270,7 +270,7 @@ template:
           - action: script.irrigator_stop
 
       - name: >-
-          {{ ('2. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('2', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('2', {}).get('name') else 'Irrigator Zone 2' }}
+          {{ ('2. ' ~ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('2', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('2', {}).get('name') else 'Irrigator Zone 2' }}
         unique_id: irrigator_switch_zone_2
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 2 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
@@ -281,7 +281,7 @@ template:
           - action: script.irrigator_stop
 
       - name: >-
-          {{ ('3. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('3', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('3', {}).get('name') else 'Irrigator Zone 3' }}
+          {{ ('3. ' ~ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('3', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('3', {}).get('name') else 'Irrigator Zone 3' }}
         unique_id: irrigator_switch_zone_3
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 3 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
@@ -292,7 +292,7 @@ template:
           - action: script.irrigator_stop
 
       - name: >-
-          {{ ('4. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('4', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('4', {}).get('name') else 'Irrigator Zone 4' }}
+          {{ ('4. ' ~ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('4', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('4', {}).get('name') else 'Irrigator Zone 4' }}
         unique_id: irrigator_switch_zone_4
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 4 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
@@ -303,7 +303,7 @@ template:
           - action: script.irrigator_stop
 
       - name: >-
-          {{ ('5. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('5', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('5', {}).get('name') else 'Irrigator Zone 5' }}
+          {{ ('5. ' ~ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('5', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('5', {}).get('name') else 'Irrigator Zone 5' }}
         unique_id: irrigator_switch_zone_5
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 5 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
@@ -314,7 +314,7 @@ template:
           - action: script.irrigator_stop
 
       - name: >-
-          {{ ('6. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('6', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('6', {}).get('name') else 'Irrigator Zone 6' }}
+          {{ ('6. ' ~ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('6', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('6', {}).get('name') else 'Irrigator Zone 6' }}
         unique_id: irrigator_switch_zone_6
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 6 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
@@ -325,7 +325,7 @@ template:
           - action: script.irrigator_stop
 
       - name: >-
-          {{ ('7. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('7', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('7', {}).get('name') else 'Irrigator Zone 7' }}
+          {{ ('7. ' ~ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('7', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('7', {}).get('name') else 'Irrigator Zone 7' }}
         unique_id: irrigator_switch_zone_7
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 7 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
@@ -336,7 +336,7 @@ template:
           - action: script.irrigator_stop
 
       - name: >-
-          {{ ('8. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('8', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('8', {}).get('name') else 'Irrigator Zone 8' }}
+          {{ ('8. ' ~ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('8', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('8', {}).get('name') else 'Irrigator Zone 8' }}
         unique_id: irrigator_switch_zone_8
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 8 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
@@ -347,7 +347,7 @@ template:
           - action: script.irrigator_stop
 
       - name: >-
-          {{ ('9. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('9', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('9', {}).get('name') else 'Irrigator Zone 9' }}
+          {{ ('9. ' ~ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('9', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('9', {}).get('name') else 'Irrigator Zone 9' }}
         unique_id: irrigator_switch_zone_9
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 9 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
@@ -358,7 +358,7 @@ template:
           - action: script.irrigator_stop
 
       - name: >-
-          {{ ('10. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('10', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('10', {}).get('name') else 'Irrigator Zone 10' }}
+          {{ ('10. ' ~ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('10', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('10', {}).get('name') else 'Irrigator Zone 10' }}
         unique_id: irrigator_switch_zone_10
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 10 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
@@ -369,7 +369,7 @@ template:
           - action: script.irrigator_stop
 
       - name: >-
-          {{ ('11. ' ~ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('11', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('11', {}).get('name') else 'Irrigator Zone 11' }}
+          {{ ('11. ' ~ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('11', {}).get('name')) if (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('11', {}).get('name') else 'Irrigator Zone 11' }}
         unique_id: irrigator_switch_zone_11
         icon: mdi:sprinkler-variant
         state: "{{ state_attr('sensor.irrigator_watering_state', 'zone') == 11 and (state_attr('sensor.irrigator_watering_state', 'on') | default(false)) }}"
@@ -435,60 +435,60 @@ template:
       # here are unaffected by the switch-specific restriction discussed
       # above.
       - name: >-
-          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('1', {}).get('name', '#1 (no name)') }} Enabled
+          {{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('1', {}).get('name', '#1 (no name)') }} Enabled
         unique_id: irrigator_zone_1_enabled_sensor
         default_entity_id: binary_sensor.irrigator_zone_1_enabled_sensor
-        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('1', {}).get('enabled', true) }}"
+        state: "{{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('1', {}).get('enabled', true) }}"
       - name: >-
-          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('2', {}).get('name', '#2 (no name)') }} Enabled
+          {{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('2', {}).get('name', '#2 (no name)') }} Enabled
         unique_id: irrigator_zone_2_enabled_sensor
         default_entity_id: binary_sensor.irrigator_zone_2_enabled_sensor
-        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('2', {}).get('enabled', true) }}"
+        state: "{{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('2', {}).get('enabled', true) }}"
       - name: >-
-          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('3', {}).get('name', '#3 (no name)') }} Enabled
+          {{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('3', {}).get('name', '#3 (no name)') }} Enabled
         unique_id: irrigator_zone_3_enabled_sensor
         default_entity_id: binary_sensor.irrigator_zone_3_enabled_sensor
-        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('3', {}).get('enabled', true) }}"
+        state: "{{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('3', {}).get('enabled', true) }}"
       - name: >-
-          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('4', {}).get('name', '#4 (no name)') }} Enabled
+          {{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('4', {}).get('name', '#4 (no name)') }} Enabled
         unique_id: irrigator_zone_4_enabled_sensor
         default_entity_id: binary_sensor.irrigator_zone_4_enabled_sensor
-        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('4', {}).get('enabled', true) }}"
+        state: "{{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('4', {}).get('enabled', true) }}"
       - name: >-
-          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('5', {}).get('name', '#5 (no name)') }} Enabled
+          {{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('5', {}).get('name', '#5 (no name)') }} Enabled
         unique_id: irrigator_zone_5_enabled_sensor
         default_entity_id: binary_sensor.irrigator_zone_5_enabled_sensor
-        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('5', {}).get('enabled', true) }}"
+        state: "{{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('5', {}).get('enabled', true) }}"
       - name: >-
-          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('6', {}).get('name', '#6 (no name)') }} Enabled
+          {{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('6', {}).get('name', '#6 (no name)') }} Enabled
         unique_id: irrigator_zone_6_enabled_sensor
         default_entity_id: binary_sensor.irrigator_zone_6_enabled_sensor
-        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('6', {}).get('enabled', true) }}"
+        state: "{{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('6', {}).get('enabled', true) }}"
       - name: >-
-          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('7', {}).get('name', '#7 (no name)') }} Enabled
+          {{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('7', {}).get('name', '#7 (no name)') }} Enabled
         unique_id: irrigator_zone_7_enabled_sensor
         default_entity_id: binary_sensor.irrigator_zone_7_enabled_sensor
-        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('7', {}).get('enabled', true) }}"
+        state: "{{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('7', {}).get('enabled', true) }}"
       - name: >-
-          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('8', {}).get('name', '#8 (no name)') }} Enabled
+          {{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('8', {}).get('name', '#8 (no name)') }} Enabled
         unique_id: irrigator_zone_8_enabled_sensor
         default_entity_id: binary_sensor.irrigator_zone_8_enabled_sensor
-        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('8', {}).get('enabled', true) }}"
+        state: "{{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('8', {}).get('enabled', true) }}"
       - name: >-
-          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('9', {}).get('name', '#9 (no name)') }} Enabled
+          {{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('9', {}).get('name', '#9 (no name)') }} Enabled
         unique_id: irrigator_zone_9_enabled_sensor
         default_entity_id: binary_sensor.irrigator_zone_9_enabled_sensor
-        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('9', {}).get('enabled', true) }}"
+        state: "{{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('9', {}).get('enabled', true) }}"
       - name: >-
-          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('10', {}).get('name', '#10 (no name)') }} Enabled
+          {{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('10', {}).get('name', '#10 (no name)') }} Enabled
         unique_id: irrigator_zone_10_enabled_sensor
         default_entity_id: binary_sensor.irrigator_zone_10_enabled_sensor
-        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('10', {}).get('enabled', true) }}"
+        state: "{{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('10', {}).get('enabled', true) }}"
       - name: >-
-          {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('11', {}).get('name', '#11 (no name)') }} Enabled
+          {{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('11', {}).get('name', '#11 (no name)') }} Enabled
         unique_id: irrigator_zone_11_enabled_sensor
         default_entity_id: binary_sensor.irrigator_zone_11_enabled_sensor
-        state: "{{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get('11', {}).get('enabled', true) }}"
+        state: "{{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get('11', {}).get('enabled', true) }}"
 
   # Remaining-minutes counters, one per pump/zone - moved out of the
   # switches' `attributes:` (switch doesn't support that key) into their own
@@ -770,13 +770,14 @@ template:
       - name: "Irrigator City"
         unique_id: irrigator_city
         icon: mdi:map-marker-outline
-        state: "{{ state_attr('sensor.irrigator_settings', 'city') or '-' }}"
+        state: "{{ (state_attr('sensor.irrigator_settings', 'Location') or {}).get('city') or '-' }}"
       - name: "Irrigator Coordinates"
         unique_id: irrigator_coordinates
         icon: mdi:crosshairs-gps
         state: >-
-          {% if state_attr('sensor.irrigator_settings', 'location_known') %}
-            {{ '%.4f' | format(state_attr('sensor.irrigator_settings', 'latitude') | float(0)) }}, {{ '%.4f' | format(state_attr('sensor.irrigator_settings', 'longitude') | float(0)) }}
+          {% set location = state_attr('sensor.irrigator_settings', 'Location') or {} %}
+          {% if location.get('location_known') %}
+            {{ '%.4f' | format(location.get('latitude', 0) | float(0)) }}, {{ '%.4f' | format(location.get('longitude', 0) | float(0)) }}
           {% else %}
             -
           {% endif %}
@@ -1059,6 +1060,16 @@ input_boolean:
   irrigator_zone_10_enabled: {name: "Zone 10 Enabled", icon: mdi:check-circle-outline}
   irrigator_zone_11_enabled: {name: "Zone 11 Enabled", icon: mdi:check-circle-outline}
 
+  # Current-fault alert toggles - settings.json's Current_sensor group (Settings::alertPumpUc/
+  # alertPumpOc/alertValveUc/alertValveOc). Only meaningful once the corresponding sensor has been
+  # calibrated (see "Current-Sensor Calibration" card in garden_tab.yaml) - the firmware skips the
+  # underlying check entirely while base level is 0, regardless of these toggles. Default true,
+  # same as the firmware's own default for a settings.json that's never set them.
+  irrigator_alert_pump_uc: {name: "Alert Pump Under-current", icon: mdi:alert-circle-outline, initial: true}
+  irrigator_alert_pump_oc: {name: "Alert Pump Over-current", icon: mdi:alert-circle-outline, initial: true}
+  irrigator_alert_valve_uc: {name: "Alert Valve Under-current", icon: mdi:alert-circle-outline, initial: true}
+  irrigator_alert_valve_oc: {name: "Alert Valve Over-current", icon: mdi:alert-circle-outline, initial: true}
+
 # -----------------------------------------------------------------------
 # Scripts - all device writes funnel through these so the JSON contract
 # (see src/network/MqttService.cpp / src/main.ino handleMqttCommand) is
@@ -1148,7 +1159,7 @@ script:
             - if:
                 - condition: template
                   value_template: >-
-                    {{ (state_attr('sensor.irrigator_settings', 'zone_names') or {}).get(repeat.item | string, {}).get('enabled', true) }}
+                    {{ (state_attr('sensor.irrigator_settings', 'Zones') or {}).get(repeat.item | string, {}).get('enabled', true) }}
               then:
                 - action: script.irrigator_enqueue_or_publish
                   data:
@@ -1178,29 +1189,27 @@ script:
   # it does not merge against what's currently on flash. This is the ONLY
   # settings-writing script.
   #
-  # watering_percentage is read from input_number.irrigator_watering_percentage
-  # (a plain local helper, same as default_manual_duration below) rather than
-  # from any device echo - see that helper's comment in `input_number:` above
-  # for why.
+  # settings.json is nested into 4 groups (Zones/Location/Current_sensor/Watering - see
+  # Settings.h). watering_percentage is read from input_number.irrigator_watering_percentage
+  # (a plain local helper, same as default_manual_duration below) rather than from any device
+  # echo - see that helper's comment in `input_number:` above for why.
   #
-  # schedule_active, valve_current_base_level, and pump_current_base_level are
-  # device-owned fields: the FIRMWARE ignores whatever a settings upload
-  # carries for them (schedule_active is changed only via cmd/scheduled; the
-  # two current bases only via cmd/calibrate - see mergeSettings()'s doc in
-  # Settings.h and handleMqttUpload's SETTINGS_FILE_PATH branch in main.ino,
-  # which overwrites all three with the device's own current values before
-  # persisting). So the values sent here are cosmetic - they cannot change the
-  # device. They're still included, sourced from sensor.irrigator_settings'
-  # own last-downloaded attributes, purely so the JSON stays a faithful full
-  # snapshot; schedule_active specifically is deliberately NOT read from
-  # switch.irrigator_schedule_active (whose echo sensor reads a spurious
-  # `false` while `unavailable` during a reconnect - the exact stale value
-  # that used to get uploaded and disable the schedule before the firmware
-  # started ignoring it).
+  # Watering.schedule_active and Current_sensor.valve/pump_current_base_level are device-owned
+  # fields: the FIRMWARE ignores whatever a settings upload carries for them (schedule_active is
+  # changed only via cmd/scheduled; the two current bases only via cmd/calibrate - see
+  # mergeSettings()'s doc in Settings.h and handleMqttUpload's SETTINGS_FILE_PATH branch in
+  # main.ino, which overwrites all three with the device's own current values before persisting).
+  # So the values sent here are cosmetic - they cannot change the device. They're still included,
+  # sourced from sensor.irrigator_settings' own last-downloaded attributes, purely so the JSON
+  # stays a faithful full snapshot; schedule_active specifically is deliberately NOT read from
+  # switch.irrigator_schedule_active (whose echo sensor reads a spurious `false` while
+  # `unavailable` during a reconnect - the exact stale value that used to get uploaded and disable
+  # the schedule before the firmware started ignoring it).
   #
-  # watering_percentage is NOT device-owned in the same way - it's a plain
-  # input_number helper the user edits (see its comment in `input_number:`
-  # above), read directly, and the firmware DOES apply it from an upload.
+  # watering_percentage and the 4 Current_sensor.alert_* toggles are NOT device-owned in the same
+  # way - they're plain input_number/input_boolean helpers the user edits (see their comments in
+  # `input_number:`/`input_boolean:` above), read directly, and the firmware DOES apply them from
+  # an upload.
   irrigator_publish_settings:
     alias: "Irrigator: republish full settings.json"
     sequence:
@@ -1213,34 +1222,46 @@ script:
               {% set ns.parts = ns.parts + ['"' ~ z ~ '":{"name":' ~ nm ~ ',"enabled":' ~ en ~ '}'] %}
             {% endfor %}
             {{ '{' ~ (ns.parts | join(',')) ~ '}' }}
-      # zn is already a JSON-object string, not a Python dict, so it can't be
-      # embedded via the dict-literal-then-tojson pattern used for the other
-      # fields (that would double-encode it as a quoted string). Instead the
-      # dict of scalar fields is rendered with tojson, then its closing brace
-      # is sliced off and the zone_names text spliced in directly.
+          existing_watering: "{{ state_attr('sensor.irrigator_settings', 'Watering') or {} }}"
+          existing_location: "{{ state_attr('sensor.irrigator_settings', 'Location') or {} }}"
+          existing_current_sensor: "{{ state_attr('sensor.irrigator_settings', 'Current_sensor') or {} }}"
+      # zn is already a JSON-object string, not a Python dict, so it can't be embedded via the
+      # dict-literal-then-tojson pattern used for the other groups (that would double-encode it as
+      # a quoted string). Instead the dict of the other 3 groups is rendered with tojson, then its
+      # closing brace is sliced off and the "Zones" group spliced in directly - same idiom the
+      # pre-nesting version of this script used for zone_names.
       - action: script.irrigator_enqueue_or_publish
         data:
           topic: "irrigatorF4/cmd/upload/settings.json"
           payload: >-
-            {% set base = {
+            {% set watering = {
               'watering_percentage': states('input_number.irrigator_watering_percentage') | int(100),
-              'schedule_active': state_attr('sensor.irrigator_settings', 'schedule_active') | default(true),
-              'auto_adjustment_enabled': state_attr('sensor.irrigator_settings', 'auto_adjustment_enabled') | default(true),
+              'schedule_active': existing_watering.get('schedule_active', true),
+              'auto_adjustment_enabled': existing_watering.get('auto_adjustment_enabled', true),
               'default_manual_duration': states('input_number.irrigator_default_manual_duration') | int(5),
-              'valve_current_base_level': state_attr('sensor.irrigator_settings', 'valve_current_base_level') | default(0),
-              'pump_current_base_level': state_attr('sensor.irrigator_settings', 'pump_current_base_level') | default(0),
               'upper_limit': states('input_number.irrigator_upper_limit') | int(200),
               'lower_limit': states('input_number.irrigator_lower_limit') | int(40),
               'rain_skip_probability_percent': states('input_number.irrigator_rain_skip_probability') | int(70),
               'rain_skip_amount_mm': states('input_number.irrigator_rain_skip_amount') | int(4),
-              'location_known': state_attr('sensor.irrigator_settings', 'location_known') | default(false),
-              'latitude': state_attr('sensor.irrigator_settings', 'latitude') | default(0),
-              'longitude': state_attr('sensor.irrigator_settings', 'longitude') | default(0),
-              'city': state_attr('sensor.irrigator_settings', 'city') | default(''),
               'weatherapi_key': states('input_text.irrigator_weatherapi_key') | default('')
             } %}
+            {% set location = {
+              'location_known': existing_location.get('location_known', false),
+              'latitude': existing_location.get('latitude', 0),
+              'longitude': existing_location.get('longitude', 0),
+              'city': existing_location.get('city', '')
+            } %}
+            {% set current_sensor = {
+              'valve_current_base_level': existing_current_sensor.get('valve_current_base_level', 0),
+              'pump_current_base_level': existing_current_sensor.get('pump_current_base_level', 0),
+              'alert_pump_uc': is_state('input_boolean.irrigator_alert_pump_uc', 'on'),
+              'alert_pump_oc': is_state('input_boolean.irrigator_alert_pump_oc', 'on'),
+              'alert_valve_uc': is_state('input_boolean.irrigator_alert_valve_uc', 'on'),
+              'alert_valve_oc': is_state('input_boolean.irrigator_alert_valve_oc', 'on')
+            } %}
+            {% set base = {'Watering': watering, 'Location': location, 'Current_sensor': current_sensor} %}
             {% set base_json = (base | tojson) %}
-            {{ base_json[:-1] ~ ',"zone_names":' ~ zn ~ '}' }}
+            {{ base_json[:-1] ~ ',"Zones":' ~ zn ~ '}' }}
 
   # ---------------------------------------------------------------------
   # HA -> device: create or overwrite one schedule record from the editor

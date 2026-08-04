@@ -65,10 +65,12 @@ static constexpr uint8_t CURRENT_RMS_HISTORY_LEN = 12;
 // low-draw device. PLACEHOLDER — needs tuning against real hardware noise floor (agents.md Step 5).
 static constexpr uint16_t CURRENT_CALIBRATION_MIN_BASE_LEVEL = 30;
 // Fault thresholds as multipliers of the calibrated base (see above), not fixed mA bands — checked
-// per burst while a base is set (0 = uncalibrated = no check). Pump undercurrent is deliberately
-// not checked: a lightly-loaded pump isn't a fault the way a stuck/dry valve or jammed pump is.
+// per burst while a base is set (0 = uncalibrated = no check). Each of the four checks (valve/pump
+// x over/under) is additionally gated by its own Settings::alert* toggle (Current_sensor group in
+// settings.json) — see drainCurrentBurstResults() in main.ino.
 static constexpr float CURRENT_OVERCURRENT_MULTIPLIER = 1.3f;
 static constexpr float CURRENT_VALVE_UNDERCURRENT_MULTIPLIER = 0.5f;
+static constexpr float CURRENT_PUMP_UNDERCURRENT_MULTIPLIER = 0.5f;
 // 15 covers "Test all zones" queuing up to ZONE_COUNT (11) requests behind whatever's already
 // running/queued, with headroom to spare. WateringRequest is a few bytes, so the extra slots
 // cost tens of bytes total — a non-issue against the ESP32's RAM budget.
@@ -87,9 +89,9 @@ static constexpr int8_t TIMEZONE_OFFSET_MAX_HOURS = 13;
 static constexpr uint16_t DEFAULT_MQTT_PORT = 1883;
 
 static constexpr size_t CONFIG_JSON_MAX_BYTES = 768;
-// Bumped from 768: settings.json grew latitude/longitude/city/upper+lower limit/the two
-// auto-adjustment coefficients/weatherapi_key on top of the original fields.
-static constexpr size_t SETTINGS_JSON_MAX_BYTES = 1280;
+// Bumped from 1280: settings.json is now nested into Zones/Location/Current_sensor/Watering
+// groups (extra object overhead per field) plus 4 new alert_* booleans under Current_sensor.
+static constexpr size_t SETTINGS_JSON_MAX_BYTES = 1536;
 static constexpr size_t SCHEDULE_JSON_MAX_BYTES = 4096;
 
 // --- Weather-based irrigation auto-adjustment ---

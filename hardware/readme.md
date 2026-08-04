@@ -57,6 +57,12 @@ Red boards require volrage drop diodes to set the optocouplers in high state (no
 
 In industrial irrigators the 24VAC transformer is often integrated into the irrigator. This reduces the customer flexibility where to mount the irrigator and what type of valves to use. Also, always connected transformer has parasitic current consumptions which hits customer wallet and hurts to the ecology. Our irrigator allows using any 24VAC transformer. It can be mounted on DIN rail or standalone. And it can be driven together with pump, i.e. it is not always connected to mains. This means **more flexibility, less electricilty bill, and less environment impact**.
 
+## Antenna
+
+Wi-Fi reception is critical only for automatic watering adjustment by the weather and for Home Assistant integration. HA-Irrigator can work without Wi-Fi too.
+
+However, for the sake of installation flexibility, the antenna has separate SMA connector. This allows to install the irrigator practically in any place and run the low-attentuating coaxial cable (type of LMR-240 or HF-240) for up to 10 meters. The antenna then, can be placed in the area with good Wi-Fi signal when the irrigator itself can be even in concrete bunker.
+
 ### Simple
 
 ![Simple Wiring](irrigator%20wiring-simple.png)

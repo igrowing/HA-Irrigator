@@ -46,7 +46,7 @@ Open `homeassistant/dashboards/garden_tab.yaml` and paste its contents in place 
 - **Status & manual control** — one card per zone (and the pump), each with an on/off toggle showing the zone's real configured name, a remaining-time readout, and a duration slider (1–120 min). Toggling a zone on/off talks to the device the same way the local rotary menu does. Only one zone (or the pump) ever actually runs at a time — toggling a second one on while another is already running queues it rather than starting it immediately, same as it would from the local UI or the weekly schedule; it starts automatically the moment the first one finishes.
 - **History** — a 7-day graph of every zone/pump's on/off history.
 - **Schedule** — a read-only table of the device's current weekly schedule, plus an editor panel to add, change, or remove individual schedule records. The device holds up to 32 records in total — comfortably enough for several programs per zone per week — a limit sized against the device's flash storage, not an arbitrary restriction.
-- **Settings** — zone names, per-zone enable/disable, default manual duration, the schedule on/off switch, the watering-percentage multiplier, and current-sensor calibration, all synced live with the device.
+- **Settings** — zone names, per-zone enable/disable, default manual duration, the schedule on/off switch, the watering-percentage multiplier, and current-sensor calibration (including the 4 over/under-current alert toggles, which also forward to WhatsApp and the logbook when tripped — see **Current-fault alerting** in [technical.md](technical.md)), all synced live with the device.
 
 Zone names shown everywhere come directly from the device's own configuration — until it's finished loading (a few seconds after Home Assistant starts), you may briefly see a placeholder like `#3 (no name)` instead of the real name.
 
@@ -54,10 +54,10 @@ Zone names shown everywhere come directly from the device's own configuration �
 
 The dashboard's **WeatherAPI.com Key** field (Settings section) is the normal way to set this — click directly on that row (not the gear/settings icon, which only edits entity registry metadata and will tell you the entity "cannot be edited from the UI"; that's expected for every package-defined helper here, not an error) and Home Assistant pushes it to the device automatically. This section is for setting it **without** Home Assistant, or for confirming what HA is doing under the hood.
 
-The key lives in `settings.json`, which the device merges field by field on upload (see **JSON file formats** in [technical.md](technical.md)) — so setting just this one field is a single publish, no read-edit-write round-trip needed:
+The key lives in `settings.json`'s `Watering` group, which the device merges field by field on upload (see **JSON file formats** in [technical.md](technical.md)) — so setting just this one field is a single publish, no read-edit-write round-trip needed:
 
 ```
-mosquitto_pub -t irrigatorF4/cmd/upload/settings.json -m '{"weatherapi_key":"YOUR_KEY_HERE"}'
+mosquitto_pub -t irrigatorF4/cmd/upload/settings.json -m '{"Watering":{"weatherapi_key":"YOUR_KEY_HERE"}}'
 ```
 
 Every other field (zone names, `schedule_active`, calibration, etc.) is left exactly as it was on flash — only fields you actually include, with a non-null non-empty value, get changed.

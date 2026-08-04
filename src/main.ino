@@ -211,11 +211,11 @@ uint16_t lastPumpBurstRawCount = 0;
 // Once-a-day dedup for over/undercurrent alerts (see checkCurrentFaults below) — same pattern as
 // lastWeatherFailureAlertDate/lastGeoFailureAlertDate above. Valve dedup is per-zone (the sensor
 // is shared across all 11 zones, but a stuck zone 3 today shouldn't silence a separately failing
-// zone 5 later the same day); the pump has no zone dimension, and no undercurrent check at all
-// (a lightly-loaded pump isn't the kind of fault a stuck/dry valve or jammed pump is).
+// zone 5 later the same day); the pump has no zone dimension.
 char lastValveOvercurrentAlertDate[irrigator::board::ZONE_COUNT][11] = {};
 char lastValveUndercurrentAlertDate[irrigator::board::ZONE_COUNT][11] = {};
 char lastPumpOvercurrentAlertDate[11] = {};
+char lastPumpUndercurrentAlertDate[11] = {};
 
 // Structured outcome of one handleCalibrateCommand() run, for callers that need more than the
 // MQTT side-effects (currently just the Settings-menu "Calibrate CS" flow — see UiIntentType::
@@ -962,6 +962,22 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
             persistSettings();
             mqtt.publishAutoAdjustmentEnabled(settings.autoAdjustmentEnabled);
             break;
+        case UiIntentType::ToggleAlertPumpUc:
+            settings.alertPumpUc = intent.boolValue;
+            persistSettings();
+            break;
+        case UiIntentType::ToggleAlertPumpOc:
+            settings.alertPumpOc = intent.boolValue;
+            persistSettings();
+            break;
+        case UiIntentType::ToggleAlertValveUc:
+            settings.alertValveUc = intent.boolValue;
+            persistSettings();
+            break;
+        case UiIntentType::ToggleAlertValveOc:
+            settings.alertValveOc = intent.boolValue;
+            persistSettings();
+            break;
         case UiIntentType::SetWateringPercentage: {
             irrigator::domain::Settings updated = settings;
             updated.wateringPercentage = intent.percentage;
@@ -1415,6 +1431,16 @@ void loadOrCreateSettings() {
     if (fileStore.exists(irrigator::board::SETTINGS_FILE_PATH) &&
         fileStore.readText(irrigator::board::SETTINGS_FILE_PATH, raw) &&
         irrigator::domain::parseSettings(raw.c_str(), raw.length(), settings)) {
+        // Self-migrating: a settings.json written before the Zones/Location/Current_sensor/
+        // Watering restructuring still parses fine (parseSettings() falls back to each field's
+        // old flat top-level key — see Settings.h's mergeSettings/parseSettings doc), but the file
+        // on flash is still the old flat shape. Detect that once here and rewrite it in the new
+        // nested shape immediately, so the flat-fallback path is only ever exercised on this one
+        // boot, not every boot thereafter.
+        if (raw.indexOf("\"Watering\"") < 0) {
+            irrigator::drivers::Log.info("settings.json predates nested groups; migrating to Zones/Location/Current_sensor/Watering");
+            persistSettings();
+        }
         return;
     }
 
@@ -1977,8 +2003,10 @@ bool consumeDailyAlertGate(char* lastAlertDate, size_t lastAlertDateSize, const 
 // reading into its sensor's calibration history (CurrentRmsHistory, for cmd/calibrate's average),
 // keeps the raw samples around for cmd/calibrate's saturation check, and — while a base is
 // calibrated (0 = not yet, skip) — checks the reading against base*CURRENT_OVERCURRENT_MULTIPLIER
-// (both sensors) and base*CURRENT_VALVE_UNDERCURRENT_MULTIPLIER (valve only), each gated to one
-// /alert per calendar day (consumeDailyAlertGate). Valve dedup is per-zone — the sensor is shared
+// (both sensors) and base*CURRENT_VALVE_UNDERCURRENT_MULTIPLIER / base*CURRENT_PUMP_UNDERCURRENT_MULTIPLIER
+// (valve/pump respectively), each gated to one /alert per calendar day (consumeDailyAlertGate) AND
+// to its own Settings::alert* toggle (Current_sensor group in settings.json — see the Settings
+// menu's "Alert pump/valve UC/OC" rows) being on. Valve dedup is per-zone — the sensor is shared
 // across all 11 zones, but which zone is responsible for any given burst is always known (only one
 // zone is ever open at a time), so a stuck zone 3 today doesn't silence a separately failing zone 5
 // later the same day.
@@ -2015,7 +2043,7 @@ void drainCurrentBurstResults() {
                 settings.valveCurrentBaseLevel * irrigator::board::CURRENT_OVERCURRENT_MULTIPLIER);
             const uint16_t underThreshold = static_cast<uint16_t>(
                 settings.valveCurrentBaseLevel * irrigator::board::CURRENT_VALVE_UNDERCURRENT_MULTIPLIER);
-            if (result.valveRmsMv > overThreshold &&
+            if (settings.alertValveOc && result.valveRmsMv > overThreshold &&
                 consumeDailyAlertGate(lastValveOvercurrentAlertDate[zoneIndex],
                                       sizeof(lastValveOvercurrentAlertDate[zoneIndex]), today)) {
                 char alertMsg[128];
@@ -2025,7 +2053,7 @@ void drainCurrentBurstResults() {
                         static_cast<unsigned>(result.valveRmsMv),
                         static_cast<unsigned>(settings.valveCurrentBaseLevel));
                 mqtt.publishAlert(alertMsg);
-            } else if (result.valveRmsMv < underThreshold &&
+            } else if (settings.alertValveUc && result.valveRmsMv < underThreshold &&
                        consumeDailyAlertGate(lastValveUndercurrentAlertDate[zoneIndex],
                                              sizeof(lastValveUndercurrentAlertDate[zoneIndex]), today)) {
                 char alertMsg[128];
@@ -2041,11 +2069,22 @@ void drainCurrentBurstResults() {
         if (settings.pumpCurrentBaseLevel != 0) {
             const uint16_t overThreshold = static_cast<uint16_t>(
                 settings.pumpCurrentBaseLevel * irrigator::board::CURRENT_OVERCURRENT_MULTIPLIER);
-            if (result.pumpRmsMv > overThreshold &&
+            const uint16_t underThreshold = static_cast<uint16_t>(
+                settings.pumpCurrentBaseLevel * irrigator::board::CURRENT_PUMP_UNDERCURRENT_MULTIPLIER);
+            if (settings.alertPumpOc && result.pumpRmsMv > overThreshold &&
                 consumeDailyAlertGate(lastPumpOvercurrentAlertDate, sizeof(lastPumpOvercurrentAlertDate), today)) {
                 char alertMsg[112];
                 snprintf(alertMsg, sizeof(alertMsg),
                         R"({"pump":0,"fault":"overcurrent","level":%u,"base":%u})",
+                        static_cast<unsigned>(result.pumpRmsMv),
+                        static_cast<unsigned>(settings.pumpCurrentBaseLevel));
+                mqtt.publishAlert(alertMsg);
+            } else if (settings.alertPumpUc && result.pumpRmsMv < underThreshold &&
+                       consumeDailyAlertGate(lastPumpUndercurrentAlertDate,
+                                             sizeof(lastPumpUndercurrentAlertDate), today)) {
+                char alertMsg[112];
+                snprintf(alertMsg, sizeof(alertMsg),
+                        R"({"pump":0,"fault":"undercurrent","level":%u,"base":%u})",
                         static_cast<unsigned>(result.pumpRmsMv),
                         static_cast<unsigned>(settings.pumpCurrentBaseLevel));
                 mqtt.publishAlert(alertMsg);

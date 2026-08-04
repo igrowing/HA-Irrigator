@@ -203,10 +203,12 @@ above) are always read back as a whole file via `download`. `upload` behaves dif
   if it individually makes sense; a field that's missing, `null`, an empty string, or that fails
   its own check (wrong type, e.g. `-1` for a boolean, or out of range, e.g. `300` for a setting
   clamped at 200) instead keeps whatever was already there — the latter case also raises an
-  `/alert` naming the rejected field(s), so the rest of the upload isn't silently dropped without
-  a trace. `zone_names` is merged per zone index, so naming only zone 3 doesn't disturb the
-  others. This means you can push just the field(s) you want changed instead of round-tripping the
-  whole file.
+  `/alert` naming the rejected field(s) by its dotted group path (e.g. `Watering.watering_percentage`,
+  `Current_sensor.alert_pump_uc`), so the rest of the upload isn't silently dropped without a
+  trace. `Zones` is merged per zone index, so naming only zone 3 doesn't disturb the others. This
+  means you can push just the field(s) you want changed instead of round-tripping the whole file —
+  though each field must still be nested under its group (see the schema below), since
+  `mergeSettings()` only reads the new nested paths, not the pre-restructuring flat ones.
 - **`schedule.json`** keeps whole-file replace semantics: it's a JSON array of records, not a flat
   object of named fields, so any single invalid record (or a payload that isn't a JSON array at
   all) rejects the entire upload with an `/alert`, same as loading it from flash at boot. The
@@ -215,8 +217,8 @@ above) are always read back as a whole file via `download`. `upload` behaves dif
   validate it against.
 
 Because `settings.json`/`config.json` uploads only ever add or update a field — never remove
-one — a stale key from a since-abandoned JSON shape (e.g. a `zone_names` restructuring) or an
-oversized `zone_names`/`schedule.json` list can't be trimmed down through `upload` alone. Use
+one — a stale key from a since-abandoned JSON shape (e.g. the flat-to-nested `Zones` restructuring)
+or an oversized `Zones`/`schedule.json` list can't be trimmed down through `upload` alone. Use
 `/cmd/delete/<filename>` (payload `true`) to remove the file outright first, then either upload a
 clean replacement or let it regenerate with firmware defaults on the next boot (`settings.json`
 always regenerates; `config.json`'s absence instead re-enters captive portal mode; a missing
@@ -225,27 +227,11 @@ the in-RAM `deviceConfig`/`settings`/`scheduleList` stay live until then, so del
 remotely won't drop your current MQTT session, but the *next* reboot will need the captive portal
 again since there's no Wi-Fi config left to load.
 
-**`settings.json`** (see `src/domain/Settings.h`/`.cpp`):
+**`settings.json`** (see `src/domain/Settings.h`/`.cpp`) is nested into four top-level groups —
+`Zones`, `Location`, `Current_sensor`, `Watering`:
 ```json
 {
-  "watering_percentage": 100,
-  "schedule_active": false,
-  "default_manual_duration": 5,
-  "valve_current_base_level": 0,
-  "pump_current_base_level": 0,
-  "auto_adjustment_enabled": true,
-  "location_known": false,
-  "latitude": 0,
-  "longitude": 0,
-  "city": "",
-  "upper_limit": 200,
-  "lower_limit": 40,
-  "temp_modifier_pct_per_degree": 2,
-  "rain_modifier_pct_per_mm": 5,
-  "rain_skip_probability_percent": 70,
-  "rain_skip_amount_mm": 4,
-  "weatherapi_key": "",
-  "zone_names": {
+  "Zones": {
     "1": {"name": "Trees left", "enabled": true},
     "2": {"name": "Triangle", "enabled": true},
     "3": {"name": "Back left", "enabled": true},
@@ -257,9 +243,42 @@ again since there's no Wi-Fi config left to load.
     "9": {"name": "Ginko", "enabled": true},
     "10": {"name": "Front", "enabled": true},
     "11": {"name": "Zone 11", "enabled": false}
+  },
+  "Location": {
+    "location_known": false,
+    "latitude": 0,
+    "longitude": 0,
+    "city": ""
+  },
+  "Current_sensor": {
+    "valve_current_base_level": 0,
+    "pump_current_base_level": 0,
+    "alert_pump_uc": true,
+    "alert_pump_oc": true,
+    "alert_valve_uc": true,
+    "alert_valve_oc": true
+  },
+  "Watering": {
+    "watering_percentage": 100,
+    "schedule_active": false,
+    "default_manual_duration": 5,
+    "auto_adjustment_enabled": true,
+    "upper_limit": 200,
+    "lower_limit": 40,
+    "rain_skip_probability_percent": 70,
+    "rain_skip_amount_mm": 4,
+    "weatherapi_key": ""
   }
 }
 ```
+`Location.*` and `Current_sensor.valve_current_base_level`/`pump_current_base_level` are
+device-owned (see below); the 4 `Current_sensor.alert_*` toggles are not — they gate **Current-fault
+alerting** below and are editable both from HA and from the device's own Settings menu (`Alert
+pump/valve UC/OC`, directly above `Calibrate CS`). `parseSettings()` (the boot-time flash load)
+additionally falls back to each field's pre-restructuring flat top-level key when its new nested
+key is absent, so a device upgrading from an older firmware keeps its real settings instead of
+resetting to factory defaults — `mergeSettings()` (MQTT uploads) does not have this fallback, it
+reads only the nested paths shown above.
 
 **`schedule.json`** — a flat array of records, up to `SCHEDULE_MAX_RECORDS` (32), `day_of_week`
 0-indexed Monday=0..Sunday=6 (see `src/domain/Schedule.h`/`.cpp`):
@@ -383,14 +402,21 @@ attribution is used.
 Once a sensor has a calibrated base (0 = never calibrated = no check), `drainCurrentBurstResults()`
 compares *every burst* — not a windowed average — against it:
 - **Overcurrent** (valve and pump): reading > `base * CURRENT_OVERCURRENT_MULTIPLIER` (1.3).
-- **Undercurrent** (valve only): reading < `base * CURRENT_VALVE_UNDERCURRENT_MULTIPLIER` (0.5).
-  Not checked for the pump — a lightly-loaded pump isn't the kind of fault a stuck/dry valve or
-  jammed pump is.
+- **Undercurrent** (valve and pump): reading < `base * CURRENT_VALVE_UNDERCURRENT_MULTIPLIER` /
+  `CURRENT_PUMP_UNDERCURRENT_MULTIPLIER` (both 0.5).
+
+Each of these four checks is additionally gated by its own `settings.json` toggle
+(`Current_sensor.alert_pump_uc`/`alert_pump_oc`/`alert_valve_uc`/`alert_valve_oc` — see
+`Settings::alertPumpUc`/etc., default `true`) on top of the base-calibrated (`!= 0`) gate — turning
+a toggle off silences that specific check even while the sensor stays calibrated. Editable from HA
+(the "Current-Sensor Calibration" card) or the device's own Settings menu (`Alert pump/valve
+UC/OC`, directly above `Calibrate CS`).
 
 A trip publishes `/alert`:
 ```json
 {"valve":3,"fault":"overcurrent","level":950,"base":700}
 {"pump":0,"fault":"overcurrent","level":1400,"base":1000}
+{"pump":0,"fault":"undercurrent","level":320,"base":1000}
 ```
 
 Each fault is gated to **one `/alert` per calendar day**, not one per bad burst — a valve stuck
@@ -400,10 +426,14 @@ elsewhere in `main.ino`). Don't mistake "no repeated alerts" for "the fault stop
 valve's dedup is **per-zone** (`lastValveOvercurrentAlertDate`/`lastValveUndercurrentAlertDate`,
 indexed by zone), not global for the sensor — since every burst is attributable to a specific zone
 (see **cmd/calibrate** above), a stuck zone 3 today doesn't silence a separately failing zone 5
-later the same day. The pump has no zone dimension, so its dedup is a single shared date.
+later the same day. The pump has no zone dimension, so its dedup (both directions) is a single
+shared date per direction.
 
-This is MQTT-only for now — unlike the earlier per-output fault monitor this design replaces, it
-doesn't drive the status LED's alert pattern.
+This is MQTT-only on the device side — unlike the earlier per-output fault monitor this design
+replaces, it doesn't drive the status LED's alert pattern. The HA package (see
+`homeassistant/packages/irrigator_automations.yaml`'s "Irrigator - forward current-fault alerts to
+WhatsApp + logbook" automation) forwards every fault alert (identified by the `fault` key) to
+`notify.greenapi` and the logbook.
 
 ## Weather-based irrigation auto-adjustment
 

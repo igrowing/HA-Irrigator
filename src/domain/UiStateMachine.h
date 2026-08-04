@@ -31,6 +31,12 @@ public:
         bool wateringActive = false;
         bool scheduleActive = false;
         bool autoAdjustmentEnabled = false;
+        // Current_sensor group's alert toggles (settings.json) — see kSettingsIndexAlertPumpUc
+        // etc. below for the Settings-menu rows that read/flip these.
+        bool alertPumpUc = false;
+        bool alertPumpOc = false;
+        bool alertValveUc = false;
+        bool alertValveOc = false;
         uint8_t scheduleRecordCount = 0;
         int16_t wateringPercentage = 0;
         int16_t upperLimitPercent = 0;
@@ -95,7 +101,7 @@ public:
     static constexpr uint8_t kTestAllIndexDuration = 1;
     static constexpr uint8_t kTestAllIndexBack = 2;
 
-    // MenuSettings: 10 rows, all the settings that can actually change. All rows are clickable
+    // MenuSettings: 14 rows, all the settings that can actually change. All rows are clickable
     // except BACK (see spec-comment on kInfoItemCount below for the read-only counterparts, split
     // out into their own MenuInfo screen) but every row still gets a named index here so the
     // renderer's switch and this class's click routing share one definition of the layout rather
@@ -105,8 +111,9 @@ public:
     // schedule itself is active — with scheduling off, watering is manual/on-demand, and there's
     // nothing for the daily Adjust% recalculation to apply to. Auto-adjustment reads second, still
     // before the fields it affects when enabled (Adjust/Upper/Lower/rain-skip thresholds); with it
-    // off, Adjust% is a plain manual value instead.
-    static constexpr uint8_t kSettingsItemCount = 10;
+    // off, Adjust% is a plain manual value instead. The 4 alert toggles sit directly above
+    // Calibrate CS (per spec) since they're only meaningful once a sensor is calibrated.
+    static constexpr uint8_t kSettingsItemCount = 14;
     static constexpr uint8_t kSettingsIndexScheduleActive = 0;
     static constexpr uint8_t kSettingsIndexAutoAdjustment = 1;
     static constexpr uint8_t kSettingsIndexPercentage = 2;
@@ -114,9 +121,13 @@ public:
     static constexpr uint8_t kSettingsIndexLowerLimit = 4;
     static constexpr uint8_t kSettingsIndexRainSkipProbability = 5;
     static constexpr uint8_t kSettingsIndexRainSkipAmount = 6;
-    static constexpr uint8_t kSettingsIndexCalibrate = 7;
-    static constexpr uint8_t kSettingsIndexRestart = 8;
-    static constexpr uint8_t kSettingsIndexBack = 9;
+    static constexpr uint8_t kSettingsIndexAlertPumpUc = 7;
+    static constexpr uint8_t kSettingsIndexAlertPumpOc = 8;
+    static constexpr uint8_t kSettingsIndexAlertValveUc = 9;
+    static constexpr uint8_t kSettingsIndexAlertValveOc = 10;
+    static constexpr uint8_t kSettingsIndexCalibrate = 11;
+    static constexpr uint8_t kSettingsIndexRestart = 12;
+    static constexpr uint8_t kSettingsIndexBack = 13;
 
     // MenuInfo: 9 rows, the read-only counterparts split out of MenuSettings (WiFi/IP/MQTT/Topic/
     // City/Coordinates/LastUpdate/FW are all display-only, per spec) plus BACK. None of the

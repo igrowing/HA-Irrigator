@@ -101,6 +101,10 @@ const char* IrrigatorUi::dayOfWeekName(uint8_t isoDay) {
     ctx.wateringActive = isActivelyRunning(data.snapshot);
     ctx.scheduleActive = data.scheduleActive;
     ctx.autoAdjustmentEnabled = data.settings != nullptr ? data.settings->autoAdjustmentEnabled : false;
+    ctx.alertPumpUc = data.settings != nullptr ? data.settings->alertPumpUc : false;
+    ctx.alertPumpOc = data.settings != nullptr ? data.settings->alertPumpOc : false;
+    ctx.alertValveUc = data.settings != nullptr ? data.settings->alertValveUc : false;
+    ctx.alertValveOc = data.settings != nullptr ? data.settings->alertValveOc : false;
     ctx.nextScheduledZone = data.nextScheduledZone;
     ctx.scheduleRecordCount = data.schedule != nullptr ? data.schedule->count : 0;
     ctx.wateringPercentage = data.settings != nullptr ? data.settings->wateringPercentage : 0;
@@ -575,6 +579,22 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                     break;
                 case Settings::kSettingsIndexScheduleActive:
                     snprintf(buffer, size, "Schedule: %s", data.scheduleActive ? "active" : "paused");
+                    break;
+                case Settings::kSettingsIndexAlertPumpUc:
+                    snprintf(buffer, size, "Alert pump UC: %s",
+                            (data.settings != nullptr && data.settings->alertPumpUc) ? "on" : "off");
+                    break;
+                case Settings::kSettingsIndexAlertPumpOc:
+                    snprintf(buffer, size, "Alert pump OC: %s",
+                            (data.settings != nullptr && data.settings->alertPumpOc) ? "on" : "off");
+                    break;
+                case Settings::kSettingsIndexAlertValveUc:
+                    snprintf(buffer, size, "Alert valve UC: %s",
+                            (data.settings != nullptr && data.settings->alertValveUc) ? "on" : "off");
+                    break;
+                case Settings::kSettingsIndexAlertValveOc:
+                    snprintf(buffer, size, "Alert valve OC: %s",
+                            (data.settings != nullptr && data.settings->alertValveOc) ? "on" : "off");
                     break;
                 case Settings::kSettingsIndexRestart:
                     snprintf(buffer, size, "Restart");

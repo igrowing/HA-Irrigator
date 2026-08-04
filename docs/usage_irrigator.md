@@ -270,6 +270,10 @@ SETTINGS
   Lower limit: 40 %
   Skip rain prob: 70 %
   Skip rain amt: 4 mm
+  Alert pump UC: on
+  Alert pump OC: on
+  Alert valve UC: on
+  Alert valve OC: on
   Calibrate CS
   Restart
   BACK
@@ -295,6 +299,10 @@ SETTINGS
 - **Skip rain prob** / **Skip rain amt**: the two thresholds that decide whether today's watering
   is skipped outright because of rain in the forecast (defaults 70% / 4mm) — see **Step 1** below
   for exactly how they're combined.
+- **Alert pump UC** / **Alert pump OC** / **Alert valve UC** / **Alert valve OC**: on/off switches
+  (click to flip, no extra confirmation) for the four over/under-current alerts — see **How to
+  control over-current and under-current alerts**, near the end of this document, for what these
+  do and when they actually matter.
 - **Calibrate CS**: captures the valve and pump current-sensor calibration base used for
   over/undercurrent alerting, from whatever's actually running right now. Needs an active watering
   run (valve open — not just the pump alone), and asks for confirmation first
@@ -509,3 +517,43 @@ succeed this time — there's no separate "reset calibration" step. The same cal
 reachable remotely over MQTT (`cmd/calibrate`) with an identical outcome; see
 [technical.md](technical.md) for that path and the full technical detail behind these numbers.
 
+### How to control over-current and under-current alerts
+
+While a zone or the pump is running, the device compares every current reading against that
+sensor's calibrated baseline (see **Current-sensor calibration explained**, just above) and warns
+you if it's drawing noticeably more or less than normal:
+
+- **Over-current (OC)** — the reading is well *above* baseline (a stuck/jammed valve, a seized
+  pump, or a short).
+- **Under-current (UC)** — the reading is well *below* baseline (a disconnected or dry-running
+  valve, a pump that's lost its prime).
+
+There are four of these, checked and toggled independently: **pump OC**, **pump UC**, **valve
+OC**, **valve UC** (the valve checks apply no matter which zone is open — there's one shared valve
+current sensor for all 11 zones). Each one publishes an `/alert` over MQTT the moment it trips —
+if you've paired the device with Home Assistant, that gets forwarded to WhatsApp and the logbook
+automatically; see [usage_homeassistant.md](usage_homeassistant.md)'s **Settings** section.
+
+**A toggle only matters once its sensor is actually calibrated.** Before you've ever run
+**Calibrate CS**, there's no baseline to compare against, so the device skips the check entirely —
+turning a toggle on or off ahead of calibration doesn't do anything yet, it just sets what happens
+once you do calibrate.
+
+All four default to **on**. To turn one off (say, if a particular zone's valve is known to draw
+unusually little and you're tired of false alarms), open the menu, turn to **Settings**, click in,
+then turn to the row you want:
+
+```
+SETTINGS
+  Skip rain amt: 4 mm
+> Alert pump UC: on
+  Alert pump OC: on
+  Alert valve UC: on
+  Alert valve OC: on
+  Calibrate CS
+```
+
+**Click** the row to flip it — same one-click toggle as **Schedule** and **Auto-adjust** above, no
+separate confirmation step. The change is saved immediately and survives a restart. These four
+rows are also editable from Home Assistant, in the same "Current-Sensor Calibration" card as the
+**Calibrate CS** button — see [usage_homeassistant.md](usage_homeassistant.md).

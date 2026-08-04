@@ -93,33 +93,62 @@ bool parseSettings(const char* json, size_t length, Settings& out) {
         return false;
     }
 
+    // Nested-group lookups, each falling back to the pre-restructuring flat top-level key when the
+    // group (or the field within it) is absent — see this function's doc comment in Settings.h for
+    // why: it lets a device's existing flat settings.json keep its real values across the upgrade
+    // instead of silently reverting to factory defaults. main.ino persists once right after a
+    // successful boot-time parse, which rewrites the file in the new nested shape and makes this
+    // fallback a one-time affair per device.
+    JsonVariantConst watering = doc["Watering"];
+    JsonVariantConst location = doc["Location"];
+    JsonVariantConst currentSensor = doc["Current_sensor"];
+    JsonVariantConst zones = doc["Zones"];
+    if (zones.isNull()) {
+        zones = doc["zone_names"];
+    }
+
     Settings parsed = makeDefaultZones();
-    parsed.wateringPercentage = doc["watering_percentage"] | board::DEFAULT_WATERING_PERCENTAGE;
-    parsed.scheduleActive = doc["schedule_active"] | false;
+    parsed.wateringPercentage = watering["watering_percentage"] |
+                                (doc["watering_percentage"] | board::DEFAULT_WATERING_PERCENTAGE);
+    parsed.scheduleActive = watering["schedule_active"] | (doc["schedule_active"] | false);
     parsed.defaultManualDuration =
-        doc["default_manual_duration"] | board::DEFAULT_MANUAL_DURATION_MINUTES;
-    parsed.valveCurrentBaseLevel = doc["valve_current_base_level"] | 0;
-    parsed.pumpCurrentBaseLevel = doc["pump_current_base_level"] | 0;
+        watering["default_manual_duration"] |
+        (doc["default_manual_duration"] | board::DEFAULT_MANUAL_DURATION_MINUTES);
+    parsed.valveCurrentBaseLevel =
+        currentSensor["valve_current_base_level"] | (doc["valve_current_base_level"] | 0);
+    parsed.pumpCurrentBaseLevel =
+        currentSensor["pump_current_base_level"] | (doc["pump_current_base_level"] | 0);
 
-    parsed.autoAdjustmentEnabled = doc["auto_adjustment_enabled"] | true;
-    parsed.locationKnown = doc["location_known"] | false;
-    parsed.latitude = doc["latitude"] | 0.0f;
-    parsed.longitude = doc["longitude"] | 0.0f;
-    snprintf(parsed.city, sizeof(parsed.city), "%s", doc["city"] | "");
-    parsed.upperLimitPercent = doc["upper_limit"] | board::AUTOADJUSTMENT_DEFAULT_UPPER_LIMIT_PERCENT;
-    parsed.lowerLimitPercent = doc["lower_limit"] | board::AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT;
-    parsed.rainSkipProbabilityPercent = doc["rain_skip_probability_percent"] |
-                                        board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_PROBABILITY_PERCENT;
-    parsed.rainSkipAmountMm =
-        doc["rain_skip_amount_mm"] | board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_AMOUNT_MM;
-    snprintf(parsed.weatherApiKey, sizeof(parsed.weatherApiKey), "%s", doc["weatherapi_key"] | "");
+    // No flat-key fallback for these four — they're new, there's no pre-restructuring value to
+    // fall back to. Default true (see Settings.h's field comment).
+    parsed.alertPumpUc = currentSensor["alert_pump_uc"] | true;
+    parsed.alertPumpOc = currentSensor["alert_pump_oc"] | true;
+    parsed.alertValveUc = currentSensor["alert_valve_uc"] | true;
+    parsed.alertValveOc = currentSensor["alert_valve_oc"] | true;
 
-    JsonVariantConst zoneNames = doc["zone_names"];
-    if (!zoneNames.isNull()) {
+    parsed.autoAdjustmentEnabled =
+        watering["auto_adjustment_enabled"] | (doc["auto_adjustment_enabled"] | true);
+    parsed.locationKnown = location["location_known"] | (doc["location_known"] | false);
+    parsed.latitude = location["latitude"] | (doc["latitude"] | 0.0f);
+    parsed.longitude = location["longitude"] | (doc["longitude"] | 0.0f);
+    snprintf(parsed.city, sizeof(parsed.city), "%s", location["city"] | (doc["city"] | ""));
+    parsed.upperLimitPercent =
+        watering["upper_limit"] | (doc["upper_limit"] | board::AUTOADJUSTMENT_DEFAULT_UPPER_LIMIT_PERCENT);
+    parsed.lowerLimitPercent =
+        watering["lower_limit"] | (doc["lower_limit"] | board::AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT);
+    parsed.rainSkipProbabilityPercent =
+        watering["rain_skip_probability_percent"] |
+        (doc["rain_skip_probability_percent"] | board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_PROBABILITY_PERCENT);
+    parsed.rainSkipAmountMm = watering["rain_skip_amount_mm"] |
+                              (doc["rain_skip_amount_mm"] | board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_AMOUNT_MM);
+    snprintf(parsed.weatherApiKey, sizeof(parsed.weatherApiKey), "%s",
+             watering["weatherapi_key"] | (doc["weatherapi_key"] | ""));
+
+    if (!zones.isNull()) {
         for (uint8_t i = 0; i < board::ZONE_COUNT; ++i) {
             char key[4];
             snprintf(key, sizeof(key), "%u", static_cast<unsigned>(i + 1));
-            JsonVariantConst entry = zoneNames[key];
+            JsonVariantConst entry = zones[key];
 
             // Accepts either the legacy plain-string form ("1": "Trees left" — enabled defaults
             // true) or the current {"name":...,"enabled":...} object form, so settings.json
@@ -163,62 +192,105 @@ bool mergeSettings(const Settings& existing,
 
     out = existing;
 
-    JsonVariantConst wateringPercentage = doc["watering_percentage"];
+    // Nested-only: by the time an upload reaches this function, the publisher (HA's
+    // script.irrigator_publish_settings) is writing the new nested shape too — see this
+    // function's doc comment in Settings.h. Absent groups just mean every field within them
+    // reads as absent below, which is handled the same as any other missing field (kept as
+    // `existing`'s value, no rejection).
+    JsonVariantConst watering = doc["Watering"];
+    JsonVariantConst currentSensor = doc["Current_sensor"];
+
+    JsonVariantConst wateringPercentage = watering["watering_percentage"];
     if (hasValue(wateringPercentage)) {
         if (wateringPercentage.is<long>() && wateringPercentage.as<long>() >= 0 &&
             wateringPercentage.as<long>() <= 300) {
             out.wateringPercentage = static_cast<int16_t>(wateringPercentage.as<long>());
         } else {
-            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "watering_percentage");
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.watering_percentage");
         }
     }
 
     // schedule_active merges like any other bool field here; main.ino's handleMqttUpload treats
     // it as device-owned and overrides it back to `existing`'s value afterward regardless (with
     // its own alert if the upload tried to change it) — see Settings.h's mergeSettings doc.
-    JsonVariantConst scheduleActive = doc["schedule_active"];
+    JsonVariantConst scheduleActive = watering["schedule_active"];
     if (hasValue(scheduleActive)) {
         if (scheduleActive.is<bool>()) {
             out.scheduleActive = scheduleActive.as<bool>();
         } else {
-            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "schedule_active");
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.schedule_active");
         }
     }
 
-    JsonVariantConst defaultManualDuration = doc["default_manual_duration"];
+    JsonVariantConst defaultManualDuration = watering["default_manual_duration"];
     if (hasValue(defaultManualDuration)) {
         if (defaultManualDuration.is<long>() &&
             defaultManualDuration.as<long>() >= board::MANUAL_DURATION_MIN_MINUTES &&
             defaultManualDuration.as<long>() <= board::MANUAL_DURATION_MAX_MINUTES) {
             out.defaultManualDuration = static_cast<uint8_t>(defaultManualDuration.as<long>());
         } else {
-            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "default_manual_duration");
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.default_manual_duration");
         }
     }
 
     // auto_adjustment_enabled merges like any other bool field here; it's device-owned the same
     // way schedule_active is (see comment above) and gets the same post-merge override treatment
     // in main.ino.
-    JsonVariantConst autoAdjustmentEnabled = doc["auto_adjustment_enabled"];
+    JsonVariantConst autoAdjustmentEnabled = watering["auto_adjustment_enabled"];
     if (hasValue(autoAdjustmentEnabled)) {
         if (autoAdjustmentEnabled.is<bool>()) {
             out.autoAdjustmentEnabled = autoAdjustmentEnabled.as<bool>();
         } else {
-            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "auto_adjustment_enabled");
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.auto_adjustment_enabled");
         }
     }
 
-    // location_known/latitude/longitude/city, and valve/pump_current_base_level: deliberately not
-    // read from `doc` at all -- see this function's doc comment in Settings.h. `out` already
-    // carries `existing`'s values for them.
+    // Current_sensor.location_known/latitude/longitude/city, and valve/pump_current_base_level:
+    // deliberately not read from `doc` at all -- see this function's doc comment in Settings.h.
+    // `out` already carries `existing`'s values for them.
+
+    // The four alert toggles are plain bools, merged individually like schedule_active above —
+    // they're user-editable (not device-owned), so no post-merge override is needed in main.ino.
+    JsonVariantConst alertPumpUc = currentSensor["alert_pump_uc"];
+    if (hasValue(alertPumpUc)) {
+        if (alertPumpUc.is<bool>()) {
+            out.alertPumpUc = alertPumpUc.as<bool>();
+        } else {
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Current_sensor.alert_pump_uc");
+        }
+    }
+    JsonVariantConst alertPumpOc = currentSensor["alert_pump_oc"];
+    if (hasValue(alertPumpOc)) {
+        if (alertPumpOc.is<bool>()) {
+            out.alertPumpOc = alertPumpOc.as<bool>();
+        } else {
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Current_sensor.alert_pump_oc");
+        }
+    }
+    JsonVariantConst alertValveUc = currentSensor["alert_valve_uc"];
+    if (hasValue(alertValveUc)) {
+        if (alertValveUc.is<bool>()) {
+            out.alertValveUc = alertValveUc.as<bool>();
+        } else {
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Current_sensor.alert_valve_uc");
+        }
+    }
+    JsonVariantConst alertValveOc = currentSensor["alert_valve_oc"];
+    if (hasValue(alertValveOc)) {
+        if (alertValveOc.is<bool>()) {
+            out.alertValveOc = alertValveOc.as<bool>();
+        } else {
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Current_sensor.alert_valve_oc");
+        }
+    }
 
     // upper_limit/lower_limit are cross-validated together (upper >= lower, matching
     // validateSettings()) instead of field-by-field, so a combination that only makes sense
     // together doesn't get half-applied; if the combination doesn't hold, whichever of the two
     // was actually present in this upload gets rejected (and alerted), not silently kept as the
     // old value under a new, now-inconsistent partner.
-    JsonVariantConst upperLimit = doc["upper_limit"];
-    JsonVariantConst lowerLimit = doc["lower_limit"];
+    JsonVariantConst upperLimit = watering["upper_limit"];
+    JsonVariantConst lowerLimit = watering["lower_limit"];
     {
         int16_t newUpper = out.upperLimitPercent;
         int16_t newLower = out.lowerLimitPercent;
@@ -239,10 +311,10 @@ bool mergeSettings(const Settings& existing,
             }
         }
         if (!upperOk) {
-            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "upper_limit");
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.upper_limit");
         }
         if (!lowerOk) {
-            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "lower_limit");
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.lower_limit");
         }
         if (upperOk && lowerOk) {
             if (newUpper >= newLower) {
@@ -250,53 +322,53 @@ bool mergeSettings(const Settings& existing,
                 out.lowerLimitPercent = newLower;
             } else {
                 if (hasValue(upperLimit)) {
-                    appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "upper_limit");
+                    appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.upper_limit");
                 }
                 if (hasValue(lowerLimit)) {
-                    appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "lower_limit");
+                    appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.lower_limit");
                 }
             }
         }
     }
 
-    JsonVariantConst rainSkipProbability = doc["rain_skip_probability_percent"];
+    JsonVariantConst rainSkipProbability = watering["rain_skip_probability_percent"];
     if (hasValue(rainSkipProbability)) {
         if (rainSkipProbability.is<long>() && rainSkipProbability.as<long>() >= 0 &&
             rainSkipProbability.as<long>() <= 100) {
             out.rainSkipProbabilityPercent = static_cast<int16_t>(rainSkipProbability.as<long>());
         } else {
-            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "rain_skip_probability_percent");
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.rain_skip_probability_percent");
         }
     }
 
-    JsonVariantConst rainSkipAmount = doc["rain_skip_amount_mm"];
+    JsonVariantConst rainSkipAmount = watering["rain_skip_amount_mm"];
     if (hasValue(rainSkipAmount)) {
         if (rainSkipAmount.is<long>() && rainSkipAmount.as<long>() >= 0) {
             out.rainSkipAmountMm = static_cast<int16_t>(rainSkipAmount.as<long>());
         } else {
-            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "rain_skip_amount_mm");
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.rain_skip_amount_mm");
         }
     }
 
-    JsonVariantConst weatherApiKey = doc["weatherapi_key"];
+    JsonVariantConst weatherApiKey = watering["weatherapi_key"];
     if (hasValue(weatherApiKey)) {
         if (weatherApiKey.is<const char*>() &&
             strlen(weatherApiKey.as<const char*>()) < sizeof(out.weatherApiKey)) {
             snprintf(out.weatherApiKey, sizeof(out.weatherApiKey), "%s", weatherApiKey.as<const char*>());
         } else {
-            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "weatherapi_key");
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.weatherapi_key");
         }
     }
 
-    // zone_names is merged per zone index rather than as a single field, so an upload naming
+    // Zones is merged per zone index rather than as a single field, so an upload naming
     // only e.g. zone 3 doesn't wipe the other zones' names/enabled state the way replacing the
     // whole sub-object would.
-    JsonVariantConst zoneNames = doc["zone_names"];
-    if (!zoneNames.isNull()) {
+    JsonVariantConst zones = doc["Zones"];
+    if (!zones.isNull()) {
         for (uint8_t i = 0; i < board::ZONE_COUNT; ++i) {
             char key[4];
             snprintf(key, sizeof(key), "%u", static_cast<unsigned>(i + 1));
-            JsonVariantConst entry = zoneNames[key];
+            JsonVariantConst entry = zones[key];
             if (entry.isNull()) {
                 continue;
             }
@@ -309,7 +381,7 @@ bool mergeSettings(const Settings& existing,
                     if (strlen(name) < sizeof(out.zoneNames[i])) {
                         snprintf(out.zoneNames[i], sizeof(out.zoneNames[i]), "%s", name);
                     } else {
-                        snprintf(fieldLabel, sizeof(fieldLabel), "zone_names.%u",
+                        snprintf(fieldLabel, sizeof(fieldLabel), "Zones.%u",
                                  static_cast<unsigned>(i + 1));
                         appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, fieldLabel);
                     }
@@ -318,7 +390,7 @@ bool mergeSettings(const Settings& existing,
             }
 
             if (!entry.is<JsonObjectConst>()) {
-                snprintf(fieldLabel, sizeof(fieldLabel), "zone_names.%u", static_cast<unsigned>(i + 1));
+                snprintf(fieldLabel, sizeof(fieldLabel), "Zones.%u", static_cast<unsigned>(i + 1));
                 appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, fieldLabel);
                 continue;
             }
@@ -328,7 +400,7 @@ bool mergeSettings(const Settings& existing,
                 if (name.is<const char*>() && strlen(name.as<const char*>()) < sizeof(out.zoneNames[i])) {
                     snprintf(out.zoneNames[i], sizeof(out.zoneNames[i]), "%s", name.as<const char*>());
                 } else {
-                    snprintf(fieldLabel, sizeof(fieldLabel), "zone_names.%u.name",
+                    snprintf(fieldLabel, sizeof(fieldLabel), "Zones.%u.name",
                              static_cast<unsigned>(i + 1));
                     appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, fieldLabel);
                 }
@@ -339,7 +411,7 @@ bool mergeSettings(const Settings& existing,
                 if (enabled.is<bool>()) {
                     out.zoneEnabled[i] = enabled.as<bool>();
                 } else {
-                    snprintf(fieldLabel, sizeof(fieldLabel), "zone_names.%u.enabled",
+                    snprintf(fieldLabel, sizeof(fieldLabel), "Zones.%u.enabled",
                              static_cast<unsigned>(i + 1));
                     appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, fieldLabel);
                 }
@@ -352,28 +424,37 @@ bool mergeSettings(const Settings& existing,
 
 size_t serializeSettings(const Settings& settings, char* buffer, size_t bufferSize) {
     JsonDocument doc;
-    doc["watering_percentage"] = settings.wateringPercentage;
-    doc["schedule_active"] = settings.scheduleActive;
-    doc["default_manual_duration"] = settings.defaultManualDuration;
-    doc["valve_current_base_level"] = settings.valveCurrentBaseLevel;
-    doc["pump_current_base_level"] = settings.pumpCurrentBaseLevel;
 
-    doc["auto_adjustment_enabled"] = settings.autoAdjustmentEnabled;
-    doc["location_known"] = settings.locationKnown;
-    doc["latitude"] = settings.latitude;
-    doc["longitude"] = settings.longitude;
-    doc["city"] = settings.city;
-    doc["upper_limit"] = settings.upperLimitPercent;
-    doc["lower_limit"] = settings.lowerLimitPercent;
-    doc["rain_skip_probability_percent"] = settings.rainSkipProbabilityPercent;
-    doc["rain_skip_amount_mm"] = settings.rainSkipAmountMm;
-    doc["weatherapi_key"] = settings.weatherApiKey;
+    JsonObject watering = doc["Watering"].to<JsonObject>();
+    watering["watering_percentage"] = settings.wateringPercentage;
+    watering["schedule_active"] = settings.scheduleActive;
+    watering["default_manual_duration"] = settings.defaultManualDuration;
+    watering["auto_adjustment_enabled"] = settings.autoAdjustmentEnabled;
+    watering["upper_limit"] = settings.upperLimitPercent;
+    watering["lower_limit"] = settings.lowerLimitPercent;
+    watering["rain_skip_probability_percent"] = settings.rainSkipProbabilityPercent;
+    watering["rain_skip_amount_mm"] = settings.rainSkipAmountMm;
+    watering["weatherapi_key"] = settings.weatherApiKey;
 
-    JsonObject zoneNames = doc["zone_names"].to<JsonObject>();
+    JsonObject location = doc["Location"].to<JsonObject>();
+    location["location_known"] = settings.locationKnown;
+    location["latitude"] = settings.latitude;
+    location["longitude"] = settings.longitude;
+    location["city"] = settings.city;
+
+    JsonObject currentSensor = doc["Current_sensor"].to<JsonObject>();
+    currentSensor["valve_current_base_level"] = settings.valveCurrentBaseLevel;
+    currentSensor["pump_current_base_level"] = settings.pumpCurrentBaseLevel;
+    currentSensor["alert_pump_uc"] = settings.alertPumpUc;
+    currentSensor["alert_pump_oc"] = settings.alertPumpOc;
+    currentSensor["alert_valve_uc"] = settings.alertValveUc;
+    currentSensor["alert_valve_oc"] = settings.alertValveOc;
+
+    JsonObject zones = doc["Zones"].to<JsonObject>();
     for (uint8_t i = 0; i < board::ZONE_COUNT; ++i) {
         char key[4];
         snprintf(key, sizeof(key), "%u", static_cast<unsigned>(i + 1));
-        JsonObject entry = zoneNames[key].to<JsonObject>();
+        JsonObject entry = zones[key].to<JsonObject>();
         entry["name"] = settings.zoneNames[i];
         entry["enabled"] = settings.zoneEnabled[i];
     }

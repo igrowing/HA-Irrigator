@@ -25,6 +25,15 @@ struct Settings {
     // an uploaded settings.json (see mergeSettings's doc below).
     uint16_t valveCurrentBaseLevel = 0;
     uint16_t pumpCurrentBaseLevel = 0;
+    // Per-fault enable toggles for drainCurrentBurstResults()'s current-fault alerting (main.ino) —
+    // independent of, and in addition to, that check's own base-calibrated (!=0) gate. All default
+    // true so upgrading an existing settings.json (missing these fields) preserves today's
+    // unconditional-when-calibrated alerting behavior. Editable from the on-device Settings menu
+    // (above "Calibrate CS") and from HA; lives in settings.json's Current_sensor group.
+    bool alertPumpUc = true;
+    bool alertPumpOc = true;
+    bool alertValveUc = true;
+    bool alertValveOc = true;
 
     // Weather-based auto-adjustment. Master on/off switch for the whole feature (both the
     // percentage recalculation and the rain-skip check) — defaults true so upgrading an existing
@@ -62,6 +71,18 @@ struct Settings {
 Settings makeDefaultZones();
 bool validateSettings(const Settings& settings);
 
+// settings.json is nested into four top-level groups — Zones (per-zone name/enabled, keyed "1".."N",
+// same shape as before), Location (location_known/latitude/longitude/city), Current_sensor
+// (valve/pump_current_base_level, alertPumpUc/Oc/ValveUc/Oc), Watering (everything else: watering
+// percentage, schedule_active, default_manual_duration, auto_adjustment_enabled, upper/lower limit,
+// rain_skip_probability_percent/rain_skip_amount_mm, weatherapi_key). parseSettings() additionally
+// falls back to each field's old flat top-level key when its new nested key is absent, so a
+// pre-restructuring settings.json still loads its real values instead of resetting to defaults —
+// see main.ino's boot-time load, which persists once right after a successful parse to rewrite the
+// file in the new nested shape (self-migrating; the flat fallback is then never exercised again on
+// that device). mergeSettings() (below) does NOT have this fallback — by the time an upload can
+// reach it, HA is publishing nested settings.json too.
+//
 // Missing fields fall back to makeDefaultSettings() values (this is the spec-defined default,
 // not a guess). Rejects (returns false) only on malformed JSON or values validateSettings()
 // rejects, e.g. an out-of-range watering percentage.
@@ -69,17 +90,18 @@ bool parseSettings(const char* json, size_t length, Settings& out);
 size_t serializeSettings(const Settings& settings, char* buffer, size_t bufferSize);
 
 // Same field-by-field merge semantics as ConfigStore.h's mergeConfig(): a field present in
-// `json` with a non-null, non-empty value is validated on its own and applied to `out` only if
-// it individually passes; a field that's missing, null, an empty string, or fails its own check
-// instead keeps `existing`'s value, and (only for the fails-its-own-check case) its name is
-// appended, comma-separated, into `rejectedFieldsOut`. zone_names is merged per zone index, so
-// an upload naming only zone 3 doesn't disturb zones 1, 2, 4... upper_limit/lower_limit are
-// validated together (upper >= lower), matching validateSettings().
+// `json` (at its nested group path, e.g. "Watering.watering_percentage") with a non-null,
+// non-empty value is validated on its own and applied to `out` only if it individually passes; a
+// field that's missing, null, an empty string, or fails its own check instead keeps `existing`'s
+// value, and (only for the fails-its-own-check case) its dotted path is appended,
+// comma-separated, into `rejectedFieldsOut`. Zones is merged per zone index, so an upload naming
+// only zone 3 doesn't disturb zones 1, 2, 4... Watering.upper_limit/lower_limit are validated
+// together (upper >= lower), matching validateSettings().
 //
-// location_known/latitude/longitude/city, and valve/pump_current_base_level, are device-owned
-// (the former populated only by the device's own geolocation resolution — see main.ino's
-// resolveGeolocationIfNeeded() — the latter only by cmd/calibrate) and are deliberately never read
-// from `json` here; `out` always keeps `existing`'s values for those six. Callers
+// Location.location_known/latitude/longitude/city, and Current_sensor.valve/pump_current_base_level,
+// are device-owned (the former populated only by the device's own geolocation resolution — see
+// main.ino's resolveGeolocationIfNeeded() — the latter only by cmd/calibrate) and are deliberately
+// never read from `json` here; `out` always keeps `existing`'s values for those six. Callers
 // that also guard schedule_active/auto_adjustment_enabled as device-owned (see main.ino's
 // handleMqttUpload) still need to do that themselves after calling this — those two are still
 // merged like any other field here.
