@@ -494,18 +494,15 @@
             title: Current-Sensor Calibration
             entities:
               # valve/pump_current_base_level live under settings.json's Current_sensor group now
-              # (see Settings.h) - a plain `type: attribute` row can't drill into a nested
-              # attribute, so these read it via a template instead.
-              - type: template
-                entity: sensor.irrigator_settings
+              # (see Settings.h) - the stock `entities` card's `type: attribute` row can't drill
+              # into a nested attribute (and `type: template` is a full CARD type, not a row type -
+              # using it as a row here previously rendered "Configuration error"), so these are
+              # plain entity rows pointing at the two derived template sensors in irrigator.yaml
+              # instead.
+              - entity: sensor.irrigator_valve_base_level
                 name: Valve Base Level
-                state: >-
-                  {{ (state_attr('sensor.irrigator_settings', 'Current_sensor') or {}).get('valve_current_base_level', 0) }}
-              - type: template
-                entity: sensor.irrigator_settings
+              - entity: sensor.irrigator_pump_base_level
                 name: Pump Base Level
-                state: >-
-                  {{ (state_attr('sensor.irrigator_settings', 'Current_sensor') or {}).get('pump_current_base_level', 0) }}
               - entity: sensor.irrigator_calibration_result
                 name: Last Calibration Response
               # Only meaningful once the corresponding sensor is calibrated (base level above is

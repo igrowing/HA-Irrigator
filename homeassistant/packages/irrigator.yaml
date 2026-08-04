@@ -781,6 +781,22 @@ template:
           {% else %}
             -
           {% endif %}
+      # valve/pump_current_base_level live under settings.json's Current_sensor group (see
+      # Settings.h), not as a top-level attribute of sensor.irrigator_settings - the stock
+      # `entities` card's `type: attribute` row can only read a literal top-level attribute, and
+      # has no `type: template` row (that's a full CARD type, not a row type - using it as a row
+      # renders "Configuration error" in Lovelace). Same fix as City/Coordinates above: a small
+      # derived sensor, referenced as a plain entity row in garden_tab.yaml.
+      - name: "Irrigator Valve Base Level"
+        unique_id: irrigator_valve_base_level
+        icon: mdi:tune-variant
+        state: >-
+          {{ (state_attr('sensor.irrigator_settings', 'Current_sensor') or {}).get('valve_current_base_level', 0) }}
+      - name: "Irrigator Pump Base Level"
+        unique_id: irrigator_pump_base_level
+        icon: mdi:tune-variant
+        state: >-
+          {{ (state_attr('sensor.irrigator_settings', 'Current_sensor') or {}).get('pump_current_base_level', 0) }}
 
   - button:
       - name: "Irrigator Refresh From Device"
