@@ -822,13 +822,16 @@ void publishCurrentState() {
 }
 
 bool persistScheduleAndReport() {
-    char buffer[irrigator::board::SCHEDULE_JSON_MAX_BYTES];
-    const size_t written = irrigator::domain::serializeSchedule(scheduleList, buffer, sizeof(buffer));
+    // Heap-allocated, not a stack array: at SCHEDULE_JSON_MAX_BYTES=24KB this would blow the
+    // default ~8KB loop-task stack outright.
+    auto buffer = std::make_unique<char[]>(irrigator::board::SCHEDULE_JSON_MAX_BYTES);
+    const size_t written =
+        irrigator::domain::serializeSchedule(scheduleList, buffer.get(), irrigator::board::SCHEDULE_JSON_MAX_BYTES);
     if (written == 0) {
         return false;
     }
-    const bool ok = fileStore.writeTextWithBackup(irrigator::board::SCHEDULE_FILE_PATH, String(buffer));
-    mqtt.publishSchedule(buffer);
+    const bool ok = fileStore.writeTextWithBackup(irrigator::board::SCHEDULE_FILE_PATH, String(buffer.get()));
+    mqtt.publishSchedule(buffer.get());
     return ok;
 }
 
@@ -1934,7 +1937,11 @@ void runScheduleEngine(uint32_t nowMs) {
     wallClock.hour = static_cast<uint8_t>(timeinfo.tm_hour);
     wallClock.minute = static_cast<uint8_t>(timeinfo.tm_min);
 
-    WateringRequest dueRequests[irrigator::board::SCHEDULE_MAX_RECORDS];
+    // static, not a stack array: runScheduleEngine() runs on every loop() iteration (the minute
+    // gating is inside ScheduleEngine::tick(), not here), and at SCHEDULE_MAX_RECORDS=255 a stack
+    // copy would push ~1.5KB onto the default ~8KB loop-task stack on every single tick — the same
+    // class of bug persistScheduleAndReport()'s heap-allocated buffer (above) already had to avoid.
+    static WateringRequest dueRequests[irrigator::board::SCHEDULE_MAX_RECORDS];
     const uint8_t dueCount = scheduleEngine.tick(wallClock,
                                                  clockService.epoch(),
                                                  scheduleList,

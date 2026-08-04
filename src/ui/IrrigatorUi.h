@@ -79,7 +79,10 @@ public:
     ::irrigator::domain::UiIntent poll(uint32_t nowMs, const RenderData& data);
 
 private:
-    using MenuLabelBuilder = std::function<void(uint8_t index, char* buffer, size_t bufferSize)>;
+    // uint16_t index: MenuSchedule's item count can exceed 255 at SCHEDULE_MAX_RECORDS=255 (see
+    // UiStateMachine::scheduleItemCount) — every menu's label builder shares this signature even
+    // though most stay well under 256 items.
+    using MenuLabelBuilder = std::function<void(uint16_t index, char* buffer, size_t bufferSize)>;
 
     void render(uint32_t nowMs, const RenderData& data);
     void drawTopStatusLine(const RenderData& data);
@@ -102,7 +105,7 @@ private:
     void renderFactoryResetResult();
     void renderCalibrateConfirm();
     void renderCalibrateResult();
-    void drawMenuList(const char* title, uint8_t itemCount, uint8_t selectedIndex,
+    void drawMenuList(const char* title, uint16_t itemCount, uint16_t selectedIndex,
                       const MenuLabelBuilder& labelBuilder);
 
     const char* zoneLabel(const RenderData& data, uint8_t zone) const;

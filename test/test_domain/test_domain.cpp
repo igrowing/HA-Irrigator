@@ -704,6 +704,84 @@ void test_schedule_store_rejects_whole_file_on_one_bad_record() {
     TEST_ASSERT_FALSE(irrigator::domain::parseSchedule(json, strlen(json), list));
 }
 
+// Pinned: SCHEDULE_MAX_RECORDS must stay exactly 255 (the ceiling a uint8_t record count/index
+// can hold) unless ScheduleList::count, UiIntent::scheduleRecordIndex, and every uint8_t
+// schedule-index touchpoint in UiStateMachine/IrrigatorUi are widened too — see board_config.h's
+// comment on the constant.
+void test_schedule_max_records_is_255() {
+    TEST_ASSERT_EQUAL_UINT8(255, irrigator::board::SCHEDULE_MAX_RECORDS);
+}
+
+namespace {
+
+size_t buildScheduleJson(char* out, size_t outSize, uint16_t recordCount) {
+    size_t offset = static_cast<size_t>(snprintf(out, outSize, "["));
+    for (uint16_t i = 0; i < recordCount; ++i) {
+        const unsigned zone = (i % irrigator::board::ZONE_COUNT) + 1;
+        const unsigned day = (i % 7) + 1;
+        offset += static_cast<size_t>(snprintf(
+            out + offset,
+            outSize - offset,
+            "%s{\"zone\":%u,\"day_of_week\":%u,\"start_time\":\"06:%02u\",\"duration_min\":20,\"active\":true}",
+            i == 0 ? "" : ",",
+            zone,
+            day,
+            i % 60));
+    }
+    offset += static_cast<size_t>(snprintf(out + offset, outSize - offset, "]"));
+    return offset;
+}
+
+}  // namespace
+
+void test_schedule_store_accepts_exactly_max_records_and_rejects_one_more() {
+    char atCapacityJson[irrigator::board::SCHEDULE_JSON_MAX_BYTES];
+    const size_t atCapacityLen =
+        buildScheduleJson(atCapacityJson, sizeof(atCapacityJson), irrigator::board::SCHEDULE_MAX_RECORDS);
+    irrigator::domain::ScheduleList atCapacity;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSchedule(atCapacityJson, atCapacityLen, atCapacity));
+    TEST_ASSERT_EQUAL_UINT8(irrigator::board::SCHEDULE_MAX_RECORDS, atCapacity.count);
+
+    char overCapacityJson[irrigator::board::SCHEDULE_JSON_MAX_BYTES + 128];
+    const size_t overCapacityLen = buildScheduleJson(
+        overCapacityJson,
+        sizeof(overCapacityJson),
+        static_cast<uint16_t>(irrigator::board::SCHEDULE_MAX_RECORDS) + 1);
+    irrigator::domain::ScheduleList overCapacity;
+    TEST_ASSERT_FALSE(irrigator::domain::parseSchedule(overCapacityJson, overCapacityLen, overCapacity));
+}
+
+// The worst-case-size scenario board_config.h's SCHEDULE_JSON_MAX_BYTES comment is based on:
+// 255 records, every one using the widest fields (2-digit zone, 2-digit duration, "false" - the
+// longer of true/false). Confirms serializeSchedule() doesn't silently truncate against that
+// buffer (an undersized buffer would still report a nonzero `written` — truncated-but-valid-
+// looking JSON is exactly the failure mode that made this worth pinning) and that the result
+// round-trips back through parseSchedule() intact.
+void test_schedule_serialize_255_records_fits_json_max_bytes_and_round_trips() {
+    irrigator::domain::ScheduleList list;
+    for (uint16_t i = 0; i < irrigator::board::SCHEDULE_MAX_RECORDS; ++i) {
+        irrigator::domain::ScheduleRecord record;
+        record.zone = irrigator::board::ZONE_COUNT;
+        record.dayOfWeek = static_cast<uint8_t>((i % 7) + 1);
+        snprintf(record.startTime, sizeof(record.startTime), "%02u:%02u", i % 24, i % 60);
+        record.durationMin = irrigator::board::SCHEDULE_DURATION_MAX_MINUTES;
+        record.active = false;
+        list.records[list.count++] = record;
+    }
+    TEST_ASSERT_EQUAL_UINT8(irrigator::board::SCHEDULE_MAX_RECORDS, list.count);
+
+    char buffer[irrigator::board::SCHEDULE_JSON_MAX_BYTES];
+    const size_t written = irrigator::domain::serializeSchedule(list, buffer, sizeof(buffer));
+    TEST_ASSERT_TRUE(written > 0);
+    TEST_ASSERT_TRUE(written < sizeof(buffer));  // not truncated against the buffer
+
+    irrigator::domain::ScheduleList roundTripped;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSchedule(buffer, written, roundTripped));
+    TEST_ASSERT_EQUAL_UINT8(list.count, roundTripped.count);
+    TEST_ASSERT_EQUAL_UINT8(list.records[254].zone, roundTripped.records[254].zone);
+    TEST_ASSERT_EQUAL_UINT8(list.records[254].durationMin, roundTripped.records[254].durationMin);
+}
+
 namespace {
 
 irrigator::domain::ScheduleList makeOneRecordSchedule() {
@@ -914,7 +992,7 @@ void test_ui_state_machine_stop_confirm_flow() {
     ctx.wateringActive = true;
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
-    TEST_ASSERT_EQUAL_UINT8(0, ui.selectedIndex());  // Stop is item 0 while watering
+    TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());  // Stop is item 0 while watering
 
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);  // -> StopConfirm
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::StopConfirm);
@@ -937,7 +1015,7 @@ void test_ui_state_machine_stop_all_requires_confirmation_then_stops_and_clears(
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Stop -> Stop all
-    TEST_ASSERT_EQUAL_UINT8(1, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(1, ui.selectedIndex());
 
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);  // -> StopConfirm
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::StopConfirm);
@@ -1039,7 +1117,7 @@ void test_ui_state_machine_settings_schedule_active_toggle_is_first_item() {
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Schedule -> Test all zones
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Test all zones -> Settings
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexScheduleActive,
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexScheduleActive,
                             ui.selectedIndex());
 
     // Direct toggle — no separate edit step.
@@ -1067,7 +1145,7 @@ void test_ui_state_machine_settings_auto_adjustment_toggle_is_second_item() {
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Test all zones -> Settings
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 350);  // Schedule active -> Auto-adjust
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexAutoAdjustment,
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexAutoAdjustment,
                             ui.selectedIndex());
 
     // Direct toggle, like ToggleScheduleActive — no separate edit step.
@@ -1103,7 +1181,7 @@ void test_ui_state_machine_settings_alert_toggles_sit_above_calibrate() {
     for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexAlertPumpUc; ++i) {
         ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 350 + i);
     }
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexAlertPumpUc, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexAlertPumpUc, ui.selectedIndex());
     const irrigator::domain::UiIntent pumpUcOff =
         ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);
     TEST_ASSERT_TRUE(pumpUcOff.type == irrigator::domain::UiIntentType::ToggleAlertPumpUc);
@@ -1111,21 +1189,21 @@ void test_ui_state_machine_settings_alert_toggles_sit_above_calibrate() {
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuSettings);
 
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 450);  // -> Alert pump OC
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexAlertPumpOc, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexAlertPumpOc, ui.selectedIndex());
     const irrigator::domain::UiIntent pumpOcOff =
         ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);
     TEST_ASSERT_TRUE(pumpOcOff.type == irrigator::domain::UiIntentType::ToggleAlertPumpOc);
     TEST_ASSERT_FALSE(pumpOcOff.boolValue);
 
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 550);  // -> Alert valve UC
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexAlertValveUc, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexAlertValveUc, ui.selectedIndex());
     const irrigator::domain::UiIntent valveUcOff =
         ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 600);
     TEST_ASSERT_TRUE(valveUcOff.type == irrigator::domain::UiIntentType::ToggleAlertValveUc);
     TEST_ASSERT_FALSE(valveUcOff.boolValue);
 
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 650);  // -> Alert valve OC
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexAlertValveOc, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexAlertValveOc, ui.selectedIndex());
     const irrigator::domain::UiIntent valveOcOff =
         ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 700);
     TEST_ASSERT_TRUE(valveOcOff.type == irrigator::domain::UiIntentType::ToggleAlertValveOc);
@@ -1133,7 +1211,7 @@ void test_ui_state_machine_settings_alert_toggles_sit_above_calibrate() {
 
     // One more step must land on Calibrate CS — confirms the 4 new rows sit directly above it.
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 750);
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexCalibrate, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexCalibrate, ui.selectedIndex());
 }
 
 void test_ui_state_machine_settings_rain_skip_threshold_edit() {
@@ -1183,7 +1261,7 @@ void test_ui_state_machine_settings_restart_confirm_flow() {
     for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexRestart; ++i) {
         ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 400 + i);
     }
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexRestart, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexRestart, ui.selectedIndex());
 
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);  // -> RestartConfirm
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::RestartConfirm);
@@ -1225,7 +1303,7 @@ void test_ui_state_machine_settings_calibrate_confirm_flow() {
     for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexCalibrate; ++i) {
         ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 400 + i);
     }
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kSettingsIndexCalibrate, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexCalibrate, ui.selectedIndex());
 
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);  // -> CalibrateConfirm
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::CalibrateConfirm);
@@ -1292,11 +1370,11 @@ void test_ui_state_machine_info_menu_is_separate_from_settings_and_read_only() {
     for (uint8_t i = 0; i < layout.infoIndex; ++i) {
         ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200 + i);
     }
-    TEST_ASSERT_EQUAL_UINT8(layout.infoIndex, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(layout.infoIndex, ui.selectedIndex());
 
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);  // -> MenuInfo
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuInfo);
-    TEST_ASSERT_EQUAL_UINT8(0, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());
 
     // Every display-only row is a no-op click; only BACK navigates.
     for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kInfoIndexBack; ++i) {
@@ -1306,7 +1384,7 @@ void test_ui_state_machine_info_menu_is_separate_from_settings_and_read_only() {
         TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuInfo);
         ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 450 + i);
     }
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kInfoIndexBack, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kInfoIndexBack, ui.selectedIndex());
 
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);  // BACK -> MenuMain
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuMain);
@@ -1355,7 +1433,7 @@ void test_ui_state_machine_schedule_duration_edit() {
     for (int i = 0; i < 3; ++i) {
         ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300 + i);
     }
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kScheduleFieldDuration,
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kScheduleFieldDuration,
                             ui.selectedIndex());
 
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);  // enter duration edit
@@ -1380,7 +1458,7 @@ void test_ui_state_machine_schedule_zone_edit_wraps() {
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuScheduleRoot
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 250);      // View/Edit -> MenuSchedule
     // Item 0 for one record is the Zone field already.
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kScheduleFieldZone, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kScheduleFieldZone, ui.selectedIndex());
 
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);  // enter zone edit
     TEST_ASSERT_TRUE(ui.editing());
@@ -1407,7 +1485,7 @@ void test_ui_state_machine_schedule_day_edit_wraps() {
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuScheduleRoot
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 250);      // View/Edit -> MenuSchedule
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300);  // Zone -> Day field
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kScheduleFieldDay, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kScheduleFieldDay, ui.selectedIndex());
 
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);  // enter day edit
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 500);
@@ -1432,7 +1510,7 @@ void test_ui_state_machine_schedule_time_edit_hour_then_minute() {
     for (int i = 0; i < 2; ++i) {
         ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300 + i);  // -> Time field
     }
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kScheduleFieldTime, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kScheduleFieldTime, ui.selectedIndex());
 
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);  // enter time edit (hour step)
     TEST_ASSERT_TRUE(ui.editing());
@@ -1462,14 +1540,14 @@ void test_ui_state_machine_schedule_root_navigation() {
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuScheduleRoot
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuScheduleRoot);
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kMenuScheduleRootIndexViewEdit,
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kMenuScheduleRootIndexViewEdit,
                             ui.selectedIndex());
 
     // Wraps across the 4 items: View/Edit(0) -> Add(1) -> Delete(2) -> BACK(3) -> View/Edit(0).
     for (int i = 0; i < 4; ++i) {
         ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300 + i);
     }
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kMenuScheduleRootIndexViewEdit,
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kMenuScheduleRootIndexViewEdit,
                             ui.selectedIndex());
 
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 400);  // -> Add
@@ -1478,7 +1556,7 @@ void test_ui_state_machine_schedule_root_navigation() {
 
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 600);  // cancel back
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuScheduleRoot);
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kMenuScheduleRootIndexViewEdit,
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kMenuScheduleRootIndexViewEdit,
                             ui.selectedIndex());
 
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 700);  // -> Add
@@ -1510,7 +1588,7 @@ void test_ui_state_machine_schedule_add_flow() {
     TEST_ASSERT_EQUAL_UINT8(6, ui.pendingScheduleHour());
     TEST_ASSERT_EQUAL_UINT8(0, ui.pendingScheduleMinute());
     TEST_ASSERT_EQUAL_UINT16(irrigator::board::SCHEDULE_DURATION_MIN_MINUTES, ui.pendingDuration());
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kScheduleAddIndexZone, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kScheduleAddIndexZone, ui.selectedIndex());
 
     // Editing Zone stages the value but never emits an intent.
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);  // enter zone edit
@@ -1556,7 +1634,7 @@ void test_ui_state_machine_schedule_add_flow() {
     TEST_ASSERT_TRUE(ui.scheduleActionSucceeded());
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1700);
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuScheduleRoot);
-    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kMenuScheduleRootIndexAdd,
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kMenuScheduleRootIndexAdd,
                             ui.selectedIndex());
 }
 
@@ -1573,7 +1651,7 @@ void test_ui_state_machine_schedule_delete_flow() {
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleDelete);
 
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 500);  // row 0 -> row 1
-    TEST_ASSERT_EQUAL_UINT8(1, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(1, ui.selectedIndex());
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 600);      // row 1 -> ScheduleDeleteConfirm
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleDeleteConfirm);
     TEST_ASSERT_EQUAL_UINT8(1, ui.scheduleDeleteRecordIndex());
@@ -1582,7 +1660,7 @@ void test_ui_state_machine_schedule_delete_flow() {
     // NO returns to ScheduleDelete at the same row.
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 700);
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleDelete);
-    TEST_ASSERT_EQUAL_UINT8(1, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(1, ui.selectedIndex());
 
     // Re-enter, flip to YES: emits DeleteScheduleRecord, does NOT change screen.
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 800);  // -> ScheduleDeleteConfirm
@@ -1599,7 +1677,7 @@ void test_ui_state_machine_schedule_delete_flow() {
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleActionResult);
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1200);
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleDelete);
-    TEST_ASSERT_EQUAL_UINT8(1, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(1, ui.selectedIndex());
 }
 
 void test_ui_state_machine_schedule_action_result_reports_failure() {
@@ -1613,7 +1691,59 @@ void test_ui_state_machine_schedule_action_result_reports_failure() {
     // (the member's default-constructed value, since no Add/Delete click ran in this test).
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuScheduleRoot);
-    TEST_ASSERT_EQUAL_UINT8(0, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());
+}
+
+// scheduleItemCount(recordCount) = recordCount*5 + 1; a uint8_t result would have silently
+// wrapped starting at recordCount=52 (52*5+1=261, 261 mod 256 = 5) — long before the 255-record
+// cap SCHEDULE_MAX_RECORDS actually allows. Confirms the uint16_t widening actually holds these.
+void test_ui_state_machine_schedule_item_count_does_not_overflow_uint8() {
+    TEST_ASSERT_EQUAL_UINT16(261, irrigator::domain::UiStateMachine::scheduleItemCount(52));
+    TEST_ASSERT_EQUAL_UINT16(1276, irrigator::domain::UiStateMachine::scheduleItemCount(255));
+}
+
+void test_ui_state_machine_menu_schedule_navigates_past_the_old_uint8_wrap_point() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    // itemCount = 60*5+1 = 301 — with a uint8_t itemCount this truncates to 301 mod 256 = 45,
+    // corrupting navigation for every schedule this size or larger long before hitting 255 records.
+    ctx.scheduleRecordCount = 60;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuScheduleRoot
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 250);      // View/Edit -> MenuSchedule
+
+    // Step to item 260 — past the old 8-bit wrap point of 256. With a uint8_t selectedIndex_ this
+    // would have wrapped long before reaching 260.
+    for (uint16_t i = 0; i < 260; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300 + i);
+    }
+    TEST_ASSERT_EQUAL_UINT16(260, ui.selectedIndex());
+}
+
+void test_ui_state_machine_schedule_delete_navigates_full_255_record_list() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    // itemCount = 255+1 = 256. With the old `uint8_t itemCount = static_cast<uint8_t>(recordCount
+    // + 1)`, this truncates to exactly 0, and stepIndex's `count==0` guard makes every CW/CCW tick
+    // a permanent no-op — the Delete list would be stuck at record count 255 forever.
+    ctx.scheduleRecordCount = irrigator::board::SCHEDULE_MAX_RECORDS;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuScheduleRoot
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300);  // View/Edit -> Add
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 310);  // Add -> Delete
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);      // Delete -> ScheduleDelete
+
+    for (uint16_t i = 0; i < 255; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 500 + i);
+    }
+    TEST_ASSERT_EQUAL_UINT16(255, ui.selectedIndex());  // the BACK row, last of 256 items
+
+    // One more tick wraps back to 0 — proves the modulus divisor is really 256, not something
+    // smaller left over from 8-bit truncation.
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 900);
+    TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());
 }
 
 void test_calendar_math_round_trips_and_weekday() {
@@ -1723,6 +1853,9 @@ int main(int argc, char** argv) {
     RUN_TEST(test_merge_settings_updates_current_sensor_alert_toggles);
     RUN_TEST(test_schedule_store_round_trips_valid_list);
     RUN_TEST(test_schedule_store_rejects_whole_file_on_one_bad_record);
+    RUN_TEST(test_schedule_max_records_is_255);
+    RUN_TEST(test_schedule_store_accepts_exactly_max_records_and_rejects_one_more);
+    RUN_TEST(test_schedule_serialize_255_records_fits_json_max_bytes_and_round_trips);
     RUN_TEST(test_schedule_engine_fires_matching_record_once_per_minute);
     RUN_TEST(test_schedule_engine_respects_schedule_active_flag);
     RUN_TEST(test_schedule_engine_respects_rain_skip);
@@ -1757,6 +1890,9 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_schedule_add_flow);
     RUN_TEST(test_ui_state_machine_schedule_delete_flow);
     RUN_TEST(test_ui_state_machine_schedule_action_result_reports_failure);
+    RUN_TEST(test_ui_state_machine_schedule_item_count_does_not_overflow_uint8);
+    RUN_TEST(test_ui_state_machine_menu_schedule_navigates_past_the_old_uint8_wrap_point);
+    RUN_TEST(test_ui_state_machine_schedule_delete_navigates_full_255_record_list);
     RUN_TEST(test_calendar_math_round_trips_and_weekday);
     RUN_TEST(test_wifi_quality_thresholds_and_bar_count);
     RUN_TEST(test_dst_rules_matches_known_2024_eu_transitions);

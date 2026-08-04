@@ -74,8 +74,10 @@ public:
     // MenuSchedule's item count: `recordCount` rows of kScheduleFieldsPerRecord fields each, plus
     // a trailing BACK row. Shared so the renderer (IrrigatorUi::renderMenuSchedule) and the click
     // routing below (handleMenuSchedule) can't compute it two different ways.
-    static constexpr uint8_t scheduleItemCount(uint8_t recordCount) {
-        return static_cast<uint8_t>(recordCount * kScheduleFieldsPerRecord + 1);
+    // uint16_t (not uint8_t): at SCHEDULE_MAX_RECORDS=255 this reaches 255*5+1=1276, which would
+    // silently wrap in 8-bit arithmetic starting around 52 records.
+    static constexpr uint16_t scheduleItemCount(uint8_t recordCount) {
+        return static_cast<uint16_t>(static_cast<uint16_t>(recordCount) * kScheduleFieldsPerRecord + 1);
     }
 
     // MenuScheduleRoot: 4 rows — View/Edit, Add, Delete, BACK. Entered from MenuMain's Schedule
@@ -206,7 +208,8 @@ public:
     void showScheduleActionResult(bool success, uint32_t nowMs);
 
     UiScreen screen() const { return screen_; }
-    uint8_t selectedIndex() const { return selectedIndex_; }
+    // uint16_t: MenuSchedule's item count can exceed 255 (see scheduleItemCount() above).
+    uint16_t selectedIndex() const { return selectedIndex_; }
     bool editing() const { return editing_; }
     uint8_t pendingZone() const { return pendingZone_; }
     uint16_t pendingDuration() const { return pendingDuration_; }
@@ -273,7 +276,10 @@ private:
     UiIntent handleCalibrateConfirm(UiInputEvent event);
     UiIntent handleCalibrateResult(UiInputEvent event);
 
-    static uint8_t stepIndex(uint8_t current, uint8_t count, bool forward);
+    // uint16_t (not uint8_t): shared by every menu's CW/CCW wraparound, including MenuSchedule's
+    // which can exceed 255 (see scheduleItemCount() above) — small menus pass small counts and
+    // work identically at this width.
+    static uint16_t stepIndex(uint16_t current, uint16_t count, bool forward);
 
     // Steps from `current` (0 = PUMP, 1..ZONE_COUNT = zones) to the next reachable zone in the
     // given direction, skipping any disabled zone. PUMP is always reachable, so this always
@@ -283,7 +289,7 @@ private:
     static constexpr uint16_t kDefaultTestAllZonesDurationMin = 5;
 
     UiScreen screen_ = UiScreen::DisplayOff;
-    uint8_t selectedIndex_ = 0;
+    uint16_t selectedIndex_ = 0;
     bool editing_ = false;
 
     uint8_t pendingZone_ = 0;

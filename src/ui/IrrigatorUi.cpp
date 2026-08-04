@@ -479,8 +479,8 @@ void IrrigatorUi::renderCalibrateResult() {
 }
 
 void IrrigatorUi::drawMenuList(const char* title,
-                               uint8_t itemCount,
-                               uint8_t selectedIndex,
+                               uint16_t itemCount,
+                               uint16_t selectedIndex,
                                const MenuLabelBuilder& labelBuilder) {
     display_.clearBuffer();
     display_.setFont(u8g2_font_6x10_tr);
@@ -490,19 +490,23 @@ void IrrigatorUi::drawMenuList(const char* title,
     constexpr uint8_t kRowHeight = 11;
     constexpr uint8_t kStartY = 20;
 
-    uint8_t startIdx = 0;
+    // itemCount/selectedIndex are uint16_t (MenuSchedule can exceed 255 items), but the visible
+    // window is always kMaxVisible=5 rows, so the scroll offsets stay small — uint16_t throughout
+    // for consistency with the two indices they're derived from.
+    uint16_t startIdx = 0;
     if (selectedIndex >= kMaxVisible) {
-        startIdx = static_cast<uint8_t>(selectedIndex - kMaxVisible + 1);
+        startIdx = static_cast<uint16_t>(selectedIndex - kMaxVisible + 1);
     }
-    uint8_t endIdx = static_cast<uint8_t>(startIdx + kMaxVisible);
+    uint16_t endIdx = static_cast<uint16_t>(startIdx + kMaxVisible);
     if (endIdx > itemCount) {
         endIdx = itemCount;
-        startIdx = endIdx > kMaxVisible ? static_cast<uint8_t>(endIdx - kMaxVisible) : 0;
+        startIdx = endIdx > kMaxVisible ? static_cast<uint16_t>(endIdx - kMaxVisible) : 0;
     }
 
     char label[24];
-    for (uint8_t i = startIdx; i < endIdx; ++i) {
+    for (uint16_t i = startIdx; i < endIdx; ++i) {
         labelBuilder(i, label, sizeof(label));
+        // (i - startIdx) is always < kMaxVisible=5, so this fits comfortably back in uint8_t.
         const uint8_t rowY = static_cast<uint8_t>(kStartY + (i - startIdx) * kRowHeight);
         if (i == selectedIndex) {
             display_.setDrawColor(1);
@@ -523,7 +527,7 @@ void IrrigatorUi::renderMenuMain(const RenderData& data) {
     const auto layout = ::irrigator::domain::UiStateMachine::menuMainLayout(wateringActive);
 
     drawMenuList(
-        "MENU", layout.itemCount, uiState_.selectedIndex(), [this, &data, wateringActive, layout](uint8_t index, char* buffer, size_t size) {
+        "MENU", layout.itemCount, uiState_.selectedIndex(), [this, &data, wateringActive, layout](uint16_t index, char* buffer, size_t size) {
             if (wateringActive && index == 0) {
                 snprintf(buffer, size, "Stop %s", zoneLabel(data, data.snapshot.activeZone));
             } else if (wateringActive && index == 1) {
@@ -574,7 +578,7 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
     drawMenuList(
         "SETTINGS", Settings::kSettingsItemCount, uiState_.selectedIndex(),
         [this, &data, percentage, upperLimit, lowerLimit, rainSkipProbability, rainSkipAmount](
-            uint8_t index, char* buffer, size_t size) {
+            uint16_t index, char* buffer, size_t size) {
             switch (index) {
                 case Settings::kSettingsIndexAutoAdjustment:
                     snprintf(buffer,
@@ -636,7 +640,7 @@ void IrrigatorUi::renderMenuInfo(const RenderData& data) {
     using Info = ::irrigator::domain::UiStateMachine;
 
     drawMenuList(
-        "INFO", Info::kInfoItemCount, uiState_.selectedIndex(), [this, &data](uint8_t index, char* buffer, size_t size) {
+        "INFO", Info::kInfoItemCount, uiState_.selectedIndex(), [this, &data](uint16_t index, char* buffer, size_t size) {
             switch (index) {
                 case Info::kInfoIndexWifi: {
                     const auto quality = ::irrigator::domain::wifiQualityFromRssi(data.wifiRssi);
@@ -705,7 +709,7 @@ void IrrigatorUi::renderMenuTestAll() {
     const uint16_t durationMin =
         uiState_.editing() ? uiState_.pendingDuration() : uiState_.testAllZonesDurationMin();
 
-    drawMenuList("TEST ALL ZONES", TestAll::kTestAllItemCount, uiState_.selectedIndex(), [durationMin](uint8_t index, char* buffer, size_t size) {
+    drawMenuList("TEST ALL ZONES", TestAll::kTestAllItemCount, uiState_.selectedIndex(), [durationMin](uint16_t index, char* buffer, size_t size) {
         switch (index) {
             case TestAll::kTestAllIndexRun:
                 snprintf(buffer, size, "Run");
@@ -726,14 +730,14 @@ void IrrigatorUi::renderMenuTestAll() {
 void IrrigatorUi::renderMenuSchedule(const RenderData& data) {
     const uint8_t recordCount = data.schedule != nullptr ? data.schedule->count : 0;
     constexpr uint8_t kFieldsPerRecord = ::irrigator::domain::UiStateMachine::kScheduleFieldsPerRecord;
-    const uint8_t itemCount = ::irrigator::domain::UiStateMachine::scheduleItemCount(recordCount);
-    const uint8_t editingIndex = uiState_.selectedIndex();
+    const uint16_t itemCount = ::irrigator::domain::UiStateMachine::scheduleItemCount(recordCount);
+    const uint16_t editingIndex = uiState_.selectedIndex();
     const bool editing = uiState_.editing();
 
     drawMenuList("SCHEDULE",
                 itemCount,
                 uiState_.selectedIndex(),
-                [this, &data, recordCount, editing, editingIndex](uint8_t index, char* buffer, size_t size) {
+                [this, &data, recordCount, editing, editingIndex](uint16_t index, char* buffer, size_t size) {
                     const uint8_t recordIndex = static_cast<uint8_t>(index / kFieldsPerRecord);
                     if (recordIndex >= recordCount) {
                         snprintf(buffer, size, "BACK");
@@ -793,7 +797,7 @@ void IrrigatorUi::renderMenuSchedule(const RenderData& data) {
 void IrrigatorUi::renderMenuScheduleRoot() {
     using Root = ::irrigator::domain::UiStateMachine;
     drawMenuList("SCHEDULE", Root::kMenuScheduleRootItemCount, uiState_.selectedIndex(),
-        [](uint8_t index, char* buffer, size_t size) {
+        [](uint16_t index, char* buffer, size_t size) {
             switch (index) {
                 case Root::kMenuScheduleRootIndexViewEdit:
                     snprintf(buffer, size, "View/Edit");
@@ -819,7 +823,7 @@ void IrrigatorUi::renderScheduleAdd(const RenderData& data) {
     const bool editing = uiState_.editing();
 
     drawMenuList("ADD SCHEDULE", Add::kScheduleAddItemCount, uiState_.selectedIndex(),
-        [this, &data, editing](uint8_t index, char* buffer, size_t size) {
+        [this, &data, editing](uint16_t index, char* buffer, size_t size) {
             switch (index) {
                 case Add::kScheduleAddIndexZone:
                     snprintf(buffer, size, "Zone: %s", zoneLabel(data, uiState_.pendingScheduleZone()));
@@ -855,10 +859,12 @@ void IrrigatorUi::renderScheduleAdd(const RenderData& data) {
 
 void IrrigatorUi::renderScheduleDelete(const RenderData& data) {
     const uint8_t recordCount = data.schedule != nullptr ? data.schedule->count : 0;
-    const uint8_t itemCount = static_cast<uint8_t>(recordCount + 1);
+    // uint16_t: at recordCount=255 (SCHEDULE_MAX_RECORDS), +1 for BACK is 256, which overflows
+    // uint8_t — same reasoning as UiStateMachine::handleScheduleDelete's itemCount.
+    const uint16_t itemCount = static_cast<uint16_t>(recordCount) + 1;
 
     drawMenuList("DELETE SCHEDULE", itemCount, uiState_.selectedIndex(),
-        [this, &data, recordCount](uint8_t index, char* buffer, size_t size) {
+        [this, &data, recordCount](uint16_t index, char* buffer, size_t size) {
             if (index >= recordCount) {
                 snprintf(buffer, size, "BACK");
                 return;

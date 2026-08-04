@@ -210,9 +210,10 @@ above) are always read back as a whole file via `download`. `upload` behaves dif
   though each field must still be nested under its group (see the schema below), since
   `mergeSettings()` only reads the new nested paths, not the pre-restructuring flat ones.
 - **`schedule.json`** keeps whole-file replace semantics: it's a JSON array of records, not a flat
-  object of named fields, so any single invalid record (or a payload that isn't a JSON array at
-  all) rejects the entire upload with an `/alert`, same as loading it from flash at boot. The
-  number of records can still grow or shrink freely between uploads.
+  object of named fields, so any single invalid record, more than `SCHEDULE_MAX_RECORDS` (255)
+  records, or a payload that isn't a JSON array at all rejects the entire upload with an `/alert`,
+  same as loading it from flash at boot. The number of records can still grow or shrink freely
+  between uploads, up to that cap.
 - Any other filename (JSON or not) is written to flash exactly as received — there's no schema to
   validate it against.
 
@@ -280,7 +281,7 @@ key is absent, so a device upgrading from an older firmware keeps its real setti
 resetting to factory defaults — `mergeSettings()` (MQTT uploads) does not have this fallback, it
 reads only the nested paths shown above.
 
-**`schedule.json`** — a flat array of records, up to `SCHEDULE_MAX_RECORDS` (32), `day_of_week`
+**`schedule.json`** — a flat array of records, up to `SCHEDULE_MAX_RECORDS` (255), `day_of_week`
 0-indexed Monday=0..Sunday=6 (see `src/domain/Schedule.h`/`.cpp`):
 ```json
 [
@@ -608,9 +609,3 @@ want a one-click button scoped to a single test file instead of the whole suite.
 - The SSD1309 U8g2 driver variant (`NONAME0` vs `NONAME2`) hasn't been verified against a real
   panel; if the display shows garbage or inverted colors on first boot, swap the constructor in
   `src/ui/IrrigatorUi.h`.
-- **The pump does not actually pre-start before a valve opens.** `PUMP_PRESTART_MS` (500ms) exists
-  in `board_config.h` and is referenced by some `test_domain.cpp` timing offsets, but nothing in
-  `IrrigationStateMachine` or `main.ino` ever reads it — `start()` moves straight into the
-  `Watering`/`PumpOnly` state in one step, and `updateOutputsFromDomain()` sets the pump and valve
-  relays from that same snapshot in the same call, with no gap between them. If a real pre-start
-  gap matters for your pump/valve hardware, treat this as unimplemented, not just untested.

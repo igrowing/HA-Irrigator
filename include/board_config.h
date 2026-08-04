@@ -83,7 +83,10 @@ static constexpr uint8_t SCHEDULE_DURATION_MAX_MINUTES = 60;
 static constexpr uint8_t DEFAULT_MANUAL_DURATION_MINUTES = 5;
 static constexpr int16_t DEFAULT_WATERING_PERCENTAGE = 100;
 
-static constexpr uint8_t SCHEDULE_MAX_RECORDS = 32;
+// 255 is the exact ceiling a uint8_t record count/index can hold — see Schedule.h's
+// ScheduleList::count and UiIntent::scheduleRecordIndex, both uint8_t. Going any higher would
+// require widening those too, not just this constant.
+static constexpr uint8_t SCHEDULE_MAX_RECORDS = 255;
 static constexpr int8_t TIMEZONE_OFFSET_MIN_HOURS = -13;
 static constexpr int8_t TIMEZONE_OFFSET_MAX_HOURS = 13;
 static constexpr uint16_t DEFAULT_MQTT_PORT = 1883;
@@ -92,7 +95,12 @@ static constexpr size_t CONFIG_JSON_MAX_BYTES = 768;
 // Bumped from 1280: settings.json is now nested into Zones/Location/Current_sensor/Watering
 // groups (extra object overhead per field) plus 4 new alert_* booleans under Current_sensor.
 static constexpr size_t SETTINGS_JSON_MAX_BYTES = 1536;
-static constexpr size_t SCHEDULE_JSON_MAX_BYTES = 4096;
+// Worst case per record is ~81 bytes (2-digit zone/duration, "false"): 255 * 81 + 2 (brackets) +
+// 254 (commas) ~= 20.9KB. Rounded up to 24KB for margin. This is heap-allocated (see main.ino's
+// persistScheduleAndReport), not a stack buffer, so headroom here doesn't cost stack space —
+// undersizing it would silently truncate serializeJson()'s output instead of failing loudly, so
+// err generous rather than tight.
+static constexpr size_t SCHEDULE_JSON_MAX_BYTES = 24576;
 
 // --- Weather-based irrigation auto-adjustment ---
 static constexpr int16_t AUTOADJUSTMENT_DEFAULT_UPPER_LIMIT_PERCENT = 200;

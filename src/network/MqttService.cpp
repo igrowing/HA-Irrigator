@@ -4,13 +4,20 @@
 
 #include "../domain/CalendarMath.h"
 #include "../drivers/Logger.h"
+#include "board_config.h"
 
 namespace irrigator::network {
 
 MqttService* MqttService::activeInstance_ = nullptr;
 
 namespace {
-constexpr uint16_t kMqttBufferBytes = 2048;
+// Must comfortably fit a whole publishSchedule() payload (the full schedule.json, echoed on every
+// edit) plus topic/header overhead — sized off SCHEDULE_JSON_MAX_BYTES rather than a standalone
+// number so the two can't silently drift out of sync again (2048 was already too small for even
+// the pre-widening 32-record/~2.5KB max). PubSubClient's bufferSize is a uint16_t, so this must
+// stay under 65536 — comfortably true here.
+constexpr uint16_t kMqttBufferBytes =
+    static_cast<uint16_t>(irrigator::board::SCHEDULE_JSON_MAX_BYTES + 1024);
 constexpr uint32_t kBootStatusDelayMs = 15000;
 // PubSubClient defaults to a 15s keepalive, so on the garage's weak Wi-Fi (~-70dBm) a single
 // missed PING during a brief signal dip was enough for the broker to declare the client dead

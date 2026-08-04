@@ -7,14 +7,14 @@
 
 namespace irrigator::domain {
 
-uint8_t UiStateMachine::stepIndex(uint8_t current, uint8_t count, bool forward) {
+uint16_t UiStateMachine::stepIndex(uint16_t current, uint16_t count, bool forward) {
     if (count == 0) {
         return 0;
     }
     if (forward) {
-        return static_cast<uint8_t>((current + 1) % count);
+        return static_cast<uint16_t>((current + 1) % count);
     }
-    return static_cast<uint8_t>((current + count - 1) % count);
+    return static_cast<uint16_t>((current + count - 1) % count);
 }
 
 uint8_t UiStateMachine::nextZone(uint8_t current, bool forward, const Context& ctx) {
@@ -382,7 +382,7 @@ UiIntent UiStateMachine::handleMenuMain(UiInputEvent event, const Context& ctx) 
 }
 
 UiIntent UiStateMachine::handleMenuSchedule(UiInputEvent event, const Context& ctx) {
-    const uint8_t itemCount = scheduleItemCount(ctx.scheduleRecordCount);
+    const uint16_t itemCount = scheduleItemCount(ctx.scheduleRecordCount);
     UiIntent intent;
 
     if (editing_) {
@@ -399,7 +399,7 @@ UiIntent UiStateMachine::handleMenuSchedule(UiInputEvent event, const Context& c
             selectedIndex_ = stepIndex(selectedIndex_, itemCount, false);
             break;
         case UiInputEvent::Click: {
-            const uint8_t backIndex = static_cast<uint8_t>(itemCount - 1);
+            const uint16_t backIndex = static_cast<uint16_t>(itemCount - 1);
             if (ctx.scheduleRecordCount == 0 || selectedIndex_ == backIndex) {
                 screen_ = UiScreen::MenuScheduleRoot;
                 selectedIndex_ = kMenuScheduleRootIndexViewEdit;
@@ -609,7 +609,7 @@ UiIntent UiStateMachine::handleMenuScheduleRoot(UiInputEvent event) {
 
 UiIntent UiStateMachine::handleScheduleAdd(UiInputEvent event) {
     if (editing_) {
-        return handleScheduleAddEdit(event, selectedIndex_);
+        return handleScheduleAddEdit(event, static_cast<uint8_t>(selectedIndex_));
     }
 
     UiIntent intent;
@@ -759,7 +759,9 @@ UiIntent UiStateMachine::handleScheduleAddEdit(UiInputEvent event, uint8_t field
 }
 
 UiIntent UiStateMachine::handleScheduleDelete(UiInputEvent event, const Context& ctx) {
-    const uint8_t itemCount = static_cast<uint8_t>(ctx.scheduleRecordCount + 1);
+    // uint16_t: at ctx.scheduleRecordCount=255 (SCHEDULE_MAX_RECORDS), +1 for BACK is 256, which
+    // overflows uint8_t.
+    const uint16_t itemCount = static_cast<uint16_t>(ctx.scheduleRecordCount) + 1;
     UiIntent intent;
 
     switch (event) {
@@ -770,7 +772,7 @@ UiIntent UiStateMachine::handleScheduleDelete(UiInputEvent event, const Context&
             selectedIndex_ = stepIndex(selectedIndex_, itemCount, false);
             break;
         case UiInputEvent::Click: {
-            const uint8_t backIndex = static_cast<uint8_t>(itemCount - 1);
+            const uint16_t backIndex = static_cast<uint16_t>(itemCount - 1);
             if (ctx.scheduleRecordCount == 0 || selectedIndex_ == backIndex) {
                 screen_ = UiScreen::MenuScheduleRoot;
                 selectedIndex_ = kMenuScheduleRootIndexViewEdit;
@@ -778,7 +780,8 @@ UiIntent UiStateMachine::handleScheduleDelete(UiInputEvent event, const Context&
             }
             // selectedIndex_ deliberately left untouched — it doubles as the record index, so
             // returning here later (NO, or OK after a successful delete) lands on the same row.
-            scheduleDeleteRecordIndex_ = selectedIndex_;
+            // Safe to narrow: a data row's index here is always < scheduleRecordCount <= 255.
+            scheduleDeleteRecordIndex_ = static_cast<uint8_t>(selectedIndex_);
             scheduleDeleteConfirmYes_ = false;
             screen_ = UiScreen::ScheduleDeleteConfirm;
             break;

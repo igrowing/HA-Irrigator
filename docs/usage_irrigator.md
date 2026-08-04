@@ -231,10 +231,10 @@ SCHEDULE
   BACK
 ```
 
-You can have up to 32 watering programs in total, spread across any zones, days, and times you
-like — enough for several programs per zone across the whole week. That cap exists to keep the
-saved schedule comfortably within the device's storage budget, not as an arbitrary restriction;
-you're unlikely to run into it in normal use.
+You can have up to 255 watering programs in total, spread across any zones, days, and times you
+like — far more than you'd ever need for a real weekly schedule. That cap comes from how the
+device counts and indexes programs internally, not from storage space; you're extremely unlikely
+to run into it in normal use.
 
 #### View/Edit
 
