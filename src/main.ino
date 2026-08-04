@@ -821,14 +821,15 @@ void publishCurrentState() {
                       remainingMin);
 }
 
-void persistScheduleAndReport() {
+bool persistScheduleAndReport() {
     char buffer[irrigator::board::SCHEDULE_JSON_MAX_BYTES];
     const size_t written = irrigator::domain::serializeSchedule(scheduleList, buffer, sizeof(buffer));
     if (written == 0) {
-        return;
+        return false;
     }
-    fileStore.writeTextWithBackup(irrigator::board::SCHEDULE_FILE_PATH, String(buffer));
+    const bool ok = fileStore.writeTextWithBackup(irrigator::board::SCHEDULE_FILE_PATH, String(buffer));
     mqtt.publishSchedule(buffer);
+    return ok;
 }
 
 // Nearest future occurrence across the week, for Screen 1's "next zone to be active" display —
@@ -1072,6 +1073,39 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
                 persistScheduleAndReport();
             }
             break;
+        case UiIntentType::AddScheduleRecord: {
+            bool success = false;
+            if (scheduleList.count < irrigator::board::SCHEDULE_MAX_RECORDS) {
+                irrigator::domain::ScheduleRecord record;
+                record.zone = intent.zone;
+                record.dayOfWeek = intent.dayOfWeek;
+                snprintf(record.startTime,
+                        sizeof(record.startTime),
+                        "%02u:%02u",
+                        static_cast<unsigned>(intent.hour),
+                        static_cast<unsigned>(intent.minute));
+                record.durationMin = static_cast<uint8_t>(intent.duration);
+                record.active = true;
+                if (irrigator::domain::validateScheduleRecord(record)) {
+                    scheduleList.records[scheduleList.count++] = record;
+                    success = persistScheduleAndReport();
+                }
+            }
+            ui.showScheduleActionResult(success, nowMs);
+            break;
+        }
+        case UiIntentType::DeleteScheduleRecord: {
+            bool success = false;
+            if (intent.scheduleRecordIndex < scheduleList.count) {
+                for (uint8_t i = intent.scheduleRecordIndex; i + 1 < scheduleList.count; ++i) {
+                    scheduleList.records[i] = scheduleList.records[i + 1];
+                }
+                scheduleList.count--;
+                success = persistScheduleAndReport();
+            }
+            ui.showScheduleActionResult(success, nowMs);
+            break;
+        }
         case UiIntentType::RunAllZonesTest:
             for (uint8_t zone = 1; zone <= irrigator::board::ZONE_COUNT; ++zone) {
                 if (!settings.zoneEnabled[zone - 1]) {

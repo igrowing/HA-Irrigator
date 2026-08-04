@@ -78,6 +78,12 @@ void UiStateMachine::showCalibrateResult(bool valveSucceeded,
     snprintf(calibratePumpMessage_, sizeof(calibratePumpMessage_), "%s", pumpMessage == nullptr ? "" : pumpMessage);
 }
 
+void UiStateMachine::showScheduleActionResult(bool success, uint32_t nowMs) {
+    armTimeout(nowMs);
+    screen_ = UiScreen::ScheduleActionResult;
+    scheduleActionSucceeded_ = success;
+}
+
 void UiStateMachine::tick(uint32_t nowMs) {
     if (active_ && screen_ != UiScreen::DisplayOff && nowMs >= interactionDeadlineMs_) {
         enterDisplayOff();
@@ -103,8 +109,18 @@ UiIntent UiStateMachine::handleInput(UiInputEvent event, const Context& ctx, uin
             return handleStopConfirm(event);
         case UiScreen::MenuMain:
             return handleMenuMain(event, ctx);
+        case UiScreen::MenuScheduleRoot:
+            return handleMenuScheduleRoot(event);
         case UiScreen::MenuSchedule:
             return handleMenuSchedule(event, ctx);
+        case UiScreen::ScheduleAdd:
+            return handleScheduleAdd(event);
+        case UiScreen::ScheduleDelete:
+            return handleScheduleDelete(event, ctx);
+        case UiScreen::ScheduleDeleteConfirm:
+            return handleScheduleDeleteConfirm(event);
+        case UiScreen::ScheduleActionResult:
+            return handleScheduleActionResult(event);
         case UiScreen::MenuSettings:
             return handleMenuSettings(event, ctx);
         case UiScreen::MenuInfo:
@@ -340,7 +356,7 @@ UiIntent UiStateMachine::handleMenuMain(UiInputEvent event, const Context& ctx) 
                 stopAllPending_ = true;
                 screen_ = UiScreen::StopConfirm;
             } else if (selectedIndex_ == layout.scheduleIndex) {
-                screen_ = UiScreen::MenuSchedule;
+                screen_ = UiScreen::MenuScheduleRoot;
                 selectedIndex_ = 0;
             } else if (selectedIndex_ == layout.testAllIndex) {
                 screen_ = UiScreen::MenuTestAll;
@@ -385,8 +401,8 @@ UiIntent UiStateMachine::handleMenuSchedule(UiInputEvent event, const Context& c
         case UiInputEvent::Click: {
             const uint8_t backIndex = static_cast<uint8_t>(itemCount - 1);
             if (ctx.scheduleRecordCount == 0 || selectedIndex_ == backIndex) {
-                screen_ = UiScreen::MenuMain;
-                selectedIndex_ = 0;
+                screen_ = UiScreen::MenuScheduleRoot;
+                selectedIndex_ = kMenuScheduleRootIndexViewEdit;
                 break;
             }
             // Every row is clickable: it either opens edit mode for that field, or (Active) is
@@ -423,8 +439,8 @@ UiIntent UiStateMachine::handleMenuSchedule(UiInputEvent event, const Context& c
             break;
         }
         case UiInputEvent::LongClick:
-            screen_ = UiScreen::MenuMain;
-            selectedIndex_ = 0;
+            screen_ = UiScreen::MenuScheduleRoot;
+            selectedIndex_ = kMenuScheduleRootIndexViewEdit;
             break;
     }
     return intent;
@@ -551,6 +567,270 @@ UiIntent UiStateMachine::handleMenuScheduleEdit(UiInputEvent event,
     // Active never enters editing_ (it's a direct toggle) — defensive fallback only.
     editing_ = false;
     return intent;
+}
+
+UiIntent UiStateMachine::handleMenuScheduleRoot(UiInputEvent event) {
+    UiIntent intent;
+    switch (event) {
+        case UiInputEvent::Clockwise:
+            selectedIndex_ = stepIndex(selectedIndex_, kMenuScheduleRootItemCount, true);
+            break;
+        case UiInputEvent::CounterClockwise:
+            selectedIndex_ = stepIndex(selectedIndex_, kMenuScheduleRootItemCount, false);
+            break;
+        case UiInputEvent::Click:
+            if (selectedIndex_ == kMenuScheduleRootIndexViewEdit) {
+                screen_ = UiScreen::MenuSchedule;
+                selectedIndex_ = 0;
+            } else if (selectedIndex_ == kMenuScheduleRootIndexAdd) {
+                pendingScheduleZone_ = 1;
+                pendingScheduleDay_ = 1;
+                pendingScheduleHour_ = 6;
+                pendingScheduleMinute_ = 0;
+                pendingDuration_ = board::SCHEDULE_DURATION_MIN_MINUTES;
+                editingScheduleMinuteStep_ = false;
+                screen_ = UiScreen::ScheduleAdd;
+                selectedIndex_ = 0;
+            } else if (selectedIndex_ == kMenuScheduleRootIndexDelete) {
+                screen_ = UiScreen::ScheduleDelete;
+                selectedIndex_ = 0;
+            } else if (selectedIndex_ == kMenuScheduleRootIndexBack) {
+                screen_ = UiScreen::MenuMain;
+                selectedIndex_ = 0;
+            }
+            break;
+        case UiInputEvent::LongClick:
+            screen_ = UiScreen::MenuMain;
+            selectedIndex_ = 0;
+            break;
+    }
+    return intent;
+}
+
+UiIntent UiStateMachine::handleScheduleAdd(UiInputEvent event) {
+    if (editing_) {
+        return handleScheduleAddEdit(event, selectedIndex_);
+    }
+
+    UiIntent intent;
+    switch (event) {
+        case UiInputEvent::Clockwise:
+            selectedIndex_ = stepIndex(selectedIndex_, kScheduleAddItemCount, true);
+            break;
+        case UiInputEvent::CounterClockwise:
+            selectedIndex_ = stepIndex(selectedIndex_, kScheduleAddItemCount, false);
+            break;
+        case UiInputEvent::Click:
+            switch (selectedIndex_) {
+                case kScheduleAddIndexZone:
+                case kScheduleAddIndexDay:
+                case kScheduleAddIndexDuration:
+                    editing_ = true;
+                    break;
+                case kScheduleAddIndexTime:
+                    editingScheduleMinuteStep_ = false;
+                    editing_ = true;
+                    break;
+                case kScheduleAddIndexSave:
+                    intent.type = UiIntentType::AddScheduleRecord;
+                    intent.zone = pendingScheduleZone_;
+                    intent.dayOfWeek = pendingScheduleDay_;
+                    intent.hour = pendingScheduleHour_;
+                    intent.minute = pendingScheduleMinute_;
+                    intent.duration = pendingDuration_;
+                    scheduleResultReturnScreen_ = UiScreen::MenuScheduleRoot;
+                    scheduleResultReturnIndex_ = kMenuScheduleRootIndexAdd;
+                    break;
+                case kScheduleAddIndexBack:
+                    screen_ = UiScreen::MenuScheduleRoot;
+                    selectedIndex_ = kMenuScheduleRootIndexViewEdit;
+                    break;
+                default:
+                    break;
+            }
+            break;
+        case UiInputEvent::LongClick:
+            screen_ = UiScreen::MenuScheduleRoot;
+            selectedIndex_ = kMenuScheduleRootIndexViewEdit;
+            break;
+    }
+    return intent;
+}
+
+// Structurally parallel to handleMenuScheduleEdit (same zone/day/time/duration stepping), but
+// Click never emits an intent — it only stages the pending value and exits editing_, since
+// ScheduleAdd bundles all fields into one AddScheduleRecord intent on Save rather than committing
+// each field immediately.
+UiIntent UiStateMachine::handleScheduleAddEdit(UiInputEvent event, uint8_t fieldIndex) {
+    UiIntent intent;
+
+    if (fieldIndex == kScheduleAddIndexZone) {
+        switch (event) {
+            case UiInputEvent::Clockwise:
+                pendingScheduleZone_ = static_cast<uint8_t>(
+                    stepIndex(static_cast<uint8_t>(pendingScheduleZone_ - 1), board::ZONE_COUNT, true) +
+                    1);
+                break;
+            case UiInputEvent::CounterClockwise:
+                pendingScheduleZone_ = static_cast<uint8_t>(
+                    stepIndex(static_cast<uint8_t>(pendingScheduleZone_ - 1), board::ZONE_COUNT, false) +
+                    1);
+                break;
+            case UiInputEvent::Click:
+            case UiInputEvent::LongClick:
+                editing_ = false;
+                break;
+        }
+        return intent;
+    }
+
+    if (fieldIndex == kScheduleAddIndexDay) {
+        switch (event) {
+            case UiInputEvent::Clockwise:
+                pendingScheduleDay_ = static_cast<uint8_t>(
+                    stepIndex(static_cast<uint8_t>(pendingScheduleDay_ - 1), 7, true) + 1);
+                break;
+            case UiInputEvent::CounterClockwise:
+                pendingScheduleDay_ = static_cast<uint8_t>(
+                    stepIndex(static_cast<uint8_t>(pendingScheduleDay_ - 1), 7, false) + 1);
+                break;
+            case UiInputEvent::Click:
+            case UiInputEvent::LongClick:
+                editing_ = false;
+                break;
+        }
+        return intent;
+    }
+
+    if (fieldIndex == kScheduleAddIndexTime) {
+        if (!editingScheduleMinuteStep_) {
+            switch (event) {
+                case UiInputEvent::Clockwise:
+                    pendingScheduleHour_ = stepIndex(pendingScheduleHour_, 24, true);
+                    break;
+                case UiInputEvent::CounterClockwise:
+                    pendingScheduleHour_ = stepIndex(pendingScheduleHour_, 24, false);
+                    break;
+                case UiInputEvent::Click:
+                    editingScheduleMinuteStep_ = true;  // Hour confirmed; now edit the minute.
+                    break;
+                case UiInputEvent::LongClick:
+                    editing_ = false;
+                    break;
+            }
+            return intent;
+        }
+
+        switch (event) {
+            case UiInputEvent::Clockwise:
+                pendingScheduleMinute_ = stepIndex(pendingScheduleMinute_, 60, true);
+                break;
+            case UiInputEvent::CounterClockwise:
+                pendingScheduleMinute_ = stepIndex(pendingScheduleMinute_, 60, false);
+                break;
+            case UiInputEvent::Click:
+            case UiInputEvent::LongClick:
+                editing_ = false;
+                editingScheduleMinuteStep_ = false;
+                break;
+        }
+        return intent;
+    }
+
+    if (fieldIndex == kScheduleAddIndexDuration) {
+        switch (event) {
+            case UiInputEvent::Clockwise:
+                pendingDuration_ = adjustScheduledDuration(pendingDuration_, RotationDirection::Clockwise);
+                break;
+            case UiInputEvent::CounterClockwise:
+                pendingDuration_ =
+                    adjustScheduledDuration(pendingDuration_, RotationDirection::CounterClockwise);
+                break;
+            case UiInputEvent::Click:
+            case UiInputEvent::LongClick:
+                editing_ = false;
+                break;
+        }
+        return intent;
+    }
+
+    editing_ = false;
+    return intent;
+}
+
+UiIntent UiStateMachine::handleScheduleDelete(UiInputEvent event, const Context& ctx) {
+    const uint8_t itemCount = static_cast<uint8_t>(ctx.scheduleRecordCount + 1);
+    UiIntent intent;
+
+    switch (event) {
+        case UiInputEvent::Clockwise:
+            selectedIndex_ = stepIndex(selectedIndex_, itemCount, true);
+            break;
+        case UiInputEvent::CounterClockwise:
+            selectedIndex_ = stepIndex(selectedIndex_, itemCount, false);
+            break;
+        case UiInputEvent::Click: {
+            const uint8_t backIndex = static_cast<uint8_t>(itemCount - 1);
+            if (ctx.scheduleRecordCount == 0 || selectedIndex_ == backIndex) {
+                screen_ = UiScreen::MenuScheduleRoot;
+                selectedIndex_ = kMenuScheduleRootIndexViewEdit;
+                break;
+            }
+            // selectedIndex_ deliberately left untouched — it doubles as the record index, so
+            // returning here later (NO, or OK after a successful delete) lands on the same row.
+            scheduleDeleteRecordIndex_ = selectedIndex_;
+            scheduleDeleteConfirmYes_ = false;
+            screen_ = UiScreen::ScheduleDeleteConfirm;
+            break;
+        }
+        case UiInputEvent::LongClick:
+            screen_ = UiScreen::MenuScheduleRoot;
+            selectedIndex_ = kMenuScheduleRootIndexViewEdit;
+            break;
+    }
+    return intent;
+}
+
+UiIntent UiStateMachine::handleScheduleDeleteConfirm(UiInputEvent event) {
+    UiIntent intent;
+    switch (event) {
+        case UiInputEvent::Clockwise:
+        case UiInputEvent::CounterClockwise:
+            scheduleDeleteConfirmYes_ = !scheduleDeleteConfirmYes_;
+            break;
+        case UiInputEvent::Click:
+            if (scheduleDeleteConfirmYes_) {
+                intent.type = UiIntentType::DeleteScheduleRecord;
+                intent.scheduleRecordIndex = scheduleDeleteRecordIndex_;
+                scheduleResultReturnScreen_ = UiScreen::ScheduleDelete;
+                scheduleResultReturnIndex_ = scheduleDeleteRecordIndex_;
+            } else {
+                screen_ = UiScreen::ScheduleDelete;
+                selectedIndex_ = scheduleDeleteRecordIndex_;
+            }
+            scheduleDeleteConfirmYes_ = false;
+            break;
+        case UiInputEvent::LongClick:
+            // Cancel back to the same item, same as No — unlike FactoryResetConfirm/
+            // CalibrateConfirm's LongClick-to-Normal, this confirm sits 3 levels deep (Schedule >
+            // Delete > this), so stranding the user back at Normal would lose their place badly.
+            scheduleDeleteConfirmYes_ = false;
+            screen_ = UiScreen::ScheduleDelete;
+            selectedIndex_ = scheduleDeleteRecordIndex_;
+            break;
+    }
+    return intent;
+}
+
+// Dead-end result screen, same shape as handleCalibrateResult: CW/CCW are no-ops, Click/LongClick
+// both dismiss — but instead of a fixed target, this restores whatever (screen, index) the click
+// that emitted the Add/Delete intent recorded in scheduleResultReturnScreen_/Index_.
+UiIntent UiStateMachine::handleScheduleActionResult(UiInputEvent event) {
+    if (event == UiInputEvent::Click || event == UiInputEvent::LongClick) {
+        screen_ = scheduleResultReturnScreen_;
+        selectedIndex_ = scheduleResultReturnIndex_;
+    }
+    return {};
 }
 
 UiIntent UiStateMachine::handleMenuSettings(UiInputEvent event, const Context& ctx) {

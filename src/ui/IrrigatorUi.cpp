@@ -65,6 +65,11 @@ void IrrigatorUi::showCalibrateResult(bool valveSucceeded,
     render(nowMs, RenderData{});
 }
 
+void IrrigatorUi::showScheduleActionResult(bool success, uint32_t nowMs) {
+    uiState_.showScheduleActionResult(success, nowMs);
+    render(nowMs, RenderData{});
+}
+
 void IrrigatorUi::showCaptivePortal(const String& apSsid, const IPAddress& ip) {
     display_.clearBuffer();
     display_.setFont(u8g2_font_6x10_tr);
@@ -194,8 +199,23 @@ void IrrigatorUi::render(uint32_t nowMs, const RenderData& data) {
         case ::irrigator::domain::UiScreen::MenuMain:
             renderMenuMain(data);
             break;
+        case ::irrigator::domain::UiScreen::MenuScheduleRoot:
+            renderMenuScheduleRoot();
+            break;
         case ::irrigator::domain::UiScreen::MenuSchedule:
             renderMenuSchedule(data);
+            break;
+        case ::irrigator::domain::UiScreen::ScheduleAdd:
+            renderScheduleAdd(data);
+            break;
+        case ::irrigator::domain::UiScreen::ScheduleDelete:
+            renderScheduleDelete(data);
+            break;
+        case ::irrigator::domain::UiScreen::ScheduleDeleteConfirm:
+            renderScheduleDeleteConfirm(data);
+            break;
+        case ::irrigator::domain::UiScreen::ScheduleActionResult:
+            renderScheduleActionResult();
             break;
         case ::irrigator::domain::UiScreen::MenuSettings:
             renderMenuSettings(data);
@@ -723,45 +743,183 @@ void IrrigatorUi::renderMenuSchedule(const RenderData& data) {
                     const uint8_t field = static_cast<uint8_t>(index % kFieldsPerRecord);
                     const unsigned pn = static_cast<unsigned>(recordIndex + 1);
                     const bool isEditingThisRow = editing && editingIndex == index;
+                    // "pn:" only prefixes the Zone row (the first row of each program) — repeating
+                    // it on every row read as a zone/day number to non-technical users. The other
+                    // rows get blank padding of the same width instead, so the text still lines up.
+                    char pnPrefix[8];
+                    const int prefixLen = snprintf(pnPrefix, sizeof(pnPrefix), "%u:", pn);
                     switch (field) {
                         case ::irrigator::domain::UiStateMachine::kScheduleFieldZone: {
                             const uint8_t zone = isEditingThisRow ? uiState_.pendingScheduleZone() : record.zone;
-                            snprintf(buffer, size, "%u:%s", pn, zoneLabel(data, zone));
+                            snprintf(buffer, size, "%s%s", pnPrefix, zoneLabel(data, zone));
                             break;
                         }
                         case ::irrigator::domain::UiStateMachine::kScheduleFieldDay: {
                             const uint8_t day = isEditingThisRow ? uiState_.pendingScheduleDay() : record.dayOfWeek;
-                            snprintf(buffer, size, "%u:Start %s", pn, dayOfWeekName(day));
+                            snprintf(buffer, size, "%*sStart %s", prefixLen, "", dayOfWeekName(day));
                             break;
                         }
                         case ::irrigator::domain::UiStateMachine::kScheduleFieldTime:
                             if (isEditingThisRow) {
                                 snprintf(buffer,
                                         size,
-                                        "%u:On %02u:%02u%s",
-                                        pn,
+                                        "%*sOn %02u:%02u%s",
+                                        prefixLen,
+                                        "",
                                         static_cast<unsigned>(uiState_.pendingScheduleHour()),
                                         static_cast<unsigned>(uiState_.pendingScheduleMinute()),
                                         uiState_.editingScheduleTimeMinuteStep() ? "" : " (hr)");
                             } else {
-                                snprintf(buffer, size, "%u:On %s", pn, record.startTime);
+                                snprintf(buffer, size, "%*sOn %s", prefixLen, "", record.startTime);
                             }
                             break;
                         case ::irrigator::domain::UiStateMachine::kScheduleFieldDuration: {
                             const uint16_t duration = (editing && editingIndex == index)
                                                           ? uiState_.pendingDuration()
                                                           : record.durationMin;
-                            snprintf(buffer, size, "%u:For %umin", pn, static_cast<unsigned>(duration));
+                            snprintf(buffer, size, "%*sFor %umin", prefixLen, "", static_cast<unsigned>(duration));
                             break;
                         }
                         case ::irrigator::domain::UiStateMachine::kScheduleFieldActive:
-                            snprintf(buffer, size, "%u:Status: %s", pn, record.active ? "active" : "paused");
+                            snprintf(buffer, size, "%*sStatus: %s", prefixLen, "", record.active ? "active" : "paused");
                             break;
                         default:
                             buffer[0] = '\0';
                             break;
                     }
                 });
+}
+
+void IrrigatorUi::renderMenuScheduleRoot() {
+    using Root = ::irrigator::domain::UiStateMachine;
+    drawMenuList("SCHEDULE", Root::kMenuScheduleRootItemCount, uiState_.selectedIndex(),
+        [](uint8_t index, char* buffer, size_t size) {
+            switch (index) {
+                case Root::kMenuScheduleRootIndexViewEdit:
+                    snprintf(buffer, size, "View/Edit");
+                    break;
+                case Root::kMenuScheduleRootIndexAdd:
+                    snprintf(buffer, size, "Add");
+                    break;
+                case Root::kMenuScheduleRootIndexDelete:
+                    snprintf(buffer, size, "Delete");
+                    break;
+                case Root::kMenuScheduleRootIndexBack:
+                    snprintf(buffer, size, "BACK");
+                    break;
+                default:
+                    buffer[0] = '\0';
+                    break;
+            }
+        });
+}
+
+void IrrigatorUi::renderScheduleAdd(const RenderData& data) {
+    using Add = ::irrigator::domain::UiStateMachine;
+    const bool editing = uiState_.editing();
+
+    drawMenuList("ADD SCHEDULE", Add::kScheduleAddItemCount, uiState_.selectedIndex(),
+        [this, &data, editing](uint8_t index, char* buffer, size_t size) {
+            switch (index) {
+                case Add::kScheduleAddIndexZone:
+                    snprintf(buffer, size, "Zone: %s", zoneLabel(data, uiState_.pendingScheduleZone()));
+                    break;
+                case Add::kScheduleAddIndexDay:
+                    snprintf(buffer, size, "Day: %s", dayOfWeekName(uiState_.pendingScheduleDay()));
+                    break;
+                case Add::kScheduleAddIndexTime: {
+                    const bool isEditingThisRow = editing && uiState_.selectedIndex() == index;
+                    snprintf(buffer,
+                            size,
+                            "Start: %02u:%02u%s",
+                            static_cast<unsigned>(uiState_.pendingScheduleHour()),
+                            static_cast<unsigned>(uiState_.pendingScheduleMinute()),
+                            (isEditingThisRow && !uiState_.editingScheduleTimeMinuteStep()) ? " (hr)" : "");
+                    break;
+                }
+                case Add::kScheduleAddIndexDuration:
+                    snprintf(buffer, size, "Duration: %u min", static_cast<unsigned>(uiState_.pendingDuration()));
+                    break;
+                case Add::kScheduleAddIndexSave:
+                    snprintf(buffer, size, "Save");
+                    break;
+                case Add::kScheduleAddIndexBack:
+                    snprintf(buffer, size, "BACK");
+                    break;
+                default:
+                    buffer[0] = '\0';
+                    break;
+            }
+        });
+}
+
+void IrrigatorUi::renderScheduleDelete(const RenderData& data) {
+    const uint8_t recordCount = data.schedule != nullptr ? data.schedule->count : 0;
+    const uint8_t itemCount = static_cast<uint8_t>(recordCount + 1);
+
+    drawMenuList("DELETE SCHEDULE", itemCount, uiState_.selectedIndex(),
+        [this, &data, recordCount](uint8_t index, char* buffer, size_t size) {
+            if (index >= recordCount) {
+                snprintf(buffer, size, "BACK");
+                return;
+            }
+            const auto& record = data.schedule->records[index];
+            snprintf(buffer,
+                    size,
+                    "%u:%s,%u,%s",
+                    static_cast<unsigned>(index + 1),
+                    zoneLabel(data, record.zone),
+                    static_cast<unsigned>(record.dayOfWeek),
+                    record.startTime);
+        });
+}
+
+void IrrigatorUi::renderScheduleDeleteConfirm(const RenderData& data) {
+    display_.clearBuffer();
+    const uint8_t recordIndex = uiState_.scheduleDeleteRecordIndex();
+    const bool valid = data.schedule != nullptr && recordIndex < data.schedule->count;
+
+    display_.setFont(u8g2_font_6x10_tr);
+    char line[24];
+    if (valid) {
+        const auto& record = data.schedule->records[recordIndex];
+        snprintf(line, sizeof(line), "%u:%s", static_cast<unsigned>(recordIndex + 1), zoneLabel(data, record.zone));
+        drawCentered(display_, 10, line);
+        snprintf(line,
+                sizeof(line),
+                "%s  %s  %umin",
+                dayOfWeekName(record.dayOfWeek),
+                record.startTime,
+                static_cast<unsigned>(record.durationMin));
+        drawCentered(display_, 22, line);
+    }
+    drawCentered(display_, 34, "DELETE THIS ITEM?");
+
+    display_.setFont(u8g2_font_helvB10_tr);
+    const uint16_t noWidth = display_.getStrWidth(noText);
+    const uint16_t yesWidth = display_.getStrWidth(yesText);
+    if (!uiState_.scheduleDeleteConfirmYesSelected()) {
+        display_.drawFrame(noX - 4, 48, noWidth + 8, 16);
+    } else {
+        display_.drawFrame(yesX - 4, 48, yesWidth + 8, 16);
+    }
+    display_.drawStr(noX, 60, noText);
+    display_.drawStr(yesX, 60, yesText);
+    display_.sendBuffer();
+}
+
+void IrrigatorUi::renderScheduleActionResult() {
+    display_.clearBuffer();
+    const bool isAdd =
+        uiState_.scheduleResultReturnScreen() == ::irrigator::domain::UiScreen::MenuScheduleRoot;
+
+    display_.setFont(u8g2_font_helvB10_tr);
+    drawCentered(display_, 20, isAdd ? "ADD SCHEDULE" : "DELETE SCHEDULE");
+    display_.setFont(u8g2_font_helvB14_tr);
+    drawCentered(display_, 42, uiState_.scheduleActionSucceeded() ? "SUCCESS" : "FAILURE");
+    display_.setFont(u8g2_font_helvB10_tr);
+    drawCentered(display_, 60, "[ OK ]");
+    display_.sendBuffer();
 }
 
 }  // namespace irrigator::ui

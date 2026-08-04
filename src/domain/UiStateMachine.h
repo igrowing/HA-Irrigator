@@ -78,6 +78,25 @@ public:
         return static_cast<uint8_t>(recordCount * kScheduleFieldsPerRecord + 1);
     }
 
+    // MenuScheduleRoot: 4 rows — View/Edit, Add, Delete, BACK. Entered from MenuMain's Schedule
+    // row; View/Edit pushes into the existing MenuSchedule list/edit screen one level down.
+    static constexpr uint8_t kMenuScheduleRootItemCount = 4;
+    static constexpr uint8_t kMenuScheduleRootIndexViewEdit = 0;
+    static constexpr uint8_t kMenuScheduleRootIndexAdd = 1;
+    static constexpr uint8_t kMenuScheduleRootIndexDelete = 2;
+    static constexpr uint8_t kMenuScheduleRootIndexBack = 3;
+
+    // ScheduleAdd: 6 rows — Zone, Day, Start time, Duration, Save, BACK. Unlike MenuSchedule's
+    // per-field immediate commit, fields here only stage into the pending* buffers; Save is what
+    // bundles them into a single AddScheduleRecord intent.
+    static constexpr uint8_t kScheduleAddItemCount = 6;
+    static constexpr uint8_t kScheduleAddIndexZone = 0;
+    static constexpr uint8_t kScheduleAddIndexDay = 1;
+    static constexpr uint8_t kScheduleAddIndexTime = 2;
+    static constexpr uint8_t kScheduleAddIndexDuration = 3;
+    static constexpr uint8_t kScheduleAddIndexSave = 4;
+    static constexpr uint8_t kScheduleAddIndexBack = 5;
+
     // MenuMain's item order/count depends on whether a run is active — [Stop, Stop all] only
     // appear while watering, shifting every index after them by 2. One source for both the
     // renderer's row order and handleMenuMain's click routing, instead of each independently
@@ -179,6 +198,13 @@ public:
                              const char* pumpMessage,
                              uint32_t nowMs);
 
+    // Shows the Success/Failure outcome of an on-device schedule Add/Delete after the caller
+    // (main.ino) has actually performed it. The return screen/index were already recorded (in
+    // scheduleResultReturnScreen_/Index_) by whichever click emitted the AddScheduleRecord/
+    // DeleteScheduleRecord intent — this only forces the result screen on, same imperative-override
+    // pattern as showCalibrateResult.
+    void showScheduleActionResult(bool success, uint32_t nowMs);
+
     UiScreen screen() const { return screen_; }
     uint8_t selectedIndex() const { return selectedIndex_; }
     bool editing() const { return editing_; }
@@ -210,6 +236,14 @@ public:
     uint8_t pendingScheduleMinute() const { return pendingScheduleMinute_; }
     bool editingScheduleTimeMinuteStep() const { return editingScheduleMinuteStep_; }
 
+    bool scheduleDeleteConfirmYesSelected() const { return scheduleDeleteConfirmYes_; }
+    uint8_t scheduleDeleteRecordIndex() const { return scheduleDeleteRecordIndex_; }
+    bool scheduleActionSucceeded() const { return scheduleActionSucceeded_; }
+    // Which screen/index Add-Save or Delete-Yes will restore the cursor to once the user
+    // dismisses ScheduleActionResult with OK — see handleScheduleActionResult(). The renderer also
+    // reads scheduleResultReturnScreen() to pick the result screen's "ADD"/"DELETE" title.
+    UiScreen scheduleResultReturnScreen() const { return scheduleResultReturnScreen_; }
+
     // Per-zone duration used by "Test all zones" (MenuTestAll) — session-only, not persisted;
     // resets to kDefaultTestAllZonesDurationMin on boot, like the rest of UiStateMachine's state.
     uint16_t testAllZonesDurationMin() const { return testAllZonesDurationMin_; }
@@ -223,8 +257,14 @@ private:
     UiIntent handleDurationPicker(UiInputEvent event);
     UiIntent handleStopConfirm(UiInputEvent event);
     UiIntent handleMenuMain(UiInputEvent event, const Context& ctx);
+    UiIntent handleMenuScheduleRoot(UiInputEvent event);
     UiIntent handleMenuSchedule(UiInputEvent event, const Context& ctx);
     UiIntent handleMenuScheduleEdit(UiInputEvent event, uint8_t fieldIndex, uint8_t recordIndex);
+    UiIntent handleScheduleAdd(UiInputEvent event);
+    UiIntent handleScheduleAddEdit(UiInputEvent event, uint8_t fieldIndex);
+    UiIntent handleScheduleDelete(UiInputEvent event, const Context& ctx);
+    UiIntent handleScheduleDeleteConfirm(UiInputEvent event);
+    UiIntent handleScheduleActionResult(UiInputEvent event);
     UiIntent handleMenuSettings(UiInputEvent event, const Context& ctx);
     UiIntent handleMenuInfo(UiInputEvent event);
     UiIntent handleMenuTestAll(UiInputEvent event);
@@ -261,6 +301,12 @@ private:
     uint8_t pendingScheduleHour_ = 0;
     uint8_t pendingScheduleMinute_ = 0;
     bool editingScheduleMinuteStep_ = false;
+
+    bool scheduleDeleteConfirmYes_ = false;
+    uint8_t scheduleDeleteRecordIndex_ = 0;
+    UiScreen scheduleResultReturnScreen_ = UiScreen::MenuScheduleRoot;
+    uint8_t scheduleResultReturnIndex_ = 0;
+    bool scheduleActionSucceeded_ = false;
 
     uint16_t testAllZonesDurationMin_ = kDefaultTestAllZonesDurationMin;
 

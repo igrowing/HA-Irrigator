@@ -1347,7 +1347,8 @@ void test_ui_state_machine_schedule_duration_edit() {
     ctx.selectedScheduleDurationMin = 20;
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
-    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuSchedule
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuScheduleRoot
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 250);      // View/Edit -> MenuSchedule
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuSchedule);
 
     // Item layout for one record: 0=zone,1=day,2=time,3=duration,4=active, 5=BACK.
@@ -1376,7 +1377,8 @@ void test_ui_state_machine_schedule_zone_edit_wraps() {
     ctx.selectedScheduleZone = irrigator::board::ZONE_COUNT;  // 11: next CW tick should wrap to 1
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
-    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuSchedule
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuScheduleRoot
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 250);      // View/Edit -> MenuSchedule
     // Item 0 for one record is the Zone field already.
     TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kScheduleFieldZone, ui.selectedIndex());
 
@@ -1402,7 +1404,8 @@ void test_ui_state_machine_schedule_day_edit_wraps() {
     ctx.selectedScheduleDay = 7;  // Sunday: next CW tick should wrap to Monday (1)
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);
-    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuScheduleRoot
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 250);      // View/Edit -> MenuSchedule
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300);  // Zone -> Day field
     TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kScheduleFieldDay, ui.selectedIndex());
 
@@ -1424,7 +1427,8 @@ void test_ui_state_machine_schedule_time_edit_hour_then_minute() {
     ctx.selectedScheduleMinute = 59;
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);
-    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuScheduleRoot
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 250);      // View/Edit -> MenuSchedule
     for (int i = 0; i < 2; ++i) {
         ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300 + i);  // -> Time field
     }
@@ -1448,6 +1452,168 @@ void test_ui_state_machine_schedule_time_edit_hour_then_minute() {
     TEST_ASSERT_EQUAL_UINT8(0, intent.hour);
     TEST_ASSERT_EQUAL_UINT8(0, intent.minute);
     TEST_ASSERT_FALSE(ui.editing());
+}
+
+void test_ui_state_machine_schedule_root_navigation() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.scheduleRecordCount = 1;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuScheduleRoot
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuScheduleRoot);
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kMenuScheduleRootIndexViewEdit,
+                            ui.selectedIndex());
+
+    // Wraps across the 4 items: View/Edit(0) -> Add(1) -> Delete(2) -> BACK(3) -> View/Edit(0).
+    for (int i = 0; i < 4; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300 + i);
+    }
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kMenuScheduleRootIndexViewEdit,
+                            ui.selectedIndex());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 400);  // -> Add
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleAdd);
+
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 600);  // cancel back
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuScheduleRoot);
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kMenuScheduleRootIndexViewEdit,
+                            ui.selectedIndex());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 700);  // -> Add
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 710);  // -> Delete
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 800);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleDelete);
+
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 900);  // cancel back
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuScheduleRoot);
+
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 1000);  // -> MenuMain
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuMain);
+}
+
+void test_ui_state_machine_schedule_add_flow() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.scheduleRecordCount = 0;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuScheduleRoot
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300);  // View/Edit -> Add
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);      // Add -> ScheduleAdd
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleAdd);
+
+    // Defaults seeded on entry.
+    TEST_ASSERT_EQUAL_UINT8(1, ui.pendingScheduleZone());
+    TEST_ASSERT_EQUAL_UINT8(1, ui.pendingScheduleDay());
+    TEST_ASSERT_EQUAL_UINT8(6, ui.pendingScheduleHour());
+    TEST_ASSERT_EQUAL_UINT8(0, ui.pendingScheduleMinute());
+    TEST_ASSERT_EQUAL_UINT16(irrigator::board::SCHEDULE_DURATION_MIN_MINUTES, ui.pendingDuration());
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kScheduleAddIndexZone, ui.selectedIndex());
+
+    // Editing Zone stages the value but never emits an intent.
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);  // enter zone edit
+    TEST_ASSERT_TRUE(ui.editing());
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 600);
+    TEST_ASSERT_EQUAL_UINT8(2, ui.pendingScheduleZone());
+    irrigator::domain::UiIntent intent = ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 700);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::None);
+    TEST_ASSERT_FALSE(ui.editing());
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleAdd);
+
+    // Editing Time needs the hour-then-minute two-click gesture, same as MenuSchedule's edit.
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 800);  // Zone -> Day
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 810);  // Day -> Time
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 900);      // enter time edit (hour step)
+    TEST_ASSERT_TRUE(ui.editing());
+    TEST_ASSERT_FALSE(ui.editingScheduleTimeMinuteStep());
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 1000);
+    TEST_ASSERT_EQUAL_UINT8(7, ui.pendingScheduleHour());
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1100);  // confirm hour -> minute step
+    TEST_ASSERT_TRUE(ui.editingScheduleTimeMinuteStep());
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 1200);
+    TEST_ASSERT_EQUAL_UINT8(1, ui.pendingScheduleMinute());
+    intent = ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1300);  // confirm minute
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::None);
+    TEST_ASSERT_FALSE(ui.editing());
+
+    // Save bundles the staged fields into one AddScheduleRecord intent and does NOT change screen —
+    // main.ino is expected to perform the mutation and call showScheduleActionResult().
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 1400);  // Time -> Duration
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 1410);  // Duration -> Save
+    intent = ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1500);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::AddScheduleRecord);
+    TEST_ASSERT_EQUAL_UINT8(2, intent.zone);
+    TEST_ASSERT_EQUAL_UINT8(1, intent.dayOfWeek);  // Day was navigated past, never edited.
+    TEST_ASSERT_EQUAL_UINT8(7, intent.hour);
+    TEST_ASSERT_EQUAL_UINT8(1, intent.minute);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleAdd);
+
+    // main.ino performs the Add and reports back; OK returns to MenuScheduleRoot @ "Add".
+    ui.showScheduleActionResult(true, 1600);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleActionResult);
+    TEST_ASSERT_TRUE(ui.scheduleActionSucceeded());
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1700);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuScheduleRoot);
+    TEST_ASSERT_EQUAL_UINT8(irrigator::domain::UiStateMachine::kMenuScheduleRootIndexAdd,
+                            ui.selectedIndex());
+}
+
+void test_ui_state_machine_schedule_delete_flow() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.scheduleRecordCount = 2;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuScheduleRoot
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300);  // View/Edit -> Add
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 310);  // Add -> Delete
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);      // Delete -> ScheduleDelete
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleDelete);
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 500);  // row 0 -> row 1
+    TEST_ASSERT_EQUAL_UINT8(1, ui.selectedIndex());
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 600);      // row 1 -> ScheduleDeleteConfirm
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleDeleteConfirm);
+    TEST_ASSERT_EQUAL_UINT8(1, ui.scheduleDeleteRecordIndex());
+    TEST_ASSERT_FALSE(ui.scheduleDeleteConfirmYesSelected());
+
+    // NO returns to ScheduleDelete at the same row.
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 700);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleDelete);
+    TEST_ASSERT_EQUAL_UINT8(1, ui.selectedIndex());
+
+    // Re-enter, flip to YES: emits DeleteScheduleRecord, does NOT change screen.
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 800);  // -> ScheduleDeleteConfirm
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 900);  // NO -> YES
+    TEST_ASSERT_TRUE(ui.scheduleDeleteConfirmYesSelected());
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1000);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::DeleteScheduleRecord);
+    TEST_ASSERT_EQUAL_UINT8(1, intent.scheduleRecordIndex);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleDeleteConfirm);
+
+    // main.ino performs the delete and reports back; OK returns to ScheduleDelete @ same index.
+    ui.showScheduleActionResult(true, 1100);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleActionResult);
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1200);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleDelete);
+    TEST_ASSERT_EQUAL_UINT8(1, ui.selectedIndex());
+}
+
+void test_ui_state_machine_schedule_action_result_reports_failure() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ui.showScheduleActionResult(false, 0);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ScheduleActionResult);
+    TEST_ASSERT_FALSE(ui.scheduleActionSucceeded());
+
+    // Still routes back correctly on failure — default return target is MenuScheduleRoot @ Add
+    // (the member's default-constructed value, since no Add/Delete click ran in this test).
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuScheduleRoot);
+    TEST_ASSERT_EQUAL_UINT8(0, ui.selectedIndex());
 }
 
 void test_calendar_math_round_trips_and_weekday() {
@@ -1587,6 +1753,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_schedule_zone_edit_wraps);
     RUN_TEST(test_ui_state_machine_schedule_day_edit_wraps);
     RUN_TEST(test_ui_state_machine_schedule_time_edit_hour_then_minute);
+    RUN_TEST(test_ui_state_machine_schedule_root_navigation);
+    RUN_TEST(test_ui_state_machine_schedule_add_flow);
+    RUN_TEST(test_ui_state_machine_schedule_delete_flow);
+    RUN_TEST(test_ui_state_machine_schedule_action_result_reports_failure);
     RUN_TEST(test_calendar_math_round_trips_and_weekday);
     RUN_TEST(test_wifi_quality_thresholds_and_bar_count);
     RUN_TEST(test_dst_rules_matches_known_2024_eu_transitions);

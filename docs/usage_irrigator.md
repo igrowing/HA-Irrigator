@@ -223,12 +223,26 @@ anything.
 
 ### Schedule
 
-A scrollable list of watering programs. You can add up to 32 in total, spread across any zones,
-days, and times you like — enough for several programs per zone across the whole week. That cap
-exists to keep the saved schedule comfortably within the device's storage budget, not as an
-arbitrary restriction; you're unlikely to run into it in normal use.
+```
+SCHEDULE
+> View/Edit
+  Add
+  Delete
+  BACK
+```
 
-Each row shows one program's zone, day, start time, duration, and whether it's active or paused.
+You can have up to 32 watering programs in total, spread across any zones, days, and times you
+like — enough for several programs per zone across the whole week. That cap exists to keep the
+saved schedule comfortably within the device's storage budget, not as an arbitrary restriction;
+you're unlikely to run into it in normal use.
+
+#### View/Edit
+
+A scrollable list of your existing programs, one row per zone/day/start time/duration/active-or-
+paused field. Only each program's first row (its zone) is prefixed with its program number, e.g.
+`1:1.Zone1`; the other four rows for that program are blank-padded by the same amount instead of
+repeating the number — it was easy to misread as a zone or day number when every row had it.
+
 Click any field to edit it:
 
 - **Zone** / **day**: click, then turn the knob to step through zones (by name) or days of the
@@ -238,7 +252,54 @@ Click any field to edit it:
 - **Duration**: click, then turn the knob to adjust (1–60 minutes), click to confirm.
 - **Active/paused**: click once to flip it — no extra confirmation needed.
 
-While editing any field, a long click cancels the edit and discards your change.
+While editing any field, a long click cancels the edit and discards your change. `BACK` (or a long
+click anywhere on the list) returns you to the **Schedule** menu above, not all the way out to the
+main menu.
+
+#### Add
+
+```
+ADD SCHEDULE
+> Zone: 1.Zone1
+  Day: Mon
+  Start: 06:00
+  Duration: 1 min
+  Save
+  BACK
+```
+
+Builds one new program. Unlike **View/Edit**, nothing is saved as you go — each field (**Zone**,
+**Day**, **Start**, **Duration**) is edited the same click-turn-click way as above, but only
+staged, so you can freely change your mind before committing.
+
+- **Save** writes the staged program and shows the result — `SUCCESS` or `FAILURE` with an
+  `[ OK ]` button, the same confirmation pattern **Calibrate CS** uses. Clicking `[ OK ]` returns
+  you to the **Schedule** menu, on the **Add** row, ready to add another.
+- **BACK** (or a long click) discards whatever you've staged and returns to the **Schedule** menu
+  without saving anything.
+
+A new program starts out active.
+
+#### Delete
+
+```
+DELETE SCHEDULE
+> 1:1.Zone1,1,06:00
+  2:2.Zone2,3,18:30
+  BACK
+```
+
+Lists every existing program as `<program>:<zone>,<day>,<start time>` (the day shown as a plain
+1–7 number here); on a long program name the end just gets cut off the edge of the screen.
+
+Click a program to see its details — zone, day, start time, duration — with a `[NO] YES`
+confirmation underneath:
+
+- Choosing **NO** (or a long click) returns you to the **Delete** list at that same program.
+- Choosing **YES** deletes it and shows the result — `SUCCESS` or `FAILURE` with an `[ OK ]`
+  button, same as **Add**'s **Save**. Clicking `[ OK ]` returns you to the **Delete** list at the
+  same position the deleted program was at (now showing whatever program shifted up into that
+  spot, or `BACK` if it was the last one).
 
 ### Test all zones
 

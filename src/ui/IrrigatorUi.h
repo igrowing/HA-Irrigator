@@ -68,6 +68,11 @@ public:
                              const char* pumpMessage,
                              uint32_t nowMs);
 
+    // Shows the Success/Failure outcome of an on-device schedule Add/Delete and redraws
+    // immediately — called from main.ino's handleUiIntent right after it performs the actual
+    // AddScheduleRecord/DeleteScheduleRecord mutation.
+    void showScheduleActionResult(bool success, uint32_t nowMs);
+
     // Polls the rotary input, advances the UI state machine, renders the current screen
     // (throttled — see kRenderIntervalMs), and returns whatever intent the state machine
     // produced this call (UiIntentType::None if nothing actionable happened).
@@ -83,7 +88,12 @@ private:
     void renderDurationPicker(const RenderData& data);
     void renderStopConfirm(const RenderData& data);
     void renderMenuMain(const RenderData& data);
+    void renderMenuScheduleRoot();
     void renderMenuSchedule(const RenderData& data);
+    void renderScheduleAdd(const RenderData& data);
+    void renderScheduleDelete(const RenderData& data);
+    void renderScheduleDeleteConfirm(const RenderData& data);
+    void renderScheduleActionResult();
     void renderMenuSettings(const RenderData& data);
     void renderMenuInfo(const RenderData& data);
     void renderMenuTestAll();
