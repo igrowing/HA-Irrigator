@@ -11,6 +11,18 @@ bool isDigit(char value) {
     return value >= '0' && value <= '9';
 }
 
+// Field names/coercions for one schedule entry, in exactly one place — parseSchedule below runs
+// two passes over the same array (validate, then commit) and both need identical extraction.
+ScheduleRecord recordFromJson(JsonVariantConst entry) {
+    ScheduleRecord record;
+    record.zone = entry["zone"] | 0;
+    record.dayOfWeek = entry["day_of_week"] | 0;
+    snprintf(record.startTime, sizeof(record.startTime), "%s", entry["start_time"] | "");
+    record.durationMin = entry["duration_min"] | 0;
+    record.active = entry["active"] | false;
+    return record;
+}
+
 }  // namespace
 
 bool isValidStartTime(const char* value) {
@@ -46,23 +58,24 @@ bool parseSchedule(const char* json, size_t length, ScheduleList& out) {
         return false;
     }
 
-    ScheduleList parsed;
+    // Two passes over `array` (validate everything, only then commit into `out`) rather than
+    // filling a local ScheduleList and assigning it to `out` at the end. Identical all-or-nothing
+    // semantics — `out` is not touched until every record has passed validateScheduleRecord — but
+    // without a second ScheduleList living on the stack. That temporary cost sizeof(ScheduleList)
+    // = SCHEDULE_MAX_RECORDS * 10 + 1 = 2551 bytes, which put this one function's frame at 2816
+    // bytes; called from handleMqttUpload (itself ~4KB of frame) it came close to exhausting the
+    // whole loop-task stack. Re-walking the already-parsed JsonDocument for the second pass is
+    // cheap — no re-deserialization, just another iteration over in-memory variants.
     for (JsonVariantConst entry : array) {
-        ScheduleRecord record;
-        record.zone = entry["zone"] | 0;
-        record.dayOfWeek = entry["day_of_week"] | 0;
-        snprintf(record.startTime, sizeof(record.startTime), "%s", entry["start_time"] | "");
-        record.durationMin = entry["duration_min"] | 0;
-        record.active = entry["active"] | false;
-
-        if (!validateScheduleRecord(record)) {
+        if (!validateScheduleRecord(recordFromJson(entry))) {
             return false;
         }
-
-        parsed.records[parsed.count++] = record;
     }
 
-    out = parsed;
+    out.count = 0;
+    for (JsonVariantConst entry : array) {
+        out.records[out.count++] = recordFromJson(entry);
+    }
     return true;
 }
 

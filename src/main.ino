@@ -37,6 +37,17 @@
 #include "network/WeatherService.h"
 #include "ui/IrrigatorUi.h"
 
+// Overrides the ESP32 Arduino core's weak getArduinoLoopTaskStackSize() (default 8192, see the
+// framework's cores/esp32/main.cpp). setup(), loop(), and everything reachable from them — the UI,
+// the whole MQTT command dispatch, file I/O, and critically the blocking OTA flash — all share this
+// one stack. 8KB was measurably too tight: handleMqttCommand() alone reserves ~1.4KB (was ~4KB
+// before the ScheduleList/settings-buffer fixes below), loop() ~1.5KB, and OTA then piles
+// HTTPClient + Update + the IDF flash-write path (which disables the flash cache and whose depth
+// isn't ours to control) on top of that — the suspected cause of the ESP_RST_PANIC on every OTA
+// attempt that no amount of promiscuous-mode fixing cured. Costs 8KB of heap once at boot, against
+// ~180KB free; a stack-canary panic mid-flash-write costs a site visit with a laptop.
+SET_LOOP_TASK_STACK_SIZE(16384);
+
 using irrigator::board::PUMP_CURRENT_ADC_PIN;
 using irrigator::board::STATUS_LED_PIN;
 using irrigator::board::VALVE_CURRENT_ADC_PIN;
@@ -109,6 +120,17 @@ int32_t cachedWifiRssi = -127;
 uint32_t lastWifiRssiSampleMs = 0;
 bool wifiRssiSampled = false;
 
+// ---------------------------------------------------------------------------------------------
+// DISABLED 2026-08-09: the entire noise-floor/SNR feature is commented out while chasing an OTA
+// panic (ESP_RST_PANIC on every OTA attempt, no serial access on site to decode the backtrace).
+// Promiscuous mode was the prime suspect: it's the only custom code here that runs in the WiFi
+// driver's task context, so it's the only thing that could be invoked while the flash cache is
+// disabled mid OTA-write. Marking the callback IRAM_ATTR and force-stopping sampling when OTA
+// starts did NOT fix the crash, so the feature is now removed from the build entirely — both to
+// rule it out completely and to reclaim its share of RAM/stack. Do not re-enable until an OTA
+// has been confirmed working without it. Everything below stays as comments (not deleted) so the
+// original design notes survive for whoever restores it.
+//
 // SNR (RSSI relative to the local RF noise floor) needs the noise floor, which ESP32's normal
 // STA API never exposes — wifi_ap_record_t only carries rssi. The only place noise_floor exists
 // is the per-packet metadata handed to a *promiscuous*-mode RX callback (and only on original
@@ -118,19 +140,20 @@ bool wifiRssiSampled = false;
 // off. Kept short (kNoiseFloorSampleWindowMs) and infrequent (kNoiseFloorSampleIntervalMs)
 // deliberately: promiscuous mode adds a callback invocation for every captured frame on the
 // channel, and this device's real job is irrigation control, not continuous WiFi sniffing.
-constexpr uint32_t kNoiseFloorSampleIntervalMs = 30000;
-constexpr uint32_t kNoiseFloorSampleWindowMs = 300;
-int8_t cachedNoiseFloorDbm = 0;
-bool noiseFloorSampled = false;    // False until the first window ever produces a reading.
-bool noiseFloorAttempted = false;  // Mirrors wifiRssiSampled's "eager first attempt" pattern.
-bool noiseFloorSamplingActive = false;
-uint32_t lastNoiseFloorAttemptMs = 0;
-uint32_t noiseFloorWindowStartMs = 0;
+// constexpr uint32_t kNoiseFloorSampleIntervalMs = 30000;
+// constexpr uint32_t kNoiseFloorSampleWindowMs = 300;
+// int8_t cachedNoiseFloorDbm = 0;
+// bool noiseFloorSampled = false;    // False until the first window ever produces a reading.
+// bool noiseFloorAttempted = false;  // Mirrors wifiRssiSampled's "eager first attempt" pattern.
+// bool noiseFloorSamplingActive = false;
+// uint32_t lastNoiseFloorAttemptMs = 0;
+// uint32_t noiseFloorWindowStartMs = 0;
 // Written from the promiscuous RX callback (WiFi driver's own task context), read/reset from
 // loop() — plain volatile ints rather than a mutex, since the only failure mode of a torn
 // read/write here is one averaging window being off by a sample or two, not a correctness bug.
-volatile int32_t noiseFloorAccumulator = 0;
-volatile uint16_t noiseFloorSampleCount = 0;
+// volatile int32_t noiseFloorAccumulator = 0;
+// volatile uint16_t noiseFloorSampleCount = 0;
+// ---------------------------------------------------------------------------------------------
 
 irrigator::domain::IrrigationState previousIrrigationState = irrigator::domain::IrrigationState::Idle;
 
@@ -336,6 +359,7 @@ void sampleWifiRssiIfDue(uint32_t nowMs) {
     cachedWifiRssi = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : -127;
 }
 
+// --- DISABLED 2026-08-09 (noise-floor/SNR feature — see the block near cachedNoiseFloorDbm) ---
 // Runs in the WiFi driver's own task context, not loop() — keep it to simple integer
 // bookkeeping only (no logging, no flash access, nothing that could block the WiFi task).
 // The MGMT-only filter set in startNoiseFloorSampling() already restricts what reaches here,
@@ -346,59 +370,59 @@ void sampleWifiRssiIfDue(uint32_t nowMs) {
 // abortNoiseFloorSamplingForOta()). A non-IRAM callback hit in that window is a "Cache disabled
 // but cached memory region accessed" panic, not a graceful failure; this is belt-and-suspenders
 // alongside abortNoiseFloorSamplingForOta() for any frame already in flight when OTA starts.
-IRAM_ATTR void onPromiscuousPacket(void* buf, wifi_promiscuous_pkt_type_t type) {
-    if (type != WIFI_PKT_MGMT) {
-        return;
-    }
-    const auto* pkt = static_cast<const wifi_promiscuous_pkt_t*>(buf);
-    noiseFloorAccumulator += pkt->rx_ctrl.noise_floor;
-    noiseFloorSampleCount++;
-}
-
-void startNoiseFloorSampling() {
-    noiseFloorAccumulator = 0;
-    noiseFloorSampleCount = 0;
-    wifi_promiscuous_filter_t filter = {};
-    filter.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT;
-    esp_wifi_set_promiscuous_filter(&filter);
-    esp_wifi_set_promiscuous_rx_cb(&onPromiscuousPacket);
-    esp_wifi_set_promiscuous(true);
-}
-
-void stopNoiseFloorSamplingAndApply() {
-    esp_wifi_set_promiscuous(false);
-    // A quiet window (e.g. a channel with almost no management-frame traffic) can end with zero
-    // samples — keep whatever the last good reading was rather than clobbering it with garbage.
-    if (noiseFloorSampleCount > 0) {
-        cachedNoiseFloorDbm = static_cast<int8_t>(noiseFloorAccumulator / noiseFloorSampleCount);
-        noiseFloorSampled = true;
-    }
-}
-
+// IRAM_ATTR void onPromiscuousPacket(void* buf, wifi_promiscuous_pkt_type_t type) {
+//     if (type != WIFI_PKT_MGMT) {
+//         return;
+//     }
+//     const auto* pkt = static_cast<const wifi_promiscuous_pkt_t*>(buf);
+//     noiseFloorAccumulator += pkt->rx_ctrl.noise_floor;
+//     noiseFloorSampleCount++;
+// }
+//
+// void startNoiseFloorSampling() {
+//     noiseFloorAccumulator = 0;
+//     noiseFloorSampleCount = 0;
+//     wifi_promiscuous_filter_t filter = {};
+//     filter.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT;
+//     esp_wifi_set_promiscuous_filter(&filter);
+//     esp_wifi_set_promiscuous_rx_cb(&onPromiscuousPacket);
+//     esp_wifi_set_promiscuous(true);
+// }
+//
+// void stopNoiseFloorSamplingAndApply() {
+//     esp_wifi_set_promiscuous(false);
+//     // A quiet window (e.g. a channel with almost no management-frame traffic) can end with zero
+//     // samples — keep whatever the last good reading was rather than clobbering it with garbage.
+//     if (noiseFloorSampleCount > 0) {
+//         cachedNoiseFloorDbm = static_cast<int8_t>(noiseFloorAccumulator / noiseFloorSampleCount);
+//         noiseFloorSampled = true;
+//     }
+// }
+//
 // Mirrors sampleWifiRssiIfDue's throttling pattern (kNoiseFloorSampleIntervalMs / eager first
 // attempt), plus the extra start/stop state machine promiscuous mode needs: a short
 // kNoiseFloorSampleWindowMs burst rather than leaving the radio in promiscuous mode continuously.
-void sampleNoiseFloorIfDue(uint32_t nowMs) {
-    if (noiseFloorSamplingActive) {
-        if (nowMs - noiseFloorWindowStartMs >= kNoiseFloorSampleWindowMs) {
-            stopNoiseFloorSamplingAndApply();
-            noiseFloorSamplingActive = false;
-        }
-        return;
-    }
-    if (WiFi.status() != WL_CONNECTED) {
-        return;
-    }
-    if (noiseFloorAttempted && nowMs - lastNoiseFloorAttemptMs < kNoiseFloorSampleIntervalMs) {
-        return;
-    }
-    noiseFloorAttempted = true;
-    lastNoiseFloorAttemptMs = nowMs;
-    noiseFloorWindowStartMs = nowMs;
-    noiseFloorSamplingActive = true;
-    startNoiseFloorSampling();
-}
-
+// void sampleNoiseFloorIfDue(uint32_t nowMs) {
+//     if (noiseFloorSamplingActive) {
+//         if (nowMs - noiseFloorWindowStartMs >= kNoiseFloorSampleWindowMs) {
+//             stopNoiseFloorSamplingAndApply();
+//             noiseFloorSamplingActive = false;
+//         }
+//         return;
+//     }
+//     if (WiFi.status() != WL_CONNECTED) {
+//         return;
+//     }
+//     if (noiseFloorAttempted && nowMs - lastNoiseFloorAttemptMs < kNoiseFloorSampleIntervalMs) {
+//         return;
+//     }
+//     noiseFloorAttempted = true;
+//     lastNoiseFloorAttemptMs = nowMs;
+//     noiseFloorWindowStartMs = nowMs;
+//     noiseFloorSamplingActive = true;
+//     startNoiseFloorSampling();
+// }
+//
 // Called the instant an OTA is accepted (OtaService's startedHandler, before the HTTP GET) —
 // beginUpdateFromUrl() then blocks loop() for the entire download+flash, so if a noise-floor
 // sampling window happened to be open at that moment, nothing would otherwise turn promiscuous
@@ -406,13 +430,14 @@ void sampleNoiseFloorIfDue(uint32_t nowMs) {
 // multi-second one, during which a management frame arriving mid flash-write (cache disabled)
 // can crash the device — see onPromiscuousPacket's IRAM_ATTR comment. Safe to call unconditionally
 // even if no window is active (esp_wifi_set_promiscuous(false) on an already-off radio is a no-op).
-void abortNoiseFloorSamplingForOta() {
-    if (!noiseFloorSamplingActive) {
-        return;
-    }
-    stopNoiseFloorSamplingAndApply();
-    noiseFloorSamplingActive = false;
-}
+// void abortNoiseFloorSamplingForOta() {
+//     if (!noiseFloorSamplingActive) {
+//         return;
+//     }
+//     stopNoiseFloorSamplingAndApply();
+//     noiseFloorSamplingActive = false;
+// }
+// ---------------------------------------------------------------------------------------------
 
 // Forward-declared: defined near runAutoAdjustmentIfDue, which it mirrors gate-for-gate — kept
 // side-by-side there so the two can't drift apart, but reported here so the full reason the
@@ -437,13 +462,16 @@ String buildStatusJson(uint32_t nowMs) {
     // every loop() iteration the way the UI's RSSI read is.
     doc["bssid"] = WiFi.status() == WL_CONNECTED ? WiFi.BSSIDstr() : "";
     doc["wifi_channel"] = WiFi.status() == WL_CONNECTED ? WiFi.channel() : 0;
+    // DISABLED 2026-08-09 along with the rest of the noise-floor/SNR feature (see the block near
+    // cachedNoiseFloorDbm). noise_floor_db/snr_db simply stop appearing in the status JSON; HA's
+    // sensors for them go unavailable, which is the intended, visible signal that this is off.
     // Omitted entirely (rather than a fake sentinel) until the first promiscuous-mode sampling
     // window (see sampleNoiseFloorIfDue) actually lands a reading — see that function for why
     // this isn't available from the normal STA API the way RSSI/BSSID/channel are.
-    if (noiseFloorSampled) {
-        doc["noise_floor_db"] = cachedNoiseFloorDbm;
-        doc["snr_db"] = cachedWifiRssi - cachedNoiseFloorDbm;
-    }
+    // if (noiseFloorSampled) {
+    //     doc["noise_floor_db"] = cachedNoiseFloorDbm;
+    //     doc["snr_db"] = cachedWifiRssi - cachedNoiseFloorDbm;
+    // }
     doc["free_heap_bytes"] = ESP.getFreeHeap();
     doc["free_storage_bytes"] = static_cast<uint32_t>(fileStore.freeBytes());
     doc["cpu_temp_c"] = temperatureRead();
@@ -547,7 +575,15 @@ void stopIrrigationExplicit(uint32_t nowMs) {
 }
 
 bool persistSettings() {
-    char buffer[irrigator::board::SETTINGS_JSON_MAX_BYTES];
+    // static, not a plain local: SETTINGS_JSON_MAX_BYTES is 1536, which made this function's stack
+    // frame 1600 bytes. persistSettings() is called from deep inside handleMqttCommand() (cmd/
+    // scheduled, cmd/upload/settings.json, cmd/calibrate, ...), so that frame stacked on top of
+    // that one's — 1600 + ~4KB — on the shared loop-task stack. Safe as static/shared scratch
+    // because every caller runs on the loop task: the UI intents, all MQTT commands, and the
+    // weather cycle's persist (the background weatherAutoAdjustTask only ever computes and posts
+    // its result to weatherResultQueue; drainWeatherResult... calls this from loop()). Do NOT call
+    // persistSettings() from another task without giving it its own buffer or a mutex.
+    static char buffer[irrigator::board::SETTINGS_JSON_MAX_BYTES];
     const size_t written = irrigator::domain::serializeSettings(settings, buffer, sizeof(buffer));
     const bool ok =
         written != 0 &&
@@ -759,7 +795,13 @@ void handleMqttUpload(const String& filename, const uint8_t* payload, size_t len
     }
 
     if (path == irrigator::board::SCHEDULE_FILE_PATH) {
-        irrigator::domain::ScheduleList parsed;
+        // static for the same reason as persistSettings()' buffer and runScheduleEngine()'s
+        // dueRequests: sizeof(ScheduleList) is 2551 bytes at SCHEDULE_MAX_RECORDS=255, and this
+        // sits in handleMqttCommand()'s frame. Still a staging area, not live state — the parse
+        // must succeed AND the file must be written before it's committed to the global
+        // scheduleList, so a rejected upload leaves the running schedule untouched. Loop-task only
+        // (MQTT commands are dispatched from mqtt.loop() inside loop()).
+        static irrigator::domain::ScheduleList parsed;
         if (!irrigator::domain::parseSchedule(content.c_str(), content.length(), parsed)) {
             reportMqttError("upload", filename, "invalid schedule.json content");
             return;
@@ -1616,9 +1658,9 @@ void enterOperationalMode() {
     mqtt.begin(mqttConfig);
 
     ota.setStartedHandler([]() {
-        // Must run before the HTTP GET — see abortNoiseFloorSamplingForOta()'s comment for why an
-        // in-flight sampling window left running through the whole blocking OTA is a crash risk.
-        abortNoiseFloorSamplingForOta();
+        // DISABLED 2026-08-09: abortNoiseFloorSamplingForOta() went away with the rest of the
+        // noise-floor/SNR feature (see the block near cachedNoiseFloorDbm) — promiscuous mode is
+        // no longer ever enabled, so there is nothing left to stop before the blocking OTA runs.
         mqtt.publishOtaStarted();
     });
     ota.setResultHandler([](bool success, const char* message) {
@@ -2304,7 +2346,7 @@ void loop() {
             drainCurrentBurstResults();
             updateOutputsFromDomain();
             sampleWifiRssiIfDue(nowMs);
-            sampleNoiseFloorIfDue(nowMs);
+            // sampleNoiseFloorIfDue(nowMs);  // DISABLED 2026-08-09 (noise-floor/SNR feature)
 
             {
                 irrigator::ui::RenderData renderData;
