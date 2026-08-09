@@ -38,6 +38,9 @@ struct RenderData {
     // Sampled at most every 5s by the caller (see main.ino's cachedWifiRssi), not read live —
     // RSSI jitters several dB reading-to-reading, so a live read would just flicker the display.
     int32_t wifiRssi = -127;
+    // millis()/1000 at poll() time — seconds since boot, formatted as DD:HH:MM:SS by
+    // renderMenuInfo's Uptime row.
+    uint32_t uptimeSeconds = 0;
 };
 
 class IrrigatorUi {

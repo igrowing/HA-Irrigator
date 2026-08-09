@@ -694,6 +694,21 @@ void IrrigatorUi::renderMenuInfo(const RenderData& data) {
                 case Info::kInfoIndexFirmware:
                     snprintf(buffer, size, "FW: v.%s", irrigator::board::FIRMWARE_VERSION);
                     break;
+                case Info::kInfoIndexUptime: {
+                    const uint32_t totalSeconds = data.uptimeSeconds;
+                    const uint32_t days = totalSeconds / 86400UL;
+                    const uint32_t hours = (totalSeconds % 86400UL) / 3600UL;
+                    const uint32_t minutes = (totalSeconds % 3600UL) / 60UL;
+                    const uint32_t seconds = totalSeconds % 60UL;
+                    snprintf(buffer,
+                            size,
+                            "Uptime: %02lu:%02lu:%02lu:%02lu",
+                            static_cast<unsigned long>(days),
+                            static_cast<unsigned long>(hours),
+                            static_cast<unsigned long>(minutes),
+                            static_cast<unsigned long>(seconds));
+                    break;
+                }
                 case Info::kInfoIndexBack:
                     snprintf(buffer, size, "BACK");
                     break;

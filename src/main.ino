@@ -340,7 +340,13 @@ void sampleWifiRssiIfDue(uint32_t nowMs) {
 // bookkeeping only (no logging, no flash access, nothing that could block the WiFi task).
 // The MGMT-only filter set in startNoiseFloorSampling() already restricts what reaches here,
 // but the type check is a cheap belt-and-suspenders guard against a stale/misconfigured filter.
-void onPromiscuousPacket(void* buf, wifi_promiscuous_pkt_type_t type) {
+// IRAM_ATTR: the WiFi driver can still invoke this while flash cache is disabled (e.g. mid
+// sector-erase/write during OTA, since beginUpdateFromUrl() blocks loop() for the whole
+// download+flash and nothing else gets a chance to turn promiscuous mode back off — see
+// abortNoiseFloorSamplingForOta()). A non-IRAM callback hit in that window is a "Cache disabled
+// but cached memory region accessed" panic, not a graceful failure; this is belt-and-suspenders
+// alongside abortNoiseFloorSamplingForOta() for any frame already in flight when OTA starts.
+IRAM_ATTR void onPromiscuousPacket(void* buf, wifi_promiscuous_pkt_type_t type) {
     if (type != WIFI_PKT_MGMT) {
         return;
     }
@@ -391,6 +397,21 @@ void sampleNoiseFloorIfDue(uint32_t nowMs) {
     noiseFloorWindowStartMs = nowMs;
     noiseFloorSamplingActive = true;
     startNoiseFloorSampling();
+}
+
+// Called the instant an OTA is accepted (OtaService's startedHandler, before the HTTP GET) —
+// beginUpdateFromUrl() then blocks loop() for the entire download+flash, so if a noise-floor
+// sampling window happened to be open at that moment, nothing would otherwise turn promiscuous
+// mode back off until OTA finishes. Left on for that long turns a rare 300ms exposure into a
+// multi-second one, during which a management frame arriving mid flash-write (cache disabled)
+// can crash the device — see onPromiscuousPacket's IRAM_ATTR comment. Safe to call unconditionally
+// even if no window is active (esp_wifi_set_promiscuous(false) on an already-off radio is a no-op).
+void abortNoiseFloorSamplingForOta() {
+    if (!noiseFloorSamplingActive) {
+        return;
+    }
+    stopNoiseFloorSamplingAndApply();
+    noiseFloorSamplingActive = false;
 }
 
 // Forward-declared: defined near runAutoAdjustmentIfDue, which it mirrors gate-for-gate — kept
@@ -1576,7 +1597,12 @@ void enterOperationalMode() {
     });
     mqtt.begin(mqttConfig);
 
-    ota.setStartedHandler([]() { mqtt.publishOtaStarted(); });
+    ota.setStartedHandler([]() {
+        // Must run before the HTTP GET — see abortNoiseFloorSamplingForOta()'s comment for why an
+        // in-flight sampling window left running through the whole blocking OTA is a crash risk.
+        abortNoiseFloorSamplingForOta();
+        mqtt.publishOtaStarted();
+    });
     ota.setResultHandler([](bool success, const char* message) {
         char alertMsg[128];
         snprintf(alertMsg, sizeof(alertMsg), R"({"ota":"%s","message":"%s"})",
@@ -2272,6 +2298,7 @@ void loop() {
                 renderData.mqttBrokerText = deviceConfig.mqttBroker;
                 renderData.mqttTopicText = mqtt.prefix();
                 renderData.wifiRssi = cachedWifiRssi;
+                renderData.uptimeSeconds = nowMs / 1000UL;
                 // "DD-MM HH:MM" in local wall time, not main.ino's own lastWeatherUpdateDate global
                 // (that stays "YYYY-MM-DD" - it's the once-per-day gating key compared against
                 // `today` in weatherAutoAdjustStatus()/runAutoAdjustmentIfDue(), reformatting it
