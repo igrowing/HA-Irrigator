@@ -20,6 +20,7 @@
 #include "domain/AutoAdjustment.h"
 #include "domain/CalendarMath.h"
 #include "domain/ConfigStore.h"
+#include "domain/DstRules.h"
 #include "domain/IrrigationStateMachine.h"
 #include "domain/RainSkip.h"
 #include "domain/Schedule.h"
@@ -621,6 +622,30 @@ bool persistSettings() {
         irrigator::drivers::Log.error("persistSettings: flash write failed; RAM and flash now diverge");
         mqtt.publishAlert(
             R"({"error":"settings write to flash failed; change will not survive a reboot"})");
+    }
+    return ok;
+}
+
+// config.json's counterpart to persistSettings(), for the one field the device writes on its own
+// after boot: the geolocation-derived timezone (tryGeolocateIfDue). Same divergence hazard, same
+// loud reporting — the in-RAM deviceConfig would otherwise keep an offset flash doesn't have, and
+// the next reboot would quietly go back to UTC and shift every scheduled watering by hours.
+// Unlike a config.json MQTT upload this deliberately does NOT restart: nothing here touches the
+// Wi-Fi/MQTT credentials that only take effect at boot, and clockService picks the new offset up
+// live.
+bool persistConfig() {
+    // Plain local, not static like persistSettings()' buffer: CONFIG_JSON_MAX_BYTES is 768, and the
+    // only caller (tryGeolocateIfDue, straight off loop()) has a shallow frame under it.
+    char buffer[irrigator::board::CONFIG_JSON_MAX_BYTES];
+    const size_t written =
+        irrigator::domain::serializeConfig(deviceConfig, buffer, sizeof(buffer));
+    const bool ok =
+        written != 0 &&
+        fileStore.writeTextWithBackup(irrigator::board::CONFIG_FILE_PATH, String(buffer));
+    if (!ok) {
+        irrigator::drivers::Log.error("persistConfig: flash write failed; RAM and flash now diverge");
+        mqtt.publishAlert(
+            R"({"error":"config write to flash failed; change will not survive a reboot"})");
     }
     return ok;
 }
@@ -1979,9 +2004,20 @@ int earliestScheduleStartMinutesToday(uint8_t isoDayOfWeek) {
 }
 
 // One-time (per boot, until it succeeds) ip-api.com lookup — Phase 1/2: weather calls stay
-// disabled (see runAutoAdjustmentIfDue's settings.locationKnown guard) until this resolves.
+// disabled (see runAutoAdjustmentIfDue's settings.locationKnown guard) until this resolves. It
+// also settles config.json's timezone, which is why the clock has to be running first (below).
 void tryGeolocateIfDue(uint32_t nowMs) {
     if (settings.locationKnown || WiFi.status() != WL_CONNECTED) {
+        return;
+    }
+    // Wait for a set clock (NTP or the DS3231 fallback) before spending the lookup. ip-api reports
+    // the DST-inclusive offset for *now*, so converting it to the standard offset config.json
+    // stores needs a trustworthy "now" to ask isEuDstActive about — and getting that wrong bakes a
+    // permanent one-hour error into every schedule, since this only resolves once per device. The
+    // retry timer below brings us back in 5 minutes; nothing downstream can run without a clock
+    // anyway (see weatherAutoAdjustStatus's "no_clock").
+    struct tm clockProbe;
+    if (!clockService.now(clockProbe)) {
         return;
     }
     if (geoAttempted && nowMs - lastGeoAttemptMs < irrigator::board::AUTOADJUSTMENT_RETRY_INTERVAL_MS) {
@@ -1993,19 +2029,19 @@ void tryGeolocateIfDue(uint32_t nowMs) {
     const auto geo = weatherService.fetchGeoLocation();
     if (!geo.success) {
         irrigator::drivers::Log.warn("Geolocation attempt failed; will retry");
-        struct tm timeinfo;
-        if (clockService.now(timeinfo)) {
-            char today[11];
-            snprintf(today, sizeof(today), "%04d-%02d-%02d",
-                    timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
-            if (strcmp(lastGeoFailureAlertDate, today) != 0) {
-                snprintf(lastGeoFailureAlertDate, sizeof(lastGeoFailureAlertDate), "%s", today);
-                // Sized for geo.errorReason's 200-byte capacity (WeatherService.h) plus the JSON
-                // wrapper, so the diagnostic detail that buffer holds doesn't get cut off here.
-                char alertMsg[256];
-                snprintf(alertMsg, sizeof(alertMsg), R"({"geolocation":"failed","reason":"%s"})", geo.errorReason);
-                mqtt.publishAlert(alertMsg);
-            }
+        // clockProbe, not a second clockService.now(): the guard above already established the
+        // clock is set, and the once-a-day alert only needs today's date, which the intervening
+        // HTTP attempt can't have moved off the day the probe read.
+        char today[11];
+        snprintf(today, sizeof(today), "%04d-%02d-%02d",
+                clockProbe.tm_year + 1900, clockProbe.tm_mon + 1, clockProbe.tm_mday);
+        if (strcmp(lastGeoFailureAlertDate, today) != 0) {
+            snprintf(lastGeoFailureAlertDate, sizeof(lastGeoFailureAlertDate), "%s", today);
+            // Sized for geo.errorReason's 200-byte capacity (WeatherService.h) plus the JSON
+            // wrapper, so the diagnostic detail that buffer holds doesn't get cut off here.
+            char alertMsg[256];
+            snprintf(alertMsg, sizeof(alertMsg), R"({"geolocation":"failed","reason":"%s"})", geo.errorReason);
+            mqtt.publishAlert(alertMsg);
         }
         return;
     }
@@ -2016,6 +2052,20 @@ void tryGeolocateIfDue(uint32_t nowMs) {
     persistSettings();
     irrigator::drivers::Log.printf(
         "[INFO] Geolocation resolved: %s (%.4f, %.4f)\n", settings.city, settings.latitude, settings.longitude);
+
+    // Same lookup settles the timezone the captive portal no longer asks for. Applied to the live
+    // clock immediately (so today's schedule already runs on local wall-clock time) and persisted
+    // so the next boot starts there instead of back at UTC.
+    const int8_t resolvedOffsetHours = irrigator::domain::standardUtcOffsetHoursFromCurrent(
+        geo.utcOffsetSeconds, static_cast<int64_t>(clockService.epoch()));
+    if (resolvedOffsetHours != deviceConfig.timezoneOffsetHours) {
+        irrigator::drivers::Log.printf("[INFO] Timezone from location: UTC%+d (was UTC%+d)\n",
+                                       static_cast<int>(resolvedOffsetHours),
+                                       static_cast<int>(deviceConfig.timezoneOffsetHours));
+        deviceConfig.timezoneOffsetHours = resolvedOffsetHours;
+        clockService.setUtcOffsetHours(resolvedOffsetHours);
+        persistConfig();
+    }
 }
 
 // Step 1's predictive rain-skip: cancels the rest of today's (and tomorrow morning's) scheduled

@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.1.8"
+#define APP_VERSION "1.1.9"
 #endif
 
 namespace irrigator::board {
@@ -134,7 +134,11 @@ static constexpr int AUTOADJUSTMENT_LEAD_TIME_MINUTES = 180;
 // between attempts, not a timeout.
 static constexpr uint32_t AUTOADJUSTMENT_RETRY_INTERVAL_MS = 5UL * 60UL * 1000UL;
 
-static constexpr const char* GEO_IP_API_URL = "http://ip-api.com/json/?fields=status,lat,lon,city";
+// `offset` is the located region's CURRENT UTC offset in seconds, DST already folded in — it's
+// what replaces the timezone dropdown the captive portal used to ask for (see
+// domain::standardUtcOffsetHoursFromCurrent for how it's turned back into the plain standard-time
+// offset config.json stores).
+static constexpr const char* GEO_IP_API_URL = "http://ip-api.com/json/?fields=status,lat,lon,city,offset";
 static constexpr const char* OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1/forecast";
 static constexpr const char* WEATHERAPI_FORECAST_URL = "https://api.weatherapi.com/v1/forecast.json";
 static constexpr const char* WEATHERAPI_HISTORY_URL = "https://api.weatherapi.com/v1/history.json";

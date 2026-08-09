@@ -12,7 +12,15 @@ struct DeviceConfig {
     uint16_t mqttPort = 1883;
     char mqttUser[33] = "";
     char mqttPassword[64] = "";
-    int8_t timezoneOffsetHours = 0;  // UTC-13..+13
+    // Plain standard-time offset, UTC-13..+13, no DST baked in (drivers::Clock adds that on top —
+    // see its begin()). Device-derived, not user-entered: the captive portal has no timezone field
+    // anymore, and main.ino's tryGeolocateIfDue writes this from ip-api.com's `offset` the first
+    // time geolocation succeeds. 0/UTC is the placeholder it holds until then. mergeConfig() below
+    // still accepts an uploaded `timezone`, deliberately — that upload is the manual override for
+    // the cases geolocation can't get right (a non-EU DST rule, a sub-hour zone; see
+    // domain::standardUtcOffsetHoursFromCurrent), and it sticks because geolocation only ever
+    // resolves once per device (Settings::locationKnown).
+    int8_t timezoneOffsetHours = 0;
 };
 
 bool validateConfig(const DeviceConfig& config);

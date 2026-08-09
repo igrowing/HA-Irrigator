@@ -116,8 +116,12 @@ A brand-new (or freshly reset) unit doesn't know your Wi-Fi yet, so it starts up
    - Your home Wi-Fi network name and password
    - Your MQTT server details, *only if* you're integrating with Home Assistant — leave the
      defaults if you're not sure, you can always come back and redo setup later
-   - Your timezone, as a plain hour offset from UTC (e.g. `+2`). Daylight saving is handled for you
-     automatically — you don't need to adjust anything for it.
+
+   There's no timezone to pick. Once the Irrigator is on your network it looks up where it is (the
+   same lookup that feeds the weather-based watering adjustment) and sets its own clock from that,
+   daylight saving included. Until that lookup lands — normally within a minute of the first
+   connection — the device is on UTC, so don't be surprised if the time on screen is off for the
+   first moment after setup.
 4. Submit the form. The Irrigator tries connecting with what you entered. If it works, it saves
    the settings and restarts normally, connected to your home Wi-Fi. If something's wrong (wrong
    password, unreachable server, etc.), it forgets the attempt and goes back to setup mode so you

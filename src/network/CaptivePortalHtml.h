@@ -2,33 +2,15 @@
 
 #include <Arduino.h>
 
-#include "board_config.h"
-
 namespace irrigator::network {
 
-// Fills the UTC-13..+13 <select> options required by the spec (Config.json Timezone field).
-inline String generateTimezoneOptions(int8_t currentOffsetHours) {
-    String options;
-    options.reserve(600);
-    for (int i = board::TIMEZONE_OFFSET_MIN_HOURS; i <= board::TIMEZONE_OFFSET_MAX_HOURS; ++i) {
-        options += "<option value='";
-        options += i;
-        options += "'";
-        if (i == currentOffsetHours) {
-            options += " selected";
-        }
-        options += ">UTC";
-        if (i >= 0) {
-            options += "+";
-        }
-        options += i;
-        options += "</option>";
-    }
-    return options;
-}
+// There is deliberately no timezone input here: the device geolocates itself over ip-api.com once
+// it's on the network (main.ino's tryGeolocateIfDue) and derives config.json's `timezone` from
+// that, so asking the user for something the device already knows only creates a way for the two
+// to disagree.
 
 // Placeholders: %SSID_VALUE% %PASSWORD_VALUE% %MQTT_BROKER_VALUE% %MQTT_PORT_VALUE%
-// %MQTT_USER_VALUE% %MQTT_PASSWORD_VALUE% %TIMEZONE_OPTIONS_PLACEHOLDER% %ERROR_MESSAGE%
+// %MQTT_USER_VALUE% %MQTT_PASSWORD_VALUE% %ERROR_MESSAGE%
 const char CAPTIVE_PORTAL_HTML[] PROGMEM = R"raw(
 <!DOCTYPE html>
 <html>
@@ -59,7 +41,7 @@ const char CAPTIVE_PORTAL_HTML[] PROGMEM = R"raw(
 <body>
     <div class="container">
         <h1>Irrigator Setup</h1>
-        <p>Configure Wi-Fi, MQTT, and Timezone.</p>
+        <p>Configure Wi-Fi and MQTT. The timezone is detected from your location.</p>
         <p class="error">%ERROR_MESSAGE%</p>
         <form method="post" action="/save">
             <h2>Wi-Fi Settings</h2>
@@ -73,14 +55,6 @@ const char CAPTIVE_PORTAL_HTML[] PROGMEM = R"raw(
             <div class="input-group"><label for="mqtt_port">MQTT Broker Port</label><input type="number" id="mqtt_port" name="mqtt_port" min="1" max="65535" value="%MQTT_PORT_VALUE%"></div>
             <div class="input-group"><label for="mqtt_user">MQTT Username (optional)</label><input type="text" id="mqtt_user" name="mqtt_user" value="%MQTT_USER_VALUE%"></div>
             <div class="input-group"><label for="mqtt_password">MQTT Password (optional)</label><input type="password" id="mqtt_password" name="mqtt_password" value="%MQTT_PASSWORD_VALUE%"></div>
-
-            <hr>
-
-            <h2>Timezone</h2>
-            <label for="timezone">UTC Offset:</label>
-            <select id="timezone" name="timezone" required>
-                %TIMEZONE_OPTIONS_PLACEHOLDER%
-            </select>
 
             <button type="submit">Save Configuration &amp; Restart</button>
         </form>

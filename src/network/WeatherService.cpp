@@ -36,6 +36,7 @@ GeoLocationResult WeatherService::fetchGeoLocation() {
     filter["lat"] = true;
     filter["lon"] = true;
     filter["city"] = true;
+    filter["offset"] = true;
 
     JsonDocument doc;
     const DeserializationError error =
@@ -58,6 +59,7 @@ GeoLocationResult WeatherService::fetchGeoLocation() {
     result.longitude = doc["lon"] | 0.0f;
     const char* city = doc["city"] | "";
     snprintf(result.city, sizeof(result.city), "%s", city);
+    result.utcOffsetSeconds = doc["offset"] | 0;
     result.success = true;
     return result;
 }

@@ -14,6 +14,11 @@ struct GeoLocationResult {
     float latitude = 0.0f;
     float longitude = 0.0f;
     char city[32] = {};
+    // ip-api.com's `offset`: the located region's UTC offset in seconds *at the moment of this
+    // lookup*, DST included. Only meaningful when success is true. The caller converts it to the
+    // plain standard-time hour offset config.json stores — see
+    // domain::standardUtcOffsetHoursFromCurrent.
+    int32_t utcOffsetSeconds = 0;
 };
 
 struct WeatherFetchResult {

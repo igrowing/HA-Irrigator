@@ -55,7 +55,8 @@ HA-Irrigator fixes the traditional shortcomings of industrial watering control s
 - **MQTT**: Key feature, allowing you to connect HA-Irrigator to practically any smart home system. Provides status/availability reporting (Home-Assistant-compatible LWT), remote run/stop/schedule control, current-fault alerting, OTA updates, calibration, and file backup.
 - **Captive-portal setup**: first boot (or after a factory-reset-style config wipe) serves a
   Wi-Fi AP with a setup page; it tests both Wi-Fi *and* MQTT connectivity before committing the new config, and rolls back to AP mode if either fails.
-- **DS3231-backed clock** with NTP sync and automatic EU DST switching (last Sunday of March/October, 01:00 UTC).
+- **DS3231-backed clock** with NTP sync, a timezone auto-detected from the device's location (no
+  dropdown to pick), and automatic EU DST switching (last Sunday of March/October, 01:00 UTC).
 - **Weather-based auto-adjustment**: once the device knows its location (auto-detected via
   ip-api.com, no setup needed), it fetches a forecast (Open-Meteo, with a WeatherAPI.com fallback)
   a few hours ahead of your first scheduled watering each day, skips the day's scheduled runs

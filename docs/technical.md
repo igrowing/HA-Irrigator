@@ -103,9 +103,8 @@ The device keeps time from three sources, layered as fallbacks (`src/drivers/Clo
 3. Once NTP succeeds, the result is written back to the DS3231, so the RTC stays accurate across
    power loss even between successful syncs.
 
-Your configured UTC offset (`config.json`'s `timezone` field, entered as a plain `-13`..`+13`
-hour offset during Wi-Fi setup) and daylight saving are both applied in software on top of that
-UTC baseline, via `domain::isEuDstActive()`:
+The standard-time UTC offset (`config.json`'s `timezone` field, a plain `-13`..`+13`) and daylight
+saving are both applied in software on top of that UTC baseline, via `domain::isEuDstActive()`:
 
 - DST is the fixed **EU rule**: clocks go forward on the last Sunday of March at 01:00 UTC, and
   back on the last Sunday of October at 01:00 UTC.
@@ -116,6 +115,35 @@ UTC baseline, via `domain::isEuDstActive()`:
 - This is hardcoded to the EU rule specifically — a non-EU deployment observing a different DST
   rule (or none at all) would need a different `isEuDstActive()`-equivalent function; there's no
   region setting that switches this.
+
+### Where the offset comes from
+
+The captive portal does **not** ask for a timezone. The offset is derived from the same ip-api.com
+geolocation lookup that gates the weather auto-adjustment (`tryGeolocateIfDue()` in
+`src/main.ino`), which now requests the provider's `offset` field alongside `lat`/`lon`/`city`.
+
+`offset` is the region's *current* UTC offset in seconds with DST already folded in, so it can't be
+stored as-is — `Clock` would then add the DST hour a second time every summer.
+`domain::standardUtcOffsetHoursFromCurrent()` takes that hour back out by asking `isEuDstActive()`
+about the moment of the lookup, yielding the plain standard offset. Because both directions use the
+same EU rule, a device that resolves in July and one that resolves in January store the same value.
+
+Consequences worth knowing:
+
+- `tryGeolocateIfDue()` now waits for a set clock (NTP or the DS3231 fallback) before spending the
+  lookup — the DST subtraction needs a trustworthy "now", and geolocation resolves only once per
+  device (`Settings::location_known`), so getting it wrong would bake in a permanent one-hour
+  error. It retries on the usual 5-minute cadence until the clock is up.
+- Between the captive-portal save and that first successful lookup, `timezone` is `0` (UTC).
+- The offset is applied to the live clock immediately and written back to `config.json`; unlike a
+  `cmd/upload/config.json` this does not restart the device, since no Wi-Fi/MQTT credential
+  changed.
+- Existing devices are untouched: they already have `location_known: true`, so geolocation never
+  re-runs and whatever offset they were configured with stays.
+- The manual override, for the cases the EU-rule conversion can't express — a non-EU DST rule, or a
+  sub-hour zone like `+05:30`, which truncates toward zero — is uploading a `config.json` with an
+  explicit `timezone`. `mergeConfig()` deliberately still honours that field, and it sticks for the
+  same reason: geolocation won't run again.
 
 ## MQTT
 
@@ -306,8 +334,9 @@ reads only the nested paths shown above.
 ]
 ```
 
-**`config.json`** (Wi-Fi/MQTT/timezone, written by the captive portal — see
-`src/domain/ConfigStore.h`/`.cpp`):
+**`config.json`** (Wi-Fi/MQTT, written by the captive portal; `timezone` is filled in later by
+geolocation rather than by the form — see `src/domain/ConfigStore.h`/`.cpp` and "Clock sync and
+daylight saving" above):
 ```json
 {
   "ssid": "MyHomeWifi",
@@ -466,10 +495,12 @@ direction explicitly: `avgPastTempC`/`rainPastDaysMm` (historical) vs.
 
 ### Data sources
 
-1. **Location** (`GET http://ip-api.com/json/?fields=status,lat,lon,city`) — fetched once, only
-   while `settings.json`'s `location_known` is `false`, retried every 5 minutes until it succeeds.
-   Scheduled watering uses the manual `watering_percentage` unmodified until this resolves; there's
-   no way to enter a location manually (see **Known limitations**).
+1. **Location** (`GET http://ip-api.com/json/?fields=status,lat,lon,city,offset`) — fetched once,
+   only while `settings.json`'s `location_known` is `false` *and* the clock has been set, retried
+   every 5 minutes until it succeeds. Scheduled watering uses the manual `watering_percentage`
+   unmodified until this resolves; there's no way to enter a location manually (see **Known
+   limitations**). `offset` is what sets `config.json`'s `timezone` — see "Clock sync and daylight
+   saving".
 2. **Weather**, primary — [Open-Meteo](https://open-meteo.com) (`/v1/forecast`, no API key): one
    request covers both directions at once — `hourly=temperature_2m,precipitation_probability,
    precipitation` and `daily=precipitation_sum` with `past_days=5&forecast_days=2&timezone=UTC`. An
@@ -544,6 +575,10 @@ parameters rather than reading fixed constants — they're user-configurable set
   device-owned, populated only by the device's own geolocation resolution), so there is currently
   no fix from outside the device if ip-api.com's IP-based geolocation is inaccurate for your
   network (common on VPNs, CGNAT, or some rural ISPs).
+- The same inaccuracy now also lands the clock in the wrong timezone, since `config.json`'s
+  `timezone` is derived from that lookup. That one *is* fixable from outside: upload a
+  `config.json` with an explicit `timezone` — `mergeConfig()` still honours the field, and
+  geolocation won't overwrite it because it only ever resolves once.
 
 ## Building and flashing over USB (first time)
 

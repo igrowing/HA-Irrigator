@@ -13,6 +13,13 @@ public:
     // stays up across a DST transition.
     bool begin(int8_t utcOffsetHours);
 
+    // Re-points local time at a different offset without touching NTP or the system clock (which
+    // always hold plain UTC). Used when geolocation resolves the timezone after boot — see
+    // main.ino's tryGeolocateIfDue. Takes effect on the very next now()/localTimeAt() call.
+    void setUtcOffsetHours(int8_t utcOffsetHours) { utcOffsetHours_ = utcOffsetHours; }
+
+    int8_t utcOffsetHours() const { return utcOffsetHours_; }
+
     // Waits (bounded, ~5s) for NTP sync, then writes the result to the DS3231.
     bool syncFromNtp();
 

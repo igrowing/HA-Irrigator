@@ -51,8 +51,6 @@ String CaptivePortalService::renderForm(const ::irrigator::domain::DeviceConfig&
     html.replace("%MQTT_PORT_VALUE%", String(values.mqttPort));
     html.replace("%MQTT_USER_VALUE%", values.mqttUser);
     html.replace("%MQTT_PASSWORD_VALUE%", values.mqttPassword);
-    html.replace("%TIMEZONE_OPTIONS_PLACEHOLDER%",
-                 generateTimezoneOptions(values.timezoneOffsetHours));
     html.replace("%ERROR_MESSAGE%", errorMessage == nullptr ? "" : errorMessage);
     return html;
 }
@@ -69,7 +67,10 @@ bool CaptivePortalService::parseFormConfig(::irrigator::domain::DeviceConfig& ou
     snprintf(
         out.mqttPassword, sizeof(out.mqttPassword), "%s", server_.arg("mqtt_password").c_str());
     out.mqttPort = static_cast<uint16_t>(server_.arg("mqtt_port").toInt());
-    out.timezoneOffsetHours = static_cast<int8_t>(server_.arg("timezone").toInt());
+    // timezoneOffsetHours is intentionally left at DeviceConfig's 0 (UTC): the form no longer asks
+    // for it, and the device overwrites it from ip-api.com's `offset` the first time geolocation
+    // succeeds after this reboot (main.ino's tryGeolocateIfDue). UTC is the right placeholder for
+    // the gap in between — it is what an unanswered dropdown defaulted to before, too.
     return ::irrigator::domain::validateConfig(out);
 }
 
