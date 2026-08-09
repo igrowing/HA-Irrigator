@@ -9,3 +9,13 @@
 .claude/
 **/__pycache__/
 **/.history/
+
+# Local MQTT credentials read by scripts/coredump.bat. This repo is public -
+# never commit these.
+scripts/mqtt_password.txt
+
+# Archived firmware ELFs. Decoding a core dump needs the exact ELF that was
+# running when it crashed (see docs/coredump.md), so these are worth keeping
+# locally - but they're ~18MB each and have no business in the repo.
+*.elf
+coredump.bin

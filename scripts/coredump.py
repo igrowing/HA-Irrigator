@@ -77,7 +77,7 @@ class CoreDumpCollector:
     def assemble(self):
         """Returns (image_bytes, crc_verified).
 
-        A missing chunk raises — there is no image to hand back. A CRC mismatch does not: the
+        A missing chunk raises - there is no image to hand back. A CRC mismatch does not: the
         bytes still made the round trip, and a corrupt dump you can inspect beats no dump at all.
         The caller decides what a False means (here: non-zero exit, and never auto-clear).
         """
@@ -89,7 +89,7 @@ class CoreDumpCollector:
         missing = [n for n in range(1, expected_chunks + 1) if n not in self.chunks]
         if missing:
             raise RuntimeError(
-                f"missing chunk(s) {missing} of {expected_chunks} — every message is QoS 0, so a "
+                f"missing chunk(s) {missing} of {expected_chunks} - every message is QoS 0, so a "
                 f"Wi-Fi dip drops them silently. Just run this again; the dump stays on the device "
                 f"until you erase it with --clear."
             )
@@ -99,12 +99,12 @@ class CoreDumpCollector:
             raise RuntimeError(f"reassembled {len(image)} bytes but the header promised {expected_size}")
 
         if self.trailer is None:
-            print("[warn] no trailer received — chunk count and size check out, but the "
+            print("[warn] no trailer received - chunk count and size check out, but the "
                   "end-to-end CRC could not be verified")
             return image, False
 
         # esp_rom_crc32_le() seeded with 0 is plain CRC-32 (IEEE 802.3), the same value zlib
-        # computes — the same pairing ESP-IDF itself relies on, since the core dump image's own
+        # computes - the same pairing ESP-IDF itself relies on, since the core dump image's own
         # trailing checksum is written with that function and verified by esp-coredump with
         # zlib.crc32. Kept non-fatal anyway: esp-coredump will independently reject a genuinely
         # damaged image when it decodes, so this check is a faster, more specific signal rather
@@ -113,7 +113,7 @@ class CoreDumpCollector:
         actual_crc = zlib.crc32(image) & 0xFFFFFFFF
         if actual_crc != expected_crc:
             print(f"[warn] CRC32 mismatch: device said 0x{expected_crc:08x}, got 0x{actual_crc:08x}. "
-                  f"The image is saved regardless — try decoding it, and re-run the transfer if "
+                  f"The image is saved regardless - try decoding it, and re-run the transfer if "
                   f"esp-coredump also rejects it.")
             return image, False
         print("[ok]   transfer CRC32 verified")
@@ -134,7 +134,7 @@ def print_summary(summary):
     print(f"       app elf sha256 : {summary.get('elf_sha256')}")
     backtrace = summary.get("backtrace") or []
     if backtrace:
-        corrupt = " (CORRUPTED — treat as a hint, not gospel)" if summary.get("bt_corrupted") else ""
+        corrupt = " (CORRUPTED - treat as a hint, not gospel)" if summary.get("bt_corrupted") else ""
         print(f"       backtrace{corrupt}: {' '.join(backtrace)}")
 
 
@@ -146,13 +146,13 @@ def decode(image_path, elf_path, chip="esp32"):
     """Runs esp-coredump against the saved image. Returns True if it ran successfully."""
     tool = find_esp_coredump()
     if tool is None:
-        print("\n[decode] esp-coredump is not on PATH — install it with `pip install esp-coredump`, "
+        print("\n[decode] esp-coredump is not on PATH - install it with `pip install esp-coredump`, "
               "then run:")
         print(f"    esp-coredump --chip {chip} info_corefile "
               f"--core {image_path} --core-format raw {elf_path}")
         return False
     if not os.path.isfile(elf_path):
-        print(f"\n[decode] no firmware.elf at {elf_path} — decoding needs the *exact* build that "
+        print(f"\n[decode] no firmware.elf at {elf_path} - decoding needs the *exact* build that "
               f"was running when it crashed (see the app elf sha256 above). Point --elf at your "
               f"archived copy, then run:")
         print(f"    esp-coredump --chip {chip} info_corefile "
@@ -172,23 +172,36 @@ def decode(image_path, elf_path, chip="esp32"):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--host", required=True, help="MQTT broker LAN address")
-    parser.add_argument("--port", type=int, default=1883, help="MQTT broker port (default 1883)")
-    parser.add_argument("--user", default=None, help="MQTT username")
-    parser.add_argument("--password", default=None, help="MQTT password")
-    parser.add_argument("--topic-prefix", default="irrigatorF4", help="Device MQTT topic prefix")
+    # Connection settings fall back to the environment so scripts/coredump.bat can supply them
+    # without an MQTT password ever appearing in argv (where any other process can read it out of
+    # the process list) or in a tracked file - this repo is public. Explicit flags still win.
+    parser.add_argument("--host", default=os.environ.get("IRRIGATOR_MQTT_HOST"),
+                        help="MQTT broker LAN address (default: $IRRIGATOR_MQTT_HOST)")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("IRRIGATOR_MQTT_PORT", "1883")),
+                        help="MQTT broker port (default 1883, or $IRRIGATOR_MQTT_PORT)")
+    parser.add_argument("--user", default=os.environ.get("IRRIGATOR_MQTT_USER"),
+                        help="MQTT username (default: $IRRIGATOR_MQTT_USER)")
+    parser.add_argument("--password", default=os.environ.get("IRRIGATOR_MQTT_PASSWORD"),
+                        help="MQTT password (default: $IRRIGATOR_MQTT_PASSWORD)")
+    parser.add_argument("--topic-prefix", default=os.environ.get("IRRIGATOR_TOPIC_PREFIX", "irrigatorF4"),
+                        help="Device MQTT topic prefix (default irrigatorF4, or $IRRIGATOR_TOPIC_PREFIX)")
     parser.add_argument("--output", default=os.path.join(REPO_ROOT, "coredump.bin"),
                         help="Where to write the raw image (default ./coredump.bin)")
-    parser.add_argument("--elf", default=os.path.join(REPO_ROOT, ".pio", "build", "esp32dev", "firmware.elf"),
-                        help="firmware.elf to decode against — must be the exact build that crashed")
+    parser.add_argument("--elf",
+                        default=os.environ.get("IRRIGATOR_ELF",
+                                              os.path.join(REPO_ROOT, ".pio", "build", "esp32dev", "firmware.elf")),
+                        help="firmware.elf to decode against - must be the exact build that crashed "
+                             "(default: $IRRIGATOR_ELF, else .pio/build/esp32dev/firmware.elf)")
     parser.add_argument("--summary-only", action="store_true",
                         help="Ask for cmd/coredump and print the summary; skip the image transfer")
     parser.add_argument("--no-decode", action="store_true", help="Save the image without running esp-coredump")
     parser.add_argument("--clear", action="store_true",
                         help="Erase the dump on the device after a verified, successfully decoded "
-                             "download (never happens automatically — see docs/coredump.md)")
+                             "download (never happens automatically - see docs/coredump.md)")
     parser.add_argument("--timeout", type=int, default=90, help="Seconds to wait for the transfer (default 90)")
     args = parser.parse_args()
+    if not args.host:
+        parser.error("--host is required (or set IRRIGATOR_MQTT_HOST / use scripts/coredump.bat)")
 
     download_topic = f"{args.topic_prefix}/download/coredump"
     summary_topic = f"{args.topic_prefix}/coredump"
@@ -217,7 +230,7 @@ def main():
             summary_seen.set()
         elif msg.topic == alert_topic and "coredump" in payload.lower():
             # The device reports every command failure this way (see technical.md's Error
-            # reporting) — surface it instead of sitting out the full timeout.
+            # reporting) - surface it instead of sitting out the full timeout.
             print(f"\n[device] {payload}")
             if '"error"' in payload:
                 device_error["message"] = payload
@@ -239,7 +252,7 @@ def main():
 
     def publish_command(topic, payload=""):
         # QoS 1 so the broker's PUBACK proves it accepted the message; the device still subscribes
-        # at QoS 0, so this proves nothing about delivery to the device — hence the waits below.
+        # at QoS 0, so this proves nothing about delivery to the device - hence the waits below.
         info = client.publish(topic, payload, qos=1)
         info.wait_for_publish(timeout=10)
         print(f"[mqtt] published to {topic}")
@@ -249,14 +262,14 @@ def main():
         if args.summary_only:
             publish_command(f"{args.topic_prefix}/cmd/coredump")
             if not summary_seen.wait(timeout=15):
-                sys.exit("[wait] no summary from the device within 15s — is it online?")
+                sys.exit("[wait] no summary from the device within 15s - is it online?")
             return
 
         publish_command(f"{args.topic_prefix}/cmd/download/coredump")
         if not collector.started.wait(timeout=20):
             if device_error:
                 sys.exit(f"[fail] device refused the request: {device_error['message']}")
-            sys.exit("[wait] the device never started a transfer within 20s — is it online, and "
+            sys.exit("[wait] the device never started a transfer within 20s - is it online, and "
                      "does it actually have a dump? Try --summary-only.")
 
         deadline = time.monotonic() + args.timeout
@@ -287,7 +300,7 @@ def main():
 
         if args.clear:
             # Erasing is irreversible and the whole transfer was QoS 0, so it takes proof the copy
-            # is good — a clean CRC *and* a decode esp-coredump was happy with. See docs/coredump.md.
+            # is good - a clean CRC *and* a decode esp-coredump was happy with. See docs/coredump.md.
             if decoded and crc_ok:
                 publish_command(f"{args.topic_prefix}/cmd/coredump_clear", "true")
                 time.sleep(2)
