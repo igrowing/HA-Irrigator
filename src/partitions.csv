@@ -4,4 +4,22 @@ nvs,      data, nvs,     0x9000,  0x5000,
 otadata,  data, ota,     0xe000,  0x2000,
 app0,     app,  ota_0,   0x10000, 0x180000,
 app1,     app,  ota_1,   0x190000, 0x180000,
-spiffs,   data, spiffs,  0x310000, 0x0F0000,
+# Shrunk from 0x0F0000 to make room for the coredump partition below - see that row's comment.
+# CAUTION: shrinking (not just adding after) an existing spiffs entry changes the size SPIFFS
+# was formatted for at the SAME flash offset. The existing on-flash filesystem will fail its
+# mount check against the new, smaller size, and FileStore::begin() calls SPIFFS.begin(true) -
+# formatOnFail - so the very first boot after flashing this table WIPES config.json/settings.json/
+# schedule.json. This is a one-time cost of adding coredump support, only paid once (on whichever
+# boot first sees this partition table) - back up current settings.json/schedule.json via
+# cmd/download/ before flashing, then re-upload after. Confirmed: this offset is unrelated to
+# app0/app1 (unchanged above), so OTA itself is unaffected by this row.
+spiffs,   data, spiffs,  0x310000, 0x0E0000,
+# ELF-format panic dumps (see docs/coredump.md) - CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH/
+# _DATA_FORMAT_ELF are already on by default in this prebuilt Arduino core (verified against the
+# framework's esp32/sdkconfig), so this partition is the only piece that was missing: the panic
+# handler already checks for a `coredump`-subtype partition and silently no-ops if none exists,
+# which is exactly what every earlier boot at this device did. 0x10000 (64KB) matches Espressif's
+# own default.csv/min_spiffs.csv sizing for this partition and comfortably covers one 16KB
+# loop-task stack (see main.ino's SET_LOOP_TASK_STACK_SIZE) plus per-task summaries for up to the
+# framework's 64-task cap.
+coredump, data, coredump,0x3F0000, 0x10000,

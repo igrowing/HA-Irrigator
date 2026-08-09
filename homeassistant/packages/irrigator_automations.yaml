@@ -103,8 +103,10 @@ automation:
 
   # Device -> HA: seeds the Settings-tab helpers from the last settings.json
   # download so the UI reflects reality after a restart. Only fires when a
-  # fresh download lands (virgin deploy, or a manual "Refresh From Device"
-  # press), so it won't fight an in-progress edit except in that narrow window.
+  # fresh download lands (virgin deploy, or a manual "Backup from the Irrigator Device" press —
+  # that button both downloads AND backs up to the HA filesystem now, see
+  # script.irrigator_backup_from_device), so it won't fight an in-progress edit except in that
+  # narrow window.
   - alias: "Irrigator - sync device settings to local helpers"
     triggers:
       - trigger: state

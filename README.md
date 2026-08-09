@@ -91,4 +91,5 @@ See more screenshots in [User guide for HA](docs/usage_homeassistant.md).
 - [User guide for HA](docs/usage_homeassistant.md).
 - [Technical explanations](docs/technical.md) (for geeks only).
 - [OTA firmware upgrade](docs/ota.md) (for makers only).
+- [Crash dumps](docs/coredump.md) — retrieving and decoding a panic dump over MQTT (for makers only).
 - [Hardware](hardware/readme.md).

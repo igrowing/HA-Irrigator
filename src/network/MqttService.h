@@ -86,17 +86,37 @@ public:
     // `<prefix>/cmd/download/<filename>` request.
     void publishDownload(const String& filename, const String& content);
 
+    // Publishes the decoded summary of a stored panic dump to `<prefix>/coredump` — on request via
+    // `cmd/coredump`, and once unprompted at boot when a dump is present (see main.ino's
+    // reportCoreDumpAtBoot). The raw image itself is far too big for one message and goes out as
+    // base64 chunks over `/download/coredump` instead — see docs/coredump.md.
+    void publishCoreDump(const String& jsonPayload);
+
     // Returns true exactly once, ~15s after begin(), the first time the client is connected
     // at or after that point — the caller should build and publish the status payload then.
     bool consumeBootStatusDue(uint32_t nowMs);
 
     const String& prefix() const { return config_.prefix; }
 
+    // PubSubClient's actual current buffer size, which is NOT necessarily the size begin() asked
+    // for — see ensureBufferSize(). Surfaced in the /status payload (`mqtt_buffer_bytes`) because
+    // an undersized buffer is otherwise invisible from MQTT: it silently drops exactly the large
+    // payloads (/status, /download/*) you would need in order to notice.
+    uint16_t bufferSize() const;
+
 private:
     void attemptReconnect(uint32_t nowMs);
     void onConnected();
     void dispatchMessage(char* topic, uint8_t* payload, unsigned int length);
     bool publishRaw(const String& topicSuffix, const String& payload, bool retained);
+
+    // Grows PubSubClient's single shared rx/tx buffer from its 256-byte default to
+    // kMqttBufferBytes. Idempotent and cheap once satisfied, so it is retried on every reconnect
+    // rather than only at begin() — see its definition for why that matters.
+    void ensureBufferSize();
+
+    // Turns a failed publish into a small (always-fits) /alert naming the topic and both sizes.
+    void reportPublishFailure(const String& topicSuffix, size_t payloadLength);
 
     // Splices a "datetime" field (from nowEpochProvider_) into a JSON object payload, or wraps a
     // plain-text payload as {"datetime":...,"message":...}. Returns the payload unchanged if no
@@ -117,6 +137,11 @@ private:
     // reconnect is ever attempted in that case; connected()/publish* already degrade safely to
     // no-ops via PubSubClient's own null-client handling, so nothing else needs to branch on this.
     bool enabled_ = false;
+
+    // Re-entrancy guard for reportPublishFailure(): the alert it publishes goes through
+    // publishRaw() itself, so a broker-side/socket failure (as opposed to an oversized payload)
+    // would otherwise have each failed alert trigger another one, without bound.
+    bool reportingPublishFailure_ = false;
 
     uint32_t bootMs_ = 0;
     bool bootStatusPublished_ = false;

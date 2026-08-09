@@ -5,12 +5,15 @@
 #include <Wire.h>
 #include <esp_system.h>
 #include <esp_mac.h>
+#include <esp_rom_crc.h>
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/task.h>
+#include <mbedtls/base64.h>
 
 #include <memory>
+#include <new>
 #include <string.h>
 
 #include "board_config.h"
@@ -25,6 +28,7 @@
 #include "domain/WateringQueue.h"
 #include "domain/WifiQuality.h"
 #include "drivers/Clock.h"
+#include "drivers/CoreDumpService.h"
 #include "drivers/CurrentSensor.h"
 #include "drivers/FactoryResetButton.h"
 #include "drivers/FileStore.h"
@@ -68,6 +72,14 @@ irrigator::drivers::CurrentSensor pumpCurrentSensor(PUMP_CURRENT_ADC_PIN);
 irrigator::drivers::LedIndicator led(STATUS_LED_PIN);
 irrigator::drivers::Clock clockService;
 irrigator::drivers::FactoryResetButton factoryResetButton;
+irrigator::drivers::CoreDumpService coreDumpService;
+
+// Snapshot taken once in setup(). A stored dump can only appear via a crash + reboot, so this
+// stays true for the whole session — the one thing that can change it mid-run is cmd/coredump_clear
+// erasing the dump, which updates it. Cached because CoreDumpService::available() re-reads and
+// re-CRC32s the entire (up to 64KB) image on every call, which has no business happening on the
+// buildStatusJson()/loop() path.
+bool coreDumpPresent = false;
 
 irrigator::domain::DeviceConfig deviceConfig;
 irrigator::domain::Settings settings;
@@ -474,6 +486,15 @@ String buildStatusJson(uint32_t nowMs) {
     // }
     doc["free_heap_bytes"] = ESP.getFreeHeap();
     doc["free_storage_bytes"] = static_cast<uint32_t>(fileStore.freeBytes());
+    // Should always read 25600. Anything less (typically 256, PubSubClient's default) means the
+    // buffer resize at begin() lost a race with the heap, and every payload larger than that is
+    // being dropped silently — including this very /status message, so seeing a small number here
+    // at all means it has since self-healed. See MqttService::ensureBufferSize().
+    doc["mqtt_buffer_bytes"] = mqtt.bufferSize();
+    // Pairs with boot_reason above: "panic" tells you it crashed, this tells you whether there's
+    // still something to *read* about it (a dump survives reboots until cmd/coredump_clear erases
+    // it, so this stays true across later clean boots — see docs/coredump.md).
+    doc["coredump_available"] = coreDumpPresent;
     doc["cpu_temp_c"] = temperatureRead();
     // Master on/off for the whole weather auto-adjustment pipeline (see runAutoAdjustmentIfDue) —
     // surfaced here so "why hasn't this run" is diagnosable remotely without a settings.json pull.
@@ -649,11 +670,233 @@ void reportMqttFieldsRejected(const String& filename, const char* rejectedFields
                                    filename.c_str(), rejectedFields);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Core dump retrieval. The panic handler writes an ELF image into the `coredump` partition (see
+// partitions.csv) on every crash; these functions are the only way to get it off a unit that lives
+// in a garage with no serial connection. Wire format and the decode workflow: docs/coredump.md.
+// ---------------------------------------------------------------------------------------------
+
+// Fills `target` with the decoded summary — shared by cmd/coredump, the boot-time report, and the
+// header of a cmd/download/coredump transfer, so all three can't describe the same dump
+// differently. Addresses go out as "0x...." strings: they are meant to be pasted straight into
+// addr2line, and a JSON number would arrive as a decimal the operator has to convert back.
+void fillCoreDumpSummaryJson(JsonObject target) {
+    irrigator::drivers::CoreDumpSummary summary;
+    if (!coreDumpService.readSummary(summary)) {
+        target["coredump"] = "none";
+        return;
+    }
+
+    char hex[12];
+    target["coredump"] = "present";
+    target["size_bytes"] = static_cast<uint32_t>(coreDumpService.totalBytes());
+    target["task"] = summary.taskName;
+    target["panic_reason"] = summary.panicReason;
+    snprintf(hex, sizeof(hex), "0x%08lx", static_cast<unsigned long>(summary.programCounter));
+    target["pc"] = hex;
+    target["exc_cause"] = summary.exceptionCause;
+    snprintf(hex, sizeof(hex), "0x%08lx", static_cast<unsigned long>(summary.faultAddress));
+    target["fault_addr"] = hex;
+    // The addresses above only mean anything against the build that produced them, and this device
+    // is updated over the air — so name that build (see CoreDumpSummary::appElfSha256).
+    target["elf_sha256"] = summary.appElfSha256;
+    target["bt_corrupted"] = summary.backtraceCorrupted;
+    JsonArray backtrace = target["backtrace"].to<JsonArray>();
+    for (uint8_t i = 0; i < summary.backtraceDepth; ++i) {
+        snprintf(hex, sizeof(hex), "0x%08lx", static_cast<unsigned long>(summary.backtrace[i]));
+        backtrace.add(hex);
+    }
+}
+
+void publishCoreDumpSummary() {
+    JsonDocument doc;
+    fillCoreDumpSummaryJson(doc.to<JsonObject>());
+    String payload;
+    serializeJson(doc, payload);
+    mqtt.publishCoreDump(payload);
+}
+
+// State of an in-flight `cmd/download/coredump`. The image is up to 64KB of binary, so it goes out
+// as base64 chunks, one per loop() iteration — not all at once inside the MQTT callback, which
+// would stall loop() (and so irrigation.tick(), the UI, and the current-fault drain) for the whole
+// transfer. This is agents.md's "set a flag in the handler, do the work in loop()" rule.
+struct CoreDumpTransfer {
+    bool active = false;
+    size_t offset = 0;
+    size_t totalBytes = 0;
+    uint16_t nextSeq = 0;
+    uint16_t chunkCount = 0;
+    uint32_t crc = 0;
+    uint8_t* raw = nullptr;
+    char* encoded = nullptr;
+};
+CoreDumpTransfer coreDumpTransfer;
+
+// 3072 raw bytes -> 4096 base64 chars, which leaves plenty of headroom inside MqttService's
+// ~25KB PubSubClient buffer once the envelope and topic are added, and caps a full 64KB image at
+// 22 chunks. Both buffers are heap-allocated for the duration of a transfer and freed at the end:
+// one large, rare allocation, not the per-loop churn agents.md's heap-fragmentation rule targets,
+// and far better than paying ~7KB of static RAM forever for something used a handful of times in
+// a device's life.
+constexpr size_t kCoreDumpChunkBytes = 3072;
+constexpr size_t kCoreDumpEncodedBytes = 4 * ((kCoreDumpChunkBytes + 2) / 3) + 1;
+
+void finishCoreDumpTransfer() {
+    delete[] coreDumpTransfer.raw;
+    delete[] coreDumpTransfer.encoded;
+    coreDumpTransfer = CoreDumpTransfer{};
+}
+
+// `cmd/download/coredump` — arms the transfer serviced by serviceCoreDumpTransfer() below.
+void startCoreDumpTransfer() {
+    if (coreDumpTransfer.active) {
+        reportMqttError("download", "coredump", "a transfer is already in progress");
+        return;
+    }
+    if (!coreDumpService.available()) {
+        reportMqttError("download", "coredump", "no valid core dump stored");
+        return;
+    }
+    const size_t total = coreDumpService.totalBytes();
+    if (total == 0) {
+        reportMqttError("download", "coredump", "stored dump is empty");
+        return;
+    }
+
+    coreDumpTransfer.raw = new (std::nothrow) uint8_t[kCoreDumpChunkBytes];
+    coreDumpTransfer.encoded = new (std::nothrow) char[kCoreDumpEncodedBytes];
+    if (coreDumpTransfer.raw == nullptr || coreDumpTransfer.encoded == nullptr) {
+        finishCoreDumpTransfer();  // Frees whichever of the two did succeed.
+        reportMqttError("download", "coredump", "out of memory for transfer buffers");
+        return;
+    }
+
+    coreDumpTransfer.active = true;
+    coreDumpTransfer.totalBytes = total;
+    coreDumpTransfer.nextSeq = 1;
+    coreDumpTransfer.chunkCount =
+        static_cast<uint16_t>((total + kCoreDumpChunkBytes - 1) / kCoreDumpChunkBytes);
+
+    // The header carries the summary too, so a single command answers both "what crashed" and
+    // "give me the image" — the receiver has something useful even if the chunks then get cut off.
+    JsonDocument doc;
+    doc["coredump"] = "begin";
+    doc["size"] = static_cast<uint32_t>(total);
+    doc["chunks"] = coreDumpTransfer.chunkCount;
+    doc["chunk_bytes"] = static_cast<uint32_t>(kCoreDumpChunkBytes);
+    doc["encoding"] = "base64";
+    doc["firmware_version"] = irrigator::board::FIRMWARE_VERSION;
+    fillCoreDumpSummaryJson(doc["summary"].to<JsonObject>());
+    String header;
+    serializeJson(doc, header);
+    mqtt.publishDownload("coredump", header);
+
+    irrigator::drivers::Log.printf("[INFO] core dump transfer started: %u bytes in %u chunks\n",
+                                   static_cast<unsigned>(total),
+                                   static_cast<unsigned>(coreDumpTransfer.chunkCount));
+}
+
+// One chunk per loop() iteration. Deliberately not paced by a timer: the whole transfer is at most
+// 22 messages, and since every one is a QoS-0 fire-and-forget publish, the sooner they are all out
+// the smaller the window in which a Wi-Fi drop can tear a hole in the image.
+void serviceCoreDumpTransfer() {
+    if (!coreDumpTransfer.active) {
+        return;
+    }
+    if (!mqtt.connected()) {
+        // Publishing into a disconnected client would drop chunks silently, and the receiver
+        // can't tell a gap like that from a lost packet — better to abort loudly and let the
+        // operator re-request the whole thing. The dump itself is untouched (only
+        // cmd/coredump_clear ever erases it), so nothing is lost by giving up here.
+        irrigator::drivers::Log.warn("Core dump transfer aborted: MQTT disconnected");
+        finishCoreDumpTransfer();
+        return;
+    }
+
+    const size_t read =
+        coreDumpService.readChunk(coreDumpTransfer.offset, coreDumpTransfer.raw, kCoreDumpChunkBytes);
+    if (read == 0) {
+        reportMqttError("download", "coredump", "flash read failed mid-transfer");
+        finishCoreDumpTransfer();
+        return;
+    }
+
+    size_t encodedLength = 0;
+    if (mbedtls_base64_encode(reinterpret_cast<unsigned char*>(coreDumpTransfer.encoded),
+                              kCoreDumpEncodedBytes,
+                              &encodedLength,
+                              coreDumpTransfer.raw,
+                              read) != 0) {
+        reportMqttError("download", "coredump", "base64 encode failed");
+        finishCoreDumpTransfer();
+        return;
+    }
+    coreDumpTransfer.encoded[encodedLength] = '\0';
+    // Running CRC32 over the raw bytes, reported in the trailer. Sequence numbers already catch a
+    // dropped chunk; this catches a chunk that arrived but is wrong, and distinguishes "the
+    // transfer was corrupted" from "the stored dump itself is corrupt" (which esp-coredump would
+    // report separately when decoding).
+    coreDumpTransfer.crc = esp_rom_crc32_le(coreDumpTransfer.crc, coreDumpTransfer.raw, read);
+
+    // Assembled by hand rather than through ArduinoJson: the envelope is fixed, and base64's
+    // alphabet (A-Za-z0-9+/=) contains nothing JSON would need to escape, so serializing would
+    // only buy a second 4KB copy of the payload on the heap.
+    String payload("{\"seq\":");
+    payload.reserve(encodedLength + 48);
+    payload += coreDumpTransfer.nextSeq;
+    payload += ",\"data\":\"";
+    payload += coreDumpTransfer.encoded;
+    payload += "\"}";
+    mqtt.publishDownload("coredump", payload);
+
+    coreDumpTransfer.offset += read;
+    ++coreDumpTransfer.nextSeq;
+
+    if (coreDumpTransfer.offset < coreDumpTransfer.totalBytes) {
+        return;
+    }
+
+    char trailer[112];
+    snprintf(trailer, sizeof(trailer),
+             R"({"coredump":"end","chunks":%u,"size":%lu,"crc32":"0x%08lx"})",
+             static_cast<unsigned>(coreDumpTransfer.chunkCount),
+             static_cast<unsigned long>(coreDumpTransfer.totalBytes),
+             static_cast<unsigned long>(coreDumpTransfer.crc));
+    mqtt.publishDownload("coredump", trailer);
+    irrigator::drivers::Log.printf("[INFO] core dump transfer complete: %u bytes in %u chunks\n",
+                                   static_cast<unsigned>(coreDumpTransfer.totalBytes),
+                                   static_cast<unsigned>(coreDumpTransfer.chunkCount));
+    finishCoreDumpTransfer();
+}
+
+// One-shot, published alongside the boot /status. If the panic handler wrote a dump before the
+// reboot we're now in, say so unprompted: nobody is watching the serial console on a deployed
+// unit, and a crash dump nobody knows about is worth exactly as much as no crash dump at all.
+void reportCoreDumpAtBoot() {
+    if (!coreDumpPresent) {
+        return;
+    }
+    publishCoreDumpSummary();
+    mqtt.publishAlert(
+        R"({"coredump":"available","alert":"a core dump from an earlier crash is stored; )"
+        R"(retrieve it with cmd/download/coredump before it is overwritten"})");
+}
+
 // `cmd/download/<filename>` handler: filename comes from the topic (payload is unused, "" per
 // spec), response goes to `<prefix>/download/<filename>`.
 void handleMqttDownload(const String& filename) {
     if (filename.length() == 0) {
         reportMqttError("download", filename, "empty filename");
+        return;
+    }
+
+    // The core dump is not a file on SPIFFS — it's a raw flash partition the panic handler writes
+    // (see drivers/CoreDumpService.h) — so it can't go through the fileStore path below, and being
+    // binary and up to 64KB it can't go out in one message either. Handled under cmd/download/
+    // anyway rather than its own verb, so "cmd/download/<x>" stays the single answer to "how do I
+    // pull <x> off the device".
+    if (filename == "coredump") {
+        startCoreDumpTransfer();
         return;
     }
 
@@ -1390,6 +1633,37 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
 
     if (commandName.startsWith("download/")) {
         handleMqttDownload(commandName.substring(String("download/").length()));
+        return;
+    }
+
+    // Summary only — cheap, and usually all you need to know which commit to look at. The image
+    // itself comes from cmd/download/coredump. See docs/coredump.md.
+    if (commandName == "coredump") {
+        publishCoreDumpSummary();
+        return;
+    }
+
+    if (commandName == "coredump_clear") {
+        // Confirmation-gated exactly like cmd/delete: this is the one irreversible thing you can
+        // do to a crash dump, every publish that carried it out was QoS 0, and until it's erased
+        // the dump survives any number of reboots. See CoreDumpService::clear()'s comment for why
+        // this is never done automatically after a transfer.
+        String trimmed = body;
+        trimmed.trim();
+        if (trimmed != "true") {
+            reportMqttError("command", commandName, "payload must be 'true' to confirm erase");
+            return;
+        }
+        if (coreDumpTransfer.active) {
+            reportMqttError("command", commandName, "a transfer is in progress");
+            return;
+        }
+        if (!coreDumpService.clear()) {
+            reportMqttError("command", commandName, "erase failed");
+            return;
+        }
+        coreDumpPresent = false;
+        mqtt.publishAlert(R"({"coredump":"cleared","info":"stored core dump erased"})");
         return;
     }
 
@@ -2255,6 +2529,17 @@ void setup() {
     analogReadResolution(irrigator::board::ADC_RESOLUTION_BITS);
     analogSetAttenuation(ADC_11db);
 
+    // Before anything else that could itself crash: if the previous session panicked, the dump is
+    // already in flash and this is the cheapest point to notice it. Snapshotted once — see
+    // coreDumpPresent's declaration for why this isn't re-checked later.
+    coreDumpPresent = coreDumpService.available();
+    if (coreDumpPresent) {
+        irrigator::drivers::Log.printf(
+            "[WARN] A core dump from an earlier crash is stored (%u bytes) - retrieve it with "
+            "cmd/download/coredump, see docs/coredump.md\n",
+            static_cast<unsigned>(coreDumpService.totalBytes()));
+    }
+
     fileStore.begin();
     relayBank.begin();
     valveCurrentSensor.begin();
@@ -2314,7 +2599,14 @@ void loop() {
             mqtt.loop(nowMs);
             if (mqtt.consumeBootStatusDue(nowMs)) {
                 mqtt.publishStatus(buildStatusJson(nowMs));
+                reportCoreDumpAtBoot();
             }
+            // No-op unless a cmd/download/coredump is in flight; pumps out one base64 chunk per
+            // iteration (see CoreDumpTransfer). Placed right after mqtt.loop() so a chunk is
+            // published on a client that has just been serviced, and before the irrigation/UI work
+            // below, which it must never displace — it does at most one flash read plus one
+            // publish per iteration.
+            serviceCoreDumpTransfer();
 
             if (factoryResetButton.poll()) {
                 ui.confirmFactoryReset(nowMs);

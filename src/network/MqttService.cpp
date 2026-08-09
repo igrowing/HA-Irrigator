@@ -42,7 +42,7 @@ void MqttService::begin(const MqttConfig& config) {
 
     mqttClient_.setClient(wifiClient_);
     mqttClient_.setServer(config_.broker.c_str(), config_.port);
-    mqttClient_.setBufferSize(kMqttBufferBytes);
+    ensureBufferSize();
     mqttClient_.setKeepAlive(kMqttKeepAliveSec);
     mqttClient_.setCallback(&MqttService::staticMessageCallback);
 
@@ -56,8 +56,49 @@ bool MqttService::connected() const {
     return const_cast<PubSubClient&>(mqttClient_).connected();
 }
 
+uint16_t MqttService::bufferSize() const {
+    return const_cast<PubSubClient&>(mqttClient_).getBufferSize();
+}
+
+// PubSubClient allocates a single 256-byte buffer in its constructor and uses it for BOTH receive
+// and transmit, so this has to grow it to fit the largest thing we ever publish (a whole
+// schedule.json — see kMqttBufferBytes). Because bufferSize is already non-zero by then, the
+// library takes its realloc() path, and on failure it returns false while KEEPING the old 256
+// bytes (PubSubClient.cpp's setBufferSize) — it does not throw, disconnect, or mark itself broken.
+//
+// That failure is silent in the worst possible way: publish() then just returns false for anything
+// over ~250 bytes, so /online, /state and /alert keep working normally while /status and every
+// /download/<file> response disappear with no error anywhere on MQTT. The device looks like it is
+// ignoring those commands. Hence: check the return, say so loudly, and retry.
+//
+// Retried from attemptReconnect() rather than only here because the failure is heap-driven and
+// therefore transient — begin() runs right after Wi-Fi association and an NTP sync, which is close
+// to the heap's low-water mark for the whole session. A later retry, once that has settled, will
+// usually succeed and the device silently heals instead of staying half-mute until someone reboots
+// it. Cheap to call repeatedly: once the size matches, it does nothing.
+void MqttService::ensureBufferSize() {
+    if (mqttClient_.getBufferSize() >= kMqttBufferBytes) {
+        return;
+    }
+    if (mqttClient_.setBufferSize(kMqttBufferBytes)) {
+        ::irrigator::drivers::Log.printf("[INFO] MQTT buffer set to %u bytes\n",
+                                         static_cast<unsigned>(mqttClient_.getBufferSize()));
+        return;
+    }
+    ::irrigator::drivers::Log.printf(
+        "[ERROR] MQTT buffer resize to %u bytes FAILED (still %u) - free heap %u. Large payloads "
+        "(/status, /download/*) will be silently dropped until this succeeds; retrying on the next "
+        "reconnect\n",
+        static_cast<unsigned>(kMqttBufferBytes),
+        static_cast<unsigned>(mqttClient_.getBufferSize()),
+        static_cast<unsigned>(ESP.getFreeHeap()));
+}
+
 void MqttService::attemptReconnect(uint32_t nowMs) {
     (void)nowMs;
+    // Self-heal an earlier undersized-buffer failure now that the heap has had time to settle —
+    // see ensureBufferSize(). No-op in the normal case where begin() already got what it asked for.
+    ensureBufferSize();
     const String clientId = config_.prefix;
     const String availabilityTopic = config_.prefix + "/online";
 
@@ -137,9 +178,37 @@ bool MqttService::publishRaw(const String& topicSuffix, const String& payload, b
                                         payload.length(),
                                         retained);
     if (!ok) {
-        ::irrigator::drivers::Log.printf("[WARN] MQTT publish to %s failed\n", topic.c_str());
+        ::irrigator::drivers::Log.printf("[WARN] MQTT publish to %s failed (payload %u B, buffer %u B)\n",
+                                         topic.c_str(),
+                                         static_cast<unsigned>(payload.length()),
+                                         static_cast<unsigned>(mqttClient_.getBufferSize()));
+        reportPublishFailure(topicSuffix, payload.length());
     }
     return ok;
+}
+
+// A failed publish used to be visible only on a serial console nobody is watching (agents.md
+// section 3) - and it is precisely the failure that makes the device look like it ignored a
+// command outright, since PubSubClient::publish() returns false for an oversized payload without
+// any other trace. The alert built here is deliberately tiny so it still fits even the 256-byte
+// default buffer that is the most likely reason the original publish failed; it names both sizes
+// rather than asserting a cause, because publish() also returns false on a plain socket-write
+// failure and the two are indistinguishable from its return value alone.
+void MqttService::reportPublishFailure(const String& topicSuffix, size_t payloadLength) {
+    if (reportingPublishFailure_ || topicSuffix == "/alert") {
+        // Either the failure alert itself just failed, or the thing that failed WAS an alert -
+        // both would recurse. The serial log above still records it.
+        return;
+    }
+    reportingPublishFailure_ = true;
+    char alertMsg[192];
+    snprintf(alertMsg, sizeof(alertMsg),
+             R"({"publish":"%s","error":"failed - payload %u B, MQTT buffer %u B"})",
+             topicSuffix.c_str(),
+             static_cast<unsigned>(payloadLength),
+             static_cast<unsigned>(mqttClient_.getBufferSize()));
+    publishRaw("/alert", withDatetime(alertMsg), false);
+    reportingPublishFailure_ = false;
 }
 
 String MqttService::withDatetime(const String& payload) const {
@@ -251,6 +320,10 @@ void MqttService::publishDownload(const String& filename, const String& content)
     String safeName = filename;
     safeName.replace("/", "_");
     publishRaw("/download/" + safeName, content, false);
+}
+
+void MqttService::publishCoreDump(const String& jsonPayload) {
+    publishRaw("/coredump", withDatetime(jsonPayload), false);
 }
 
 void MqttService::dispatchMessage(char* topic, uint8_t* payload, unsigned int length) {

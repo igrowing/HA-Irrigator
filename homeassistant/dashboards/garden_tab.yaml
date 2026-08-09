@@ -531,6 +531,26 @@
             grid_options:
               columns: 12
               rows: 2
+          # Overwrites the device's live settings.json/schedule.json with whatever "Backup from the
+          # Irrigator Device" last saved to /config/irrigator_backups/ - confirmed the same way
+          # button.irrigator_stop_all is, since unlike that one there's no live MQTT round-trip to
+          # watch to confirm it went as expected.
+          - type: tile
+            entity: button.restore_to_the_irrigator_device
+            icon: mdi:cloud-upload-outline
+            color: red
+            tap_action:
+              action: perform-action
+              perform_action: button.press
+              target:
+                entity_id: button.restore_to_the_irrigator_device
+              confirmation:
+                text: Overwrite the device's settings.json and schedule.json with the last backup?
+            features:
+              - type: button
+            grid_options:
+              columns: 12
+              rows: 2
       - type: grid
         cards:
           - type: heading

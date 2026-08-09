@@ -64,7 +64,7 @@ Every other field (zone names, `schedule_active`, calibration, etc.) is left exa
 
 Get your key from [weatherapi.com](https://www.weatherapi.com) (free tier is enough) — it's only used as a fallback when [Open-Meteo](https://open-meteo.com)'s keyless request fails (see **Weather auto-adjustment** in [technical.md](technical.md)), so a wrong or empty key doesn't break normal operation, just the fallback path.
 
-If you're running the HA package too: HA caches its own copy of the whole file (`sensor.irrigator_settings`) and re-uploads it wholesale whenever any *other* Settings-tab field changes (zone name, calibration, etc.) — so a manual edit made outside HA can get silently overwritten the next time you touch anything in HA, until HA's cache catches up. Press **Refresh From Device** on the dashboard right after a manual edit to pull the new key into HA's cache and avoid that.
+If you're running the HA package too: HA caches its own copy of the whole file (`sensor.irrigator_settings`) and re-uploads it wholesale whenever any *other* Settings-tab field changes (zone name, calibration, etc.) — so a manual edit made outside HA can get silently overwritten the next time you touch anything in HA, until HA's cache catches up. Press **Backup from the Irrigator Device** on the dashboard right after a manual edit to pull the new key into HA's cache and avoid that.
 
 ## Troubleshooting
 

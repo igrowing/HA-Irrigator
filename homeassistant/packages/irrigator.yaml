@@ -126,7 +126,7 @@ mqtt:
     # burst_samples_mv — the last raw burst, for spotting ADC saturation) for anything needing more
     # than the headline number. The persisted base itself also round-trips into
     # sensor.irrigator_settings' valve_current_base_level/pump_current_base_level attributes on the
-    # next settings.json download (e.g. "Refresh From Device") — this sensor is the live response,
+    # next settings.json download (e.g. "Backup from the Irrigator Device") — this sensor is the live response,
     # that one is the durable record.
     - name: "Calibration Result"
       unique_id: irrigator_calibration_result
@@ -799,11 +799,27 @@ template:
           {{ (state_attr('sensor.irrigator_settings', 'Current_sensor') or {}).get('pump_current_base_level', 0) }}
 
   - button:
-      - name: "Irrigator Refresh From Device"
+      # Formerly "Irrigator Refresh From Device" - same entity (unique_id unchanged, so no
+      # existing automation/dashboard reference to it breaks), renamed because it now does more
+      # than refresh HA's live sensors: it also writes settings.json/schedule.json to
+      # /config/irrigator_backups/ - see script.irrigator_backup_from_device's comment.
+      - name: "Backup from the Irrigator Device"
         unique_id: irrigator_refresh_from_device
         icon: mdi:cloud-download-outline
         press:
-          - action: script.irrigator_request_downloads
+          - action: script.irrigator_backup_from_device
+      # Uploads the backup files the button above last wrote back to the device - see
+      # script.irrigator_restore_from_backup's comment for exactly what is and isn't restored.
+      # NOTE: this entity's entity_id is button.restore_to_the_irrigator_device (slugified from
+      # `name:` below), NOT button.<unique_id> - `unique_id:` only pins the registry entry across
+      # restarts for a template entity with no `device:` link like this one; it plays no part in
+      # entity_id generation. Don't "fix" the dashboard/docs references back to
+      # button.irrigator_restore_from_backup without also renaming this entity in the UI first.
+      - name: "Restore to the Irrigator Device"
+        unique_id: irrigator_restore_from_backup
+        icon: mdi:cloud-upload-outline
+        press:
+          - action: script.irrigator_restore_from_backup
       - name: "Irrigator Save Schedule Record"
         unique_id: irrigator_schedule_save_button
         icon: mdi:content-save-outline
@@ -1087,6 +1103,58 @@ input_boolean:
   irrigator_alert_valve_oc: {name: "Alert Valve Over-current", icon: mdi:alert-circle-outline, initial: true}
 
 # -----------------------------------------------------------------------
+# Backup/restore file plumbing for script.irrigator_backup_from_device /
+# script.irrigator_restore_from_backup below (see `script:`'s comment on
+# each). Both settings.json and schedule.json land under
+# /config/irrigator_backups/ - "latest" is what Restore always reads;
+# the timestamped copy alongside it is a manually-browsable history
+# (Studio Code Server / File editor / Samba add-on), never read by
+# anything here. `/config` is Home Assistant's own config directory,
+# reachable identically on HA OS, Supervised, and Docker installs.
+#
+# Content NEVER touches a shell command string in either direction:
+#   - Write: `command_line: notify:` pipes its `message` field to the
+#     command's STDIN (confirmed against home-assistant/core's
+#     command_line/notify.py - `proc.communicate(input=message)`), so a
+#     zone name with a quote, `$`, or backtick in it is inert - it's
+#     just bytes on a pipe, never re-parsed as shell syntax. The command
+#     itself is 100% static (no `{{ }}`), so it isn't subject to
+#     `shell_command`'s "no `>`/`|`/`~`" template restriction either.
+#   - Read: `shell_command:` below is also fully static (no `{{ }}`), so
+#     it takes the same real-shell path and its output is returned via
+#     `response_variable` (`{{ result.stdout }}`) as a plain script
+#     variable - no entity `state:` involved, so the ~255-char HA state
+#     length limit that a sensor would hit on a multi-KB settings.json
+#     never applies.
+# Deliberately NOT a templated command with a per-call filename (e.g. one
+# shared notify parameterized by "settings"/"schedule") - `command_line:
+# notify:` always runs via a real shell even when templated (unlike
+# shell_command's safer exec-when-templated mode), so keeping these fully
+# static keeps the whole read/write path free of any injection surface
+# to reason about, for a handful of near-identical lines' cost.
+command_line:
+  - notify:
+      name: irrigator_backup_write_settings
+      command: >-
+        mkdir -p /config/irrigator_backups &&
+        ts=$(date +%Y%m%d_%H%M%S) &&
+        tee "/config/irrigator_backups/settings_$ts.json" > "/config/irrigator_backups/settings_latest.json"
+  - notify:
+      name: irrigator_backup_write_schedule
+      command: >-
+        mkdir -p /config/irrigator_backups &&
+        ts=$(date +%Y%m%d_%H%M%S) &&
+        tee "/config/irrigator_backups/schedule_$ts.json" > "/config/irrigator_backups/schedule_latest.json"
+
+shell_command:
+  # `cat` on a missing file exits non-zero with empty stdout - that's the
+  # "no backup taken yet" signal script.irrigator_restore_from_backup checks
+  # for via response_variable.returncode, not a failure worth surfacing as
+  # a distinct error path.
+  irrigator_backup_read_settings: "cat /config/irrigator_backups/settings_latest.json 2>/dev/null"
+  irrigator_backup_read_schedule: "cat /config/irrigator_backups/schedule_latest.json 2>/dev/null"
+
+# -----------------------------------------------------------------------
 # Scripts - all device writes funnel through these so the JSON contract
 # (see src/network/MqttService.cpp / src/main.ino handleMqttCommand) is
 # built in exactly one place each.
@@ -1190,15 +1258,133 @@ script:
           topic: "irrigatorF4/cmd/calibrate"
           payload: ""
 
-  irrigator_request_downloads:
-    alias: "Irrigator: request status + settings.json + schedule.json"
+  # Behind button.irrigator_refresh_from_device ("Backup from the Irrigator Device" - see
+  # irrigator.yaml's `button:` block). Formerly just fire-and-forget cmd/download requests
+  # (sensor.irrigator_settings/irrigator_schedule picked up whatever arrived, same as any other
+  # download); now also waits for each response and writes it verbatim to
+  # /config/irrigator_backups/ (see the command_line:/shell_command: block above) so there's an
+  # actual recoverable file on the HA filesystem, not just live entity state that's gone the moment
+  # a later download overwrites it. `trigger.payload` (not `payload_json`) is used for the write so
+  # the backup is byte-identical to what the device sent - it is never reparsed/re-serialized
+  # through Jinja's `tojson`, which could reorder keys or reformat numbers.
+  #
+  # Two independent wait_for_trigger/write pairs, not one combined wait: settings.json and
+  # schedule.json arrive as two separate MQTT messages with no guaranteed order, and a device that
+  # answers one but not the other (e.g. it reboots mid-response) should still back up whichever one
+  # it did answer, rather than an all-or-nothing failure discarding a response that did arrive.
+  irrigator_backup_from_device:
+    alias: "Irrigator: backup settings.json + schedule.json from device to HA filesystem"
     sequence:
       - action: mqtt.publish
         data: {topic: "irrigatorF4/cmd/status", payload: ""}
       - action: mqtt.publish
         data: {topic: "irrigatorF4/cmd/download/settings.json", payload: ""}
+      - wait_for_trigger:
+          - trigger: mqtt
+            topic: "irrigatorF4/download/settings.json"
+        timeout:
+          seconds: 15
+        continue_on_timeout: true
+      - if:
+          - condition: template
+            value_template: "{{ wait.completed }}"
+        then:
+          - action: notify.irrigator_backup_write_settings
+            data:
+              message: "{{ wait.trigger.payload }}"
+        else:
+          - action: persistent_notification.create
+            data:
+              title: "Irrigator backup: settings.json"
+              message: >-
+                No response from the device within 15s - is it online? Nothing was written; the
+                previous backup (if any) under /config/irrigator_backups/ is untouched.
       - action: mqtt.publish
         data: {topic: "irrigatorF4/cmd/download/schedule.json", payload: ""}
+      - wait_for_trigger:
+          - trigger: mqtt
+            topic: "irrigatorF4/download/schedule.json"
+        timeout:
+          seconds: 15
+        continue_on_timeout: true
+      - if:
+          - condition: template
+            value_template: "{{ wait.completed }}"
+        then:
+          - action: notify.irrigator_backup_write_schedule
+            data:
+              message: "{{ wait.trigger.payload }}"
+        else:
+          - action: persistent_notification.create
+            data:
+              title: "Irrigator backup: schedule.json"
+              message: >-
+                No response from the device within 15s - is it online? Nothing was written; the
+                previous backup (if any) under /config/irrigator_backups/ is untouched.
+
+  # Behind button.restore_to_the_irrigator_device ("Restore to the Irrigator Device" - the
+  # entity_id comes from slugifying `name:` at first creation, NOT from `unique_id:` below
+  # (unique_id only pins the registry entry across restarts for an un-device-linked template
+  # entity like this one) - see
+  # irrigator.yaml's `button:` block): uploads the LAST files script.irrigator_backup_from_device
+  # wrote under /config/irrigator_backups/ back to the device, verbatim - not a reconstruction from
+  # the Settings-tab helpers (that's script.irrigator_publish_settings's job, and it can only ever
+  # cover the fields those helpers expose). Routed through script.irrigator_enqueue_or_publish, same
+  # as every other device-bound write, so a restore requested while the device is briefly offline is
+  # queued and retried rather than silently dropped.
+  #
+  # settings.json's device-owned fields (schedule_active, the two current-sensor calibration bases -
+  # see script.irrigator_publish_settings' comment) are safe to restore from a stale backup: the
+  # firmware overwrites whatever an upload carries for them with its own current values before
+  # persisting (see mergeSettings() in Settings.h), so this can never revert a calibration or flip
+  # the schedule on/off as a side effect.
+  #
+  # Deliberately does NOT auto-refresh sensor.irrigator_settings/irrigator_schedule afterward by
+  # re-running the backup script: if the device was offline and the upload only got queued (not
+  # actually delivered yet), an immediate re-backup would capture the device's OLD content and
+  # silently overwrite the very backup file this restore just read from. Press "Backup from the
+  # Irrigator Device" afterward to confirm the restore actually landed.
+  irrigator_restore_from_backup:
+    alias: "Irrigator: restore settings.json + schedule.json from HA filesystem backup to device"
+    sequence:
+      - action: shell_command.irrigator_backup_read_settings
+        response_variable: irrigator_settings_backup
+      - action: shell_command.irrigator_backup_read_schedule
+        response_variable: irrigator_schedule_backup
+      - if:
+          - condition: template
+            value_template: >-
+              {{ irrigator_settings_backup.returncode == 0 and
+                 (irrigator_settings_backup.stdout | trim | length) > 0 }}
+        then:
+          - action: script.irrigator_enqueue_or_publish
+            data:
+              topic: "irrigatorF4/cmd/upload/settings.json"
+              payload: "{{ irrigator_settings_backup.stdout }}"
+        else:
+          - action: persistent_notification.create
+            data:
+              title: "Irrigator restore: settings.json"
+              message: >-
+                No backup found under /config/irrigator_backups/ - press "Backup from the Irrigator
+                Device" at least once first.
+      - if:
+          - condition: template
+            value_template: >-
+              {{ irrigator_schedule_backup.returncode == 0 and
+                 (irrigator_schedule_backup.stdout | trim | length) > 0 }}
+        then:
+          - action: script.irrigator_enqueue_or_publish
+            data:
+              topic: "irrigatorF4/cmd/upload/schedule.json"
+              payload: "{{ irrigator_schedule_backup.stdout }}"
+        else:
+          - action: persistent_notification.create
+            data:
+              title: "Irrigator restore: schedule.json"
+              message: >-
+                No backup found under /config/irrigator_backups/ - press "Backup from the Irrigator
+                Device" at least once first.
 
   # Full settings.json replace. Must include every field every time - the
   # firmware fills anything missing with factory defaults (parseSettings()),
