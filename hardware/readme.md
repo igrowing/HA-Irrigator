@@ -90,3 +90,13 @@ In both cases there is a risk of over-drying of your garden.
 One valve current sensor is enough for 11 valves because valves are never opened together, only 1 zone works at every given moment. So it is easy to correlate which valve is malfunctioning.
 
 The current sensing becomes functional only after [current sensor calibration](../docs/usage_irrigator.md#current-sensor-calibration-explained).
+
+### Current sensor sensitivty
+
+The schematics is built to provide the follwing current sensitivity:
+| Sensor  | Sensitivity, mV/mA | Sensitivity, mV/A | Saturation (ceiling), A |
+|--|--|--|--|
+| Valve | 0.82 | 820 | 1.4 |
+| Pump | 0.047| 47 | 24.5 |
+
+This means, having `CURRENT_CALIBRATION_MIN_BASE_LEVEL = 30` will fail the calibration of valve which consumes less than 36 mA and the pump that draws less than 640 mA.

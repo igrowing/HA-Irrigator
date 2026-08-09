@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.1.5a"
+#define APP_VERSION "1.1.6"
 #endif
 
 namespace irrigator::board {
@@ -68,7 +68,7 @@ static constexpr uint16_t CURRENT_CALIBRATION_MIN_BASE_LEVEL = 30;
 // per burst while a base is set (0 = uncalibrated = no check). Each of the four checks (valve/pump
 // x over/under) is additionally gated by its own Settings::alert* toggle (Current_sensor group in
 // settings.json) — see drainCurrentBurstResults() in main.ino.
-static constexpr float CURRENT_OVERCURRENT_MULTIPLIER = 1.3f;
+static constexpr float CURRENT_OVERCURRENT_MULTIPLIER = 2.9f;
 static constexpr float CURRENT_VALVE_UNDERCURRENT_MULTIPLIER = 0.5f;
 static constexpr float CURRENT_PUMP_UNDERCURRENT_MULTIPLIER = 0.5f;
 // 15 covers "Test all zones" queuing up to ZONE_COUNT (11) requests behind whatever's already

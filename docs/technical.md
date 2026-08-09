@@ -367,7 +367,7 @@ Per sensor, the captured average is also rejected (nothing is saved) if:
   real hardware, see `board_config.h`) — a real valve/pump under load should read well above ADC
   noise, so a near-zero average usually means the output wasn't actually drawing current (wiring
   fault, relay not energizing), not a genuinely low-draw device. Silently accepting it would mean
-  every future burst reads as "over 1.3x this near-zero base" — this is agents.md's fail-loud rule,
+  every future burst reads as "over 2.9x this near-zero base" — this is agents.md's fail-loud rule,
   not a guess dressed up as a calibration.
 
 Either rejection publishes `/alert` with the reason instead of saving:
@@ -402,7 +402,7 @@ attribution is used.
 
 Once a sensor has a calibrated base (0 = never calibrated = no check), `drainCurrentBurstResults()`
 compares *every burst* — not a windowed average — against it:
-- **Overcurrent** (valve and pump): reading > `base * CURRENT_OVERCURRENT_MULTIPLIER` (1.3).
+- **Overcurrent** (valve and pump): reading > `base * CURRENT_OVERCURRENT_MULTIPLIER` (2.9).
 - **Undercurrent** (valve and pump): reading < `base * CURRENT_VALVE_UNDERCURRENT_MULTIPLIER` /
   `CURRENT_PUMP_UNDERCURRENT_MULTIPLIER` (both 0.5).
 
