@@ -76,6 +76,12 @@ public:
     // AddScheduleRecord/DeleteScheduleRecord mutation.
     void showScheduleActionResult(bool success, uint32_t nowMs);
 
+    // Shows the outcome of adding a manual watering request to the queue while a run is already
+    // active (see UiStateMachine::showQueueAddResult's doc) and redraws immediately — called from
+    // main.ino's handleUiIntent right after it actually pushes the request onto the queue for the
+    // UiIntentType::StartWatering intent, when that push happened while watering was active.
+    void showQueueAddResult(const char* zoneLabel, uint16_t duration, bool success, uint32_t nowMs);
+
     // Polls the rotary input, advances the UI state machine, renders the current screen
     // (throttled — see kRenderIntervalMs), and returns whatever intent the state machine
     // produced this call (UiIntentType::None if nothing actionable happened).
@@ -108,6 +114,7 @@ private:
     void renderFactoryResetResult();
     void renderCalibrateConfirm();
     void renderCalibrateResult();
+    void renderQueueAddResult();
     void drawMenuList(const char* title, uint16_t itemCount, uint16_t selectedIndex,
                       const MenuLabelBuilder& labelBuilder);
 

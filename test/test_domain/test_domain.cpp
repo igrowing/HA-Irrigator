@@ -972,18 +972,70 @@ void test_ui_state_machine_long_click_cancels_duration_picker() {
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
 }
 
-void test_ui_state_machine_watering_active_ignores_ticks_but_long_click_opens_menu() {
+void test_ui_state_machine_watering_active_long_click_opens_menu() {
     irrigator::domain::UiStateMachine ui;
     irrigator::domain::UiStateMachine::Context ctx;
     ctx.wateringActive = true;
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);  // wake -> Normal
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
 
-    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 100);
-    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);  // ticks ignored
-
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 200);
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuMain);
+}
+
+// Rotation/click while watering is active queue the next watering rather than being ignored —
+// this is the UI-side half of the watering queue (see enqueueOrStart() in main.ino, which already
+// pushes every request through the queue regardless of whether it can start immediately).
+void test_ui_state_machine_watering_active_rotation_queues_next_watering() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.wateringActive = true;
+    ctx.defaultManualDuration = 5;
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);  // wake -> Normal
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 100);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ZonePicker);
+    TEST_ASSERT_EQUAL_UINT8(1, ui.pendingZone());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::DurationPicker);
+    TEST_ASSERT_EQUAL_UINT16(5, ui.pendingDuration());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300);
+    TEST_ASSERT_EQUAL_UINT16(6, ui.pendingDuration());
+
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::StartWatering);
+    TEST_ASSERT_EQUAL_UINT8(1, intent.zone);
+    TEST_ASSERT_EQUAL_UINT16(6, intent.duration);
+    TEST_ASSERT_TRUE(intent.boolValue);  // flags main.ino that this went behind the active run
+    // Unlike the not-watering flow, this does NOT jump to Normal itself — the caller (main.ino's
+    // handleUiIntent) is expected to actually push the request and then call showQueueAddResult(),
+    // which is what moves the screen on (same imperative-override pattern as CalibrateConfirm).
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::DurationPicker);
+}
+
+void test_ui_state_machine_queue_add_result_shows_outcome_and_ok_returns_to_normal() {
+    irrigator::domain::UiStateMachine ui;
+    ui.wake(0);
+
+    ui.showQueueAddResult("2.Front lawn", 6, true, 100);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::QueueAddResult);
+    TEST_ASSERT_TRUE(ui.queueAddSucceeded());
+    TEST_ASSERT_EQUAL_STRING("2.Front lawn", ui.queueAddZoneLabel());
+    TEST_ASSERT_EQUAL_UINT16(6, ui.queueAddDuration());
+
+    // Rotation is a no-op on this screen — nothing to navigate to.
+    irrigator::domain::UiStateMachine::Context ctx;
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 150);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::QueueAddResult);
+
+    // Click (the OK button) dismisses back to Normal.
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::None);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
 }
 
 void test_ui_state_machine_stop_confirm_flow() {
@@ -1867,7 +1919,9 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_zone_picker_skips_disabled_zones);
     RUN_TEST(test_ui_state_machine_zone_picker_falls_back_to_pump_when_all_zones_disabled);
     RUN_TEST(test_ui_state_machine_long_click_cancels_duration_picker);
-    RUN_TEST(test_ui_state_machine_watering_active_ignores_ticks_but_long_click_opens_menu);
+    RUN_TEST(test_ui_state_machine_watering_active_long_click_opens_menu);
+    RUN_TEST(test_ui_state_machine_watering_active_rotation_queues_next_watering);
+    RUN_TEST(test_ui_state_machine_queue_add_result_shows_outcome_and_ok_returns_to_normal);
     RUN_TEST(test_ui_state_machine_stop_confirm_flow);
     RUN_TEST(test_ui_state_machine_stop_all_requires_confirmation_then_stops_and_clears);
     RUN_TEST(test_ui_state_machine_stop_all_confirm_no_cancels_without_intent);

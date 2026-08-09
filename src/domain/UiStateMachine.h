@@ -208,6 +208,15 @@ public:
     // pattern as showCalibrateResult.
     void showScheduleActionResult(bool success, uint32_t nowMs);
 
+    // Shows the outcome of adding a manual watering request to the queue while a run is already
+    // active (rotary-picked zone/duration on the Normal screen, same as an immediate start, but
+    // the request goes to the back of the queue instead) — main.ino calls this right after
+    // actually pushing the request, same imperative-override pattern as showCalibrateResult/
+    // showScheduleActionResult. zoneLabel is pre-formatted by the caller (mirrors
+    // calibrateValveMessage/calibratePumpMessage below) since this class doesn't have access to
+    // Settings' zone names. success is false when the queue was full and the request got dropped.
+    void showQueueAddResult(const char* zoneLabel, uint16_t duration, bool success, uint32_t nowMs);
+
     UiScreen screen() const { return screen_; }
     // uint16_t: MenuSchedule's item count can exceed 255 (see scheduleItemCount() above).
     uint16_t selectedIndex() const { return selectedIndex_; }
@@ -234,6 +243,10 @@ public:
     uint16_t calibratePumpBaseLevel() const { return calibratePumpBaseLevel_; }
     const char* calibratePumpMessage() const { return calibratePumpMessage_; }
 
+    const char* queueAddZoneLabel() const { return queueAddZoneLabel_; }
+    uint16_t queueAddDuration() const { return queueAddDuration_; }
+    bool queueAddSucceeded() const { return queueAddSucceeded_; }
+
     uint8_t pendingScheduleZone() const { return pendingScheduleZone_; }
     uint8_t pendingScheduleDay() const { return pendingScheduleDay_; }
     uint8_t pendingScheduleHour() const { return pendingScheduleHour_; }
@@ -258,7 +271,7 @@ private:
 
     UiIntent handleNormal(UiInputEvent event, const Context& ctx);
     UiIntent handleZonePicker(UiInputEvent event, const Context& ctx);
-    UiIntent handleDurationPicker(UiInputEvent event);
+    UiIntent handleDurationPicker(UiInputEvent event, const Context& ctx);
     UiIntent handleStopConfirm(UiInputEvent event);
     UiIntent handleMenuMain(UiInputEvent event, const Context& ctx);
     UiIntent handleMenuScheduleRoot(UiInputEvent event);
@@ -272,10 +285,12 @@ private:
     UiIntent handleMenuSettings(UiInputEvent event, const Context& ctx);
     UiIntent handleMenuInfo(UiInputEvent event);
     UiIntent handleMenuTestAll(UiInputEvent event);
-    UiIntent handleRestartConfirm(UiInputEvent event);
-    UiIntent handleFactoryResetConfirm(UiInputEvent event);
-    UiIntent handleCalibrateConfirm(UiInputEvent event);
-    UiIntent handleCalibrateResult(UiInputEvent event);
+    // Shared by RestartConfirm/FactoryResetConfirm/CalibrateConfirm (see UiStateMachine.cpp's
+    // definition for why they can share one implementation).
+    UiIntent handleYesNoConfirm(UiInputEvent event, bool& yesSelected, UiIntentType confirmedIntentType);
+    // Shared by CalibrateResult/QueueAddResult — dead-end "OK" screens that always dismiss to
+    // Normal (see UiStateMachine.cpp's definition for why ScheduleActionResult can't join them).
+    UiIntent handleDeadEndResult(UiInputEvent event);
 
     // uint16_t (not uint8_t): shared by every menu's CW/CCW wraparound, including MenuSchedule's
     // which can exceed 255 (see scheduleItemCount() above) — small menus pass small counts and
@@ -328,6 +343,10 @@ private:
     bool calibratePumpSucceeded_ = false;
     uint16_t calibratePumpBaseLevel_ = 0;
     char calibratePumpMessage_[16] = {};
+
+    char queueAddZoneLabel_[24] = {};
+    uint16_t queueAddDuration_ = 0;
+    bool queueAddSucceeded_ = false;
 
     bool active_ = false;  // Active-interaction vs. display-off.
     uint32_t interactionDeadlineMs_ = 0;

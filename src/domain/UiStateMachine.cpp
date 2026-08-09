@@ -84,6 +84,14 @@ void UiStateMachine::showScheduleActionResult(bool success, uint32_t nowMs) {
     scheduleActionSucceeded_ = success;
 }
 
+void UiStateMachine::showQueueAddResult(const char* zoneLabel, uint16_t duration, bool success, uint32_t nowMs) {
+    armTimeout(nowMs);
+    screen_ = UiScreen::QueueAddResult;
+    snprintf(queueAddZoneLabel_, sizeof(queueAddZoneLabel_), "%s", zoneLabel == nullptr ? "" : zoneLabel);
+    queueAddDuration_ = duration;
+    queueAddSucceeded_ = success;
+}
+
 void UiStateMachine::tick(uint32_t nowMs) {
     if (active_ && screen_ != UiScreen::DisplayOff && nowMs >= interactionDeadlineMs_) {
         enterDisplayOff();
@@ -104,7 +112,7 @@ UiIntent UiStateMachine::handleInput(UiInputEvent event, const Context& ctx, uin
         case UiScreen::ZonePicker:
             return handleZonePicker(event, ctx);
         case UiScreen::DurationPicker:
-            return handleDurationPicker(event);
+            return handleDurationPicker(event, ctx);
         case UiScreen::StopConfirm:
             return handleStopConfirm(event);
         case UiScreen::MenuMain:
@@ -128,13 +136,14 @@ UiIntent UiStateMachine::handleInput(UiInputEvent event, const Context& ctx, uin
         case UiScreen::MenuTestAll:
             return handleMenuTestAll(event);
         case UiScreen::RestartConfirm:
-            return handleRestartConfirm(event);
+            return handleYesNoConfirm(event, restartConfirmYes_, UiIntentType::RestartDevice);
         case UiScreen::FactoryResetConfirm:
-            return handleFactoryResetConfirm(event);
+            return handleYesNoConfirm(event, factoryResetConfirmYes_, UiIntentType::FactoryReset);
         case UiScreen::CalibrateConfirm:
-            return handleCalibrateConfirm(event);
+            return handleYesNoConfirm(event, calibrateConfirmYes_, UiIntentType::CalibrateCurrentSensors);
         case UiScreen::CalibrateResult:
-            return handleCalibrateResult(event);
+        case UiScreen::QueueAddResult:
+            return handleDeadEndResult(event);
         case UiScreen::FactoryResetResult:
         case UiScreen::DisplayOff:
         default:
@@ -143,14 +152,12 @@ UiIntent UiStateMachine::handleInput(UiInputEvent event, const Context& ctx, uin
 }
 
 UiIntent UiStateMachine::handleNormal(UiInputEvent event, const Context& ctx) {
-    if (ctx.wateringActive) {
-        if (event == UiInputEvent::LongClick) {
-            screen_ = UiScreen::MenuMain;
-            selectedIndex_ = 0;
-        }
-        return {};  // Ticks ignored while watering, aside from the timeout re-arm above.
-    }
-
+    // Rotation/click work the same whether or not a run is already active — while watering, this
+    // is how the user picks the *next* watering to append to the queue (see UiIntentType::
+    // StartWatering below, and enqueueOrStart() in main.ino which already pushes every request
+    // through the queue regardless of whether it can start immediately). handleDurationPicker's
+    // Click is what tells the two cases apart and shows the "Added to queue" confirmation.
+    //
     // Rotate relative to whatever the Normal screen is currently showing (the next scheduled
     // zone when idle+scheduled, PUMP otherwise) rather than always starting from PUMP.
     const bool scheduled = ctx.scheduleActive && ctx.nextScheduledZone != 0;
@@ -198,7 +205,7 @@ UiIntent UiStateMachine::handleZonePicker(UiInputEvent event, const Context& ctx
     return {};
 }
 
-UiIntent UiStateMachine::handleDurationPicker(UiInputEvent event) {
+UiIntent UiStateMachine::handleDurationPicker(UiInputEvent event, const Context& ctx) {
     UiIntent intent;
     switch (event) {
         case UiInputEvent::Clockwise:
@@ -212,7 +219,17 @@ UiIntent UiStateMachine::handleDurationPicker(UiInputEvent event) {
             intent.type = UiIntentType::StartWatering;
             intent.zone = pendingZone_;
             intent.duration = pendingDuration_;
-            screen_ = UiScreen::Normal;
+            // Flags to main.ino whether this request is going behind an already-running watering
+            // (queued) rather than starting immediately — main.ino echoes it back via
+            // showQueueAddResult() after actually pushing the request, which is what advances
+            // screen_ to QueueAddResult; a queue-full drop still needs that screen (to say so), so
+            // this deliberately doesn't jump to Normal itself when queued, same reasoning as
+            // handleCalibrateConfirm leaving CalibrateConfirm on screen for showCalibrateResult to
+            // override.
+            intent.boolValue = ctx.wateringActive;
+            if (!ctx.wateringActive) {
+                screen_ = UiScreen::Normal;
+            }
             break;
         case UiInputEvent::LongClick:
             screen_ = UiScreen::Normal;  // Cancel, discard.
@@ -245,80 +262,43 @@ UiIntent UiStateMachine::handleStopConfirm(UiInputEvent event) {
     return intent;
 }
 
-UiIntent UiStateMachine::handleFactoryResetConfirm(UiInputEvent event) {
+// Shared by FactoryResetConfirm/RestartConfirm/CalibrateConfirm — all three are the same Yes/No
+// gesture (CW/CCW toggles the selection, Click on YES emits confirmedIntentType and Click on NO or
+// LongClick cancels), differing only in which flag they toggle and what they emit. Confirmed does
+// NOT transition screen_ itself (unlike cancel) — the caller (main.ino's handleUiIntent) is
+// expected to perform the action and then force the next screen (e.g. showCalibrateResult()),
+// same reasoning as handleDeadEndResult below. StopConfirm stays separate: it also branches on
+// stopAllPending_ to pick between two intent types, which doesn't fit this single-intent shape.
+UiIntent UiStateMachine::handleYesNoConfirm(UiInputEvent event, bool& yesSelected, UiIntentType confirmedIntentType) {
     UiIntent intent;
     switch (event) {
         case UiInputEvent::Clockwise:
         case UiInputEvent::CounterClockwise:
-            factoryResetConfirmYes_ = !factoryResetConfirmYes_;
+            yesSelected = !yesSelected;
             break;
         case UiInputEvent::Click:
-            if (factoryResetConfirmYes_) {
-                intent.type = UiIntentType::FactoryReset;
+            if (yesSelected) {
+                intent.type = confirmedIntentType;
             } else {
                 screen_ = UiScreen::Normal;
             }
-            factoryResetConfirmYes_ = false;
+            yesSelected = false;
             break;
         case UiInputEvent::LongClick:
-            factoryResetConfirmYes_ = false;
+            yesSelected = false;
             screen_ = UiScreen::Normal;
             break;
     }
     return intent;
 }
 
-UiIntent UiStateMachine::handleRestartConfirm(UiInputEvent event) {
-    UiIntent intent;
-    switch (event) {
-        case UiInputEvent::Clockwise:
-        case UiInputEvent::CounterClockwise:
-            restartConfirmYes_ = !restartConfirmYes_;
-            break;
-        case UiInputEvent::Click:
-            if (restartConfirmYes_) {
-                intent.type = UiIntentType::RestartDevice;
-            } else {
-                screen_ = UiScreen::Normal;
-            }
-            restartConfirmYes_ = false;
-            break;
-        case UiInputEvent::LongClick:
-            restartConfirmYes_ = false;
-            screen_ = UiScreen::Normal;
-            break;
-    }
-    return intent;
-}
-
-UiIntent UiStateMachine::handleCalibrateConfirm(UiInputEvent event) {
-    UiIntent intent;
-    switch (event) {
-        case UiInputEvent::Clockwise:
-        case UiInputEvent::CounterClockwise:
-            calibrateConfirmYes_ = !calibrateConfirmYes_;
-            break;
-        case UiInputEvent::Click:
-            if (calibrateConfirmYes_) {
-                intent.type = UiIntentType::CalibrateCurrentSensors;
-            } else {
-                screen_ = UiScreen::Normal;
-            }
-            calibrateConfirmYes_ = false;
-            break;
-        case UiInputEvent::LongClick:
-            calibrateConfirmYes_ = false;
-            screen_ = UiScreen::Normal;
-            break;
-    }
-    return intent;
-}
-
-// The result screen is a single dead-end "OK" action, not a navigable list — Clockwise/
-// CounterClockwise are no-ops (nothing to scroll to), and either Click or LongClick dismisses it
-// back to Normal. main.ino is expected to have already called showCalibrateResult() with this
-// screen's content before the UiIntentType::CalibrateCurrentSensors round-trip that got here lands.
-UiIntent UiStateMachine::handleCalibrateResult(UiInputEvent event) {
+// Shared by CalibrateResult and QueueAddResult — both are a single dead-end "OK" action, not a
+// navigable list: Clockwise/CounterClockwise are no-ops (nothing to scroll to), and either Click
+// or LongClick dismisses back to Normal. main.ino is expected to have already called
+// showCalibrateResult()/showQueueAddResult() with the screen's content before the intent
+// round-trip that got here lands. ScheduleActionResult stays separate: it restores a specific
+// (screen, index) instead of always landing on Normal, which doesn't fit this shape.
+UiIntent UiStateMachine::handleDeadEndResult(UiInputEvent event) {
     if (event == UiInputEvent::Click || event == UiInputEvent::LongClick) {
         screen_ = UiScreen::Normal;
         selectedIndex_ = 0;

@@ -70,6 +70,14 @@ for the full, non-negotiable list this project holds itself to):
   - **Reporting is uniform for free.** Every request gets both a push report and a pop report,
     even the common case of starting immediately with nothing else running — callers never need
     a separate "started immediately" vs. "queued" code path.
+  - **The rotary UI can lean on it too.** `UiStateMachine::handleNormal` no longer gates rotation/
+    click on `Context::wateringActive` — turning the knob while a run is already active picks a
+    zone/duration exactly like the idle case, and `UiIntent::boolValue` flags that the resulting
+    `UiIntentType::StartWatering` was made while watering, so `main.ino`'s `handleUiIntent` knows to
+    report the push outcome back via `IrrigatorUi::showQueueAddResult()` (`UiScreen::QueueAddResult`
+    — "Added to queue"/`QUEUE FULL`) instead of assuming an immediate start. This is only possible
+    because every request already goes through the queue regardless of whether it can start right
+    away — the UI change didn't need any new backend plumbing.
   - **Overlapping requests are just... next in line.** Because "arriving" and "starting" are
     already two separate steps, a schedule firing while an MQTT run is active, or "Test all zones"
     handing over 11 zones at once, don't need special-cased merge logic — they queue up and drain

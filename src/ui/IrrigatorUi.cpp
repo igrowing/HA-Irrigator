@@ -70,6 +70,11 @@ void IrrigatorUi::showScheduleActionResult(bool success, uint32_t nowMs) {
     render(nowMs, RenderData{});
 }
 
+void IrrigatorUi::showQueueAddResult(const char* zoneLabel, uint16_t duration, bool success, uint32_t nowMs) {
+    uiState_.showQueueAddResult(zoneLabel, duration, success, nowMs);
+    render(nowMs, RenderData{});
+}
+
 void IrrigatorUi::showCaptivePortal(const String& apSsid, const IPAddress& ip) {
     display_.clearBuffer();
     display_.setFont(u8g2_font_6x10_tr);
@@ -241,6 +246,9 @@ void IrrigatorUi::render(uint32_t nowMs, const RenderData& data) {
         case ::irrigator::domain::UiScreen::CalibrateResult:
             renderCalibrateResult();
             break;
+        case ::irrigator::domain::UiScreen::QueueAddResult:
+            renderQueueAddResult();
+            break;
         case ::irrigator::domain::UiScreen::DisplayOff:
         default:
             break;
@@ -330,12 +338,11 @@ void IrrigatorUi::renderNormal(uint32_t nowMs, const RenderData& data) {
     }
     drawCentered(display_, board::DISPLAY_3RD_LINE_OFFSET, statusText);
 
+    // Rotary behavior is the same regardless of `running` now (rotate/click queues the next
+    // watering behind whatever's active instead of starting immediately — see
+    // UiStateMachine::handleNormal), so the hint no longer needs a running-only variant.
     display_.setFont(u8g2_font_5x7_tr);
-    if (running) {
-        drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "LONG CLICK = MENU");
-    } else {
-        drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "< PREV. o SELECT NEXT >");
-    }
+    drawCentered(display_, board::DISPLAY_4TH_LINE_OFFSET, "< PREV. o SELECT NEXT >");
 
     display_.sendBuffer();
 }
@@ -472,6 +479,27 @@ void IrrigatorUi::renderCalibrateResult() {
         snprintf(line, sizeof(line), "Pump: %s", uiState_.calibratePumpMessage());
     }
     drawCentered(display_, 40, line);
+
+    display_.setFont(u8g2_font_helvB10_tr);
+    drawCentered(display_, 60, "[ OK ]");
+    display_.sendBuffer();
+}
+
+void IrrigatorUi::renderQueueAddResult() {
+    display_.clearBuffer();
+    const bool succeeded = uiState_.queueAddSucceeded();
+
+    display_.setFont(u8g2_font_helvB08_tr);
+    drawCentered(display_, 12, succeeded ? "Added to queue" : "QUEUE FULL");
+
+    if (succeeded) {
+        display_.setFont(u8g2_font_helvB14_tr);
+        drawCentered(display_, 32, uiState_.queueAddZoneLabel());
+        display_.setFont(u8g2_font_helvB10_tr);
+        char line[16];
+        snprintf(line, sizeof(line), "for %u min", static_cast<unsigned>(uiState_.queueAddDuration()));
+        drawCentered(display_, 47, line);
+    }
 
     display_.setFont(u8g2_font_helvB10_tr);
     drawCentered(display_, 60, "[ OK ]");

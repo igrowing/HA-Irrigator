@@ -926,8 +926,11 @@ void pumpQueue(uint32_t nowMs) {
 // Every watering/pumping request — manual, scheduled, or MQTT — funnels through the queue
 // first, even when it can start immediately: push, report, then (if idle) pop it straight back
 // off and start it. That guarantees a push report and a pull report for every request, not just
-// the ones that have to wait behind an active run.
-void enqueueOrStart(const WateringRequest& request, uint32_t nowMs) {
+// the ones that have to wait behind an active run. Returns whether the request was actually
+// pushed (false = dropped: disabled zone or full queue) — the UI's queue-add confirmation
+// (UiIntentType::StartWatering while watering is already active, see handleUiIntent below) uses
+// this to show success/failure instead of assuming every push lands.
+bool enqueueOrStart(const WateringRequest& request, uint32_t nowMs) {
     if (!isZoneEnabled(request.zone)) {
         char alertMsg[64];
         snprintf(alertMsg,
@@ -936,7 +939,7 @@ void enqueueOrStart(const WateringRequest& request, uint32_t nowMs) {
                 static_cast<unsigned>(request.zone),
                 zoneName(request.zone));
         mqtt.publishAlert(alertMsg);
-        return;
+        return false;
     }
     if (!wateringQueue.push(request)) {
         char alertMsg[112];
@@ -946,10 +949,11 @@ void enqueueOrStart(const WateringRequest& request, uint32_t nowMs) {
                 static_cast<unsigned>(request.zone),
                 static_cast<unsigned>(request.durationMin));
         mqtt.publishAlert(alertMsg);
-        return;
+        return false;
     }
     publishQueueState();
     pumpQueue(nowMs);
+    return true;
 }
 
 void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
@@ -959,7 +963,21 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
             request.zone = intent.zone;
             request.durationMin = intent.duration;
             request.reason = RunReason::Manual;
-            enqueueOrStart(request, nowMs);
+            // intent.boolValue: set by UiStateMachine::handleDurationPicker when the request was
+            // made while watering was already active — that's the queue-add path, so it needs the
+            // "Added to queue"/"QUEUE FULL" confirmation screen. An immediate start (not queued
+            // behind anything) skips it, same as before this existed.
+            const bool queued = intent.boolValue;
+            const bool pushed = enqueueOrStart(request, nowMs);
+            if (queued) {
+                char zoneLabel[24];
+                if (intent.zone == 0) {
+                    snprintf(zoneLabel, sizeof(zoneLabel), "PUMP");
+                } else {
+                    snprintf(zoneLabel, sizeof(zoneLabel), "%u.%s", static_cast<unsigned>(intent.zone), zoneName(intent.zone));
+                }
+                ui.showQueueAddResult(zoneLabel, intent.duration, pushed, nowMs);
+            }
             break;
         }
         case UiIntentType::AbortWatering:

@@ -135,7 +135,7 @@ IP.42    2026-07-11 14:32:07
 ----
            ZONE 3
       WATERING 4:32
-     LONG CLICK = MENU
+   < PREV. o SELECT NEXT >
 ```
 
 - **Top line**: last part of the device's IP address, plus the current date and time.
@@ -147,7 +147,10 @@ IP.42    2026-07-11 14:32:07
   - `SCHEDULED` — nothing running right now, but the middle line shows which zone will run next
   - `WATERING 4:32` / `REMAINING 11:05` — actively running; alternates between elapsed and
     remaining time every few seconds
-- **Bottom line**: a reminder that holding the button down opens the menu.
+- **Bottom line**: a reminder of what the knob does — turn to pick a zone, click to start it (or
+  queue it, if something's already running — see **Starting a zone manually**, below); hold the
+  button down to open the menu. This hint is the same whether or not something's currently
+  watering.
 
 The screen dims after 20 seconds of no activity and turns off shortly after. Turning the knob or
 pressing the button wakes it back up — the first tap or turn after it's asleep just wakes the
@@ -175,10 +178,15 @@ confusing:
   you to sit and restart it after each zone finishes.
 - Stopping the current run (below) immediately lets the next waiting item start, rather than
   leaving it stranded until you go find it.
+- You can add to the line-up from the knob at any time, even while something's already watering —
+  see **Starting a zone manually**, next. This is what sets the Irrigator apart from simpler
+  timers: you're never stuck waiting for the current run to finish before you can line up the next
+  one.
 
 ## Starting a zone manually
 
-You can only start a manual watering while the system is idle (not already running something):
+Turning the knob from the normal screen works the same way whether the system is idle or already
+watering something:
 
 1. **Turn the knob** — the screen switches into zone-picking mode, cycling through `PUMP`, then
    `Zone 1`, `Zone 2`, and so on by name. (Any zone you've disabled in settings is skipped
@@ -186,8 +194,25 @@ You can only start a manual watering while the system is idle (not already runni
 2. **Click** to pick the zone you want.
 3. **Turn the knob** to set how many minutes it should run — small adjustments move by a couple of
    minutes per click, larger durations jump by more. You can set anywhere from 1 to 120 minutes.
-4. **Click** to start watering, or **hold the button down** at any point to cancel and return to
-   the normal screen without starting anything.
+4. **Click** to confirm, or **hold the button down** at any point to cancel and return to the
+   normal screen without starting anything.
+
+What happens on that last click depends on whether anything is already running:
+
+- **Nothing running**: watering starts right away, same as always.
+- **Something already running**: your pick joins the back of the queue instead (see **How
+  watering requests queue**, above), and the screen confirms it before returning to normal:
+
+  ```
+  Added to queue
+      2.Zone2
+     for 15 min
+      [ OK ]
+  ```
+
+  It starts automatically once whatever's ahead of it finishes — click `[ OK ]` (or just wait 20
+  seconds) to return to the normal screen. If the queue happens to be full (15 requests already
+  waiting), you'll see `QUEUE FULL` here instead; wait for something to finish and try again.
 
 ## The menu
 

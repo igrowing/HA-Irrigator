@@ -27,6 +27,7 @@ enum class UiScreen : uint8_t {
     FactoryResetResult,
     CalibrateConfirm,
     CalibrateResult,
+    QueueAddResult,
 };
 
 enum class UiIntentType : uint8_t {
