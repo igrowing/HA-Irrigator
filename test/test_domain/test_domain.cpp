@@ -50,6 +50,57 @@ void test_watering_percentage_rounds_to_nearest_minute() {
     TEST_ASSERT_EQUAL_UINT16(0, irrigator::domain::applyWateringPercentage(10, 0));
 }
 
+// The generic adjuster the manual/scheduled wrappers both delegate to — its own bounds/step rules,
+// exercised directly rather than only through the two board_config-fixed ranges above.
+void test_adjust_duration_step_grows_with_magnitude() {
+    // step = current/10 + 1, so the rotary moves in coarser increments the higher the value gets —
+    // one tick near 0 is +1, near 100 it's +11.
+    TEST_ASSERT_EQUAL_UINT16(2, irrigator::domain::adjustDuration(1, RotationDirection::Clockwise, 1, 1000));
+    TEST_ASSERT_EQUAL_UINT16(111,
+                             irrigator::domain::adjustDuration(100, RotationDirection::Clockwise, 1, 1000));
+    TEST_ASSERT_EQUAL_UINT16(89,
+                             irrigator::domain::adjustDuration(100, RotationDirection::CounterClockwise, 1, 1000));
+}
+
+void test_adjust_duration_pulls_out_of_range_current_into_range_first() {
+    // A `current` outside [min,max] (e.g. a stale value from a wider range) is clamped before the
+    // step is applied, so one tick lands inside the range rather than stepping from nonsense.
+    TEST_ASSERT_EQUAL_UINT16(12,
+                             irrigator::domain::adjustDuration(3, RotationDirection::Clockwise, 10, 100));
+    TEST_ASSERT_EQUAL_UINT16(89,
+                             irrigator::domain::adjustDuration(500, RotationDirection::CounterClockwise, 10, 100));
+}
+
+void test_adjust_duration_saturates_at_both_bounds() {
+    TEST_ASSERT_EQUAL_UINT16(100,
+                             irrigator::domain::adjustDuration(95, RotationDirection::Clockwise, 10, 100));
+    // A step that would undershoot `min` lands exactly on `min` instead of wrapping/underflowing.
+    TEST_ASSERT_EQUAL_UINT16(10,
+                             irrigator::domain::adjustDuration(11, RotationDirection::CounterClockwise, 10, 100));
+    // step >= current is the uint16 underflow guard: 1 - 1 would be 0, below min.
+    TEST_ASSERT_EQUAL_UINT16(1,
+                             irrigator::domain::adjustDuration(1, RotationDirection::CounterClockwise, 1, 100));
+}
+
+// An inverted range has no valid value to move to, so `current` is returned untouched rather than
+// clamped to one of two contradictory bounds.
+void test_adjust_duration_inverted_range_is_a_no_op() {
+    TEST_ASSERT_EQUAL_UINT16(50,
+                             irrigator::domain::adjustDuration(50, RotationDirection::Clockwise, 100, 10));
+    TEST_ASSERT_EQUAL_UINT16(50,
+                             irrigator::domain::adjustDuration(50, RotationDirection::CounterClockwise, 100, 10));
+}
+
+void test_watering_percentage_edge_cases() {
+    // Zero duration and a non-positive percentage both mean "don't water", not "water a little".
+    TEST_ASSERT_EQUAL_UINT16(0, irrigator::domain::applyWateringPercentage(0, 150));
+    TEST_ASSERT_EQUAL_UINT16(0, irrigator::domain::applyWateringPercentage(10, -50));
+    // 100% is the identity case the schedule engine relies on when auto-adjustment is off.
+    TEST_ASSERT_EQUAL_UINT16(20, irrigator::domain::applyWateringPercentage(20, 100));
+    // The product is computed in uint32 and saturates instead of wrapping back around to a short run.
+    TEST_ASSERT_EQUAL_UINT16(UINT16_MAX, irrigator::domain::applyWateringPercentage(60000, 300));
+}
+
 void test_auto_adjustment_percentage_base_case_is_100() {
     TEST_ASSERT_EQUAL_INT16(
         100, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 0.0f, 20.0f, 40, 200));
@@ -90,6 +141,30 @@ void test_should_skip_for_rain_uses_configured_thresholds() {
     // Same inputs, different (lower) configured thresholds -> now triggers where it didn't above.
     TEST_ASSERT_TRUE(irrigator::domain::shouldSkipForRain(50.0f, 2.5f, 50, 2));
     TEST_ASSERT_FALSE(irrigator::domain::shouldSkipForRain(50.0f, 2.5f, 70, 4));
+}
+
+// The skip/clamp comparisons are both strict (`<` lower, `>` upper), so a percentage landing
+// exactly on a limit is a legal value, not a boundary that trips the special case. At the default
+// 10%/degree from a 20C base these land on exact float values: 14C -> 40, 30C -> 200.
+void test_auto_adjustment_percentage_exactly_on_lower_limit_is_kept_not_zeroed() {
+    TEST_ASSERT_EQUAL_INT16(
+        40, irrigator::domain::computeAutoCorrectedPercentage(14.0f, 0.0f, 20.0f, 40, 200));
+    // A hair below is the skip case, confirming 40 above really was the boundary and not a clamp.
+    TEST_ASSERT_EQUAL_INT16(
+        0, irrigator::domain::computeAutoCorrectedPercentage(13.9f, 0.0f, 20.0f, 40, 200));
+}
+
+void test_auto_adjustment_percentage_exactly_on_upper_limit_is_not_clamped_down() {
+    TEST_ASSERT_EQUAL_INT16(
+        200, irrigator::domain::computeAutoCorrectedPercentage(30.0f, 0.0f, 20.0f, 40, 200));
+}
+
+// A lower limit of 0 disables the skip branch entirely (nothing can be < 0 once the negative floor
+// applies), so extreme rain reduces the run to 0% by arithmetic rather than by the skip rule —
+// same output, but it's the path a user who sets lower_limit=0 actually takes.
+void test_auto_adjustment_percentage_zero_lower_limit_floors_at_zero() {
+    TEST_ASSERT_EQUAL_INT16(
+        0, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 1000.0f, 20.0f, 0, 200));
 }
 
 void test_open_meteo_now_index_is_days_back_times_24_plus_hour() {
@@ -212,12 +287,120 @@ void test_summarize_weather_api_forecast_rain_window_fails_when_not_enough_hours
     TEST_ASSERT_EQUAL_UINT(1, qualifyingHours);
 }
 
+void test_open_meteo_now_index_with_no_past_days_is_just_the_hour() {
+    const int64_t epoch = irrigator::domain::epochFromUtc(2026, 7, 28, 9, 30, 0);
+    TEST_ASSERT_EQUAL_UINT32(9, static_cast<uint32_t>(irrigator::domain::openMeteoNowIndex(epoch, 0)));
+}
+
+// The window is half-open [nowIndex, nowIndex+hours), so it may end exactly at the last element;
+// needing one element past the end is what fails.
+void test_summarize_forecast_rain_window_accepts_window_ending_exactly_at_array_end() {
+    JsonDocument doc;
+    JsonArray prob = doc["p"].to<JsonArray>();
+    JsonArray precip = doc["r"].to<JsonArray>();
+    for (int i = 0; i < 12; ++i) {
+        prob.add(10.0f);
+        precip.add(0.25f);
+    }
+
+    float maxProb = 0.0f, rainWindow = 0.0f;
+    TEST_ASSERT_TRUE(
+        irrigator::domain::summarizeForecastRainWindow(prob, precip, 6, 6, maxProb, rainWindow));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 10.0f, maxProb);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 1.5f, rainWindow);  // 6 hours * 0.25mm
+
+    TEST_ASSERT_FALSE(
+        irrigator::domain::summarizeForecastRainWindow(prob, precip, 7, 6, maxProb, rainWindow));
+}
+
+// The two hourly arrays come from the same response but are length-checked independently — a
+// response carrying probabilities but a truncated precipitation array must fail the whole summary
+// rather than reporting a rain total short by the missing hours.
+void test_summarize_forecast_rain_window_rejects_when_only_the_amount_array_is_short() {
+    JsonDocument doc;
+    JsonArray prob = doc["p"].to<JsonArray>();
+    for (int i = 0; i < 24; ++i) {
+        prob.add(50.0f);
+    }
+    JsonArray precip = doc["r"].to<JsonArray>();
+    for (int i = 0; i < 3; ++i) {
+        precip.add(1.0f);
+    }
+
+    float maxProb = 0.0f, rainWindow = 0.0f;
+    TEST_ASSERT_FALSE(
+        irrigator::domain::summarizeForecastRainWindow(prob, precip, 0, 12, maxProb, rainWindow));
+}
+
+// WeatherAPI splits its hours across day objects, so a 12h window routinely straddles a day
+// boundary — the flattening must continue into the next day, and must still stop dead at
+// windowHours rather than draining whatever hours remain in that day.
+void test_summarize_weather_api_forecast_rain_window_spans_day_boundary_and_stops_at_window() {
+    JsonDocument doc;
+    JsonArray days = doc.to<JsonArray>();
+    const float chances[2][3] = {{10.0f, 20.0f, 30.0f}, {90.0f, 40.0f, 99.0f}};
+    for (int d = 0; d < 2; ++d) {
+        JsonObject day = days.add<JsonObject>();
+        JsonArray hours = day["hour"].to<JsonArray>();
+        for (int i = 0; i < 3; ++i) {
+            JsonObject h = hours.add<JsonObject>();
+            h["time_epoch"] = 1000 + (d * 3 + i) * 3600;
+            h["chance_of_rain"] = chances[d][i];
+            h["precip_mm"] = 1.0f;
+        }
+    }
+
+    float maxProb = 0.0f, rain = 0.0f;
+    size_t qualifyingHours = 0;
+    TEST_ASSERT_TRUE(irrigator::domain::summarizeWeatherApiForecastRainWindow(
+        days, 1000, 5, maxProb, rain, qualifyingHours));
+    TEST_ASSERT_EQUAL_UINT(5, qualifyingHours);
+    // 90 (day 1, hour 0) is inside the window; the higher 99 sits in the 6th hour and must not count.
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 90.0f, maxProb);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 5.0f, rain);
+}
+
+// The "found 0 qualifying" case WeatherSummary.h calls out explicitly: every hour is in the past
+// (or, in the wild, missing time_epoch and defaulting to 0), which reads very differently from a
+// genuinely short response — outQualifyingHours is what lets the caller tell them apart.
+void test_summarize_weather_api_forecast_rain_window_reports_zero_qualifying_hours() {
+    JsonDocument doc;
+    JsonArray days = doc.to<JsonArray>();
+    JsonObject day0 = days.add<JsonObject>();
+    JsonArray hours0 = day0["hour"].to<JsonArray>();
+    for (int i = 0; i < 6; ++i) {
+        JsonObject h = hours0.add<JsonObject>();
+        h["time_epoch"] = 1000 + i * 3600;
+        h["chance_of_rain"] = 100;
+        h["precip_mm"] = 5.0f;
+    }
+
+    float maxProb = 0.0f, rain = 0.0f;
+    size_t qualifyingHours = 99;
+    TEST_ASSERT_FALSE(irrigator::domain::summarizeWeatherApiForecastRainWindow(
+        days, 1000 + 100 * 3600, 3, maxProb, rain, qualifyingHours));
+    TEST_ASSERT_EQUAL_UINT(0, qualifyingHours);
+}
+
 void test_start_time_validation() {
     TEST_ASSERT_TRUE(irrigator::domain::isValidStartTime("00:00"));
     TEST_ASSERT_TRUE(irrigator::domain::isValidStartTime("23:59"));
     TEST_ASSERT_FALSE(irrigator::domain::isValidStartTime("24:00"));
     TEST_ASSERT_FALSE(irrigator::domain::isValidStartTime("12:60"));
     TEST_ASSERT_FALSE(irrigator::domain::isValidStartTime("7:30"));
+}
+
+// isValidStartTime indexes value[0..5] positionally, so every malformed-length input has to bail on
+// a character check before running off the end of the string — these are the shapes that reach it
+// from an uploaded schedule.json (parseSchedule coerces a missing/mistyped start_time to "").
+void test_start_time_validation_rejects_malformed_lengths_without_overrunning() {
+    TEST_ASSERT_FALSE(irrigator::domain::isValidStartTime(nullptr));
+    TEST_ASSERT_FALSE(irrigator::domain::isValidStartTime(""));       // what a missing field becomes
+    TEST_ASSERT_FALSE(irrigator::domain::isValidStartTime("0630"));   // separator missing
+    TEST_ASSERT_FALSE(irrigator::domain::isValidStartTime("06:3"));   // one digit short
+    TEST_ASSERT_FALSE(irrigator::domain::isValidStartTime("06:300")); // one character too long
+    TEST_ASSERT_FALSE(irrigator::domain::isValidStartTime("ab:cd"));  // right shape, not digits
+    TEST_ASSERT_FALSE(irrigator::domain::isValidStartTime("06-30"));  // wrong separator
 }
 
 void test_schedule_record_validation() {
@@ -245,12 +428,116 @@ void test_watering_queue_capacity_and_fifo() {
     TEST_ASSERT_FALSE(queue.pop(request));
 }
 
+// The ring buffer's wrap-around: pushing after a pop reuses the freed slot, so a queue that has
+// cycled more times than its capacity must still hand items back in FIFO order rather than
+// reordering them by physical slot.
+void test_watering_queue_wraps_around_and_preserves_fifo_order() {
+    irrigator::domain::WateringQueue<3> queue;
+    TEST_ASSERT_TRUE(queue.push({1, 5, irrigator::domain::RunReason::Manual}));
+    TEST_ASSERT_TRUE(queue.push({2, 5, irrigator::domain::RunReason::Manual}));
+    TEST_ASSERT_TRUE(queue.push({3, 5, irrigator::domain::RunReason::Manual}));
+
+    irrigator::domain::WateringRequest request;
+    TEST_ASSERT_TRUE(queue.pop(request));
+    TEST_ASSERT_EQUAL_UINT8(1, request.zone);
+    // Slot 0 is free again; zone 4 lands there while remaining logically last.
+    TEST_ASSERT_TRUE(queue.push({4, 5, irrigator::domain::RunReason::Manual}));
+
+    for (uint8_t expected = 2; expected <= 4; ++expected) {
+        TEST_ASSERT_TRUE(queue.pop(request));
+        TEST_ASSERT_EQUAL_UINT8(expected, request.zone);
+    }
+    TEST_ASSERT_TRUE(queue.empty());
+}
+
+// at() reports FIFO position, not physical slot — cmd/queue renders the pending list straight from
+// it, so it has to stay head-relative after the buffer has wrapped.
+void test_watering_queue_peek_and_size_accessors() {
+    irrigator::domain::WateringQueue<3> queue;
+    TEST_ASSERT_EQUAL_UINT8(3, queue.capacity());
+    TEST_ASSERT_TRUE(queue.empty());
+    TEST_ASSERT_FALSE(queue.full());
+    TEST_ASSERT_EQUAL_UINT8(0, queue.size());
+
+    queue.push({1, 5, irrigator::domain::RunReason::Manual});
+    queue.push({2, 10, irrigator::domain::RunReason::Schedule});
+    queue.push({3, 15, irrigator::domain::RunReason::Mqtt});
+    TEST_ASSERT_TRUE(queue.full());
+    TEST_ASSERT_EQUAL_UINT8(3, queue.size());
+    TEST_ASSERT_EQUAL_UINT8(1, queue.at(0).zone);
+    TEST_ASSERT_EQUAL_UINT16(15, queue.at(2).durationMin);
+
+    irrigator::domain::WateringRequest request;
+    queue.pop(request);
+    queue.push({4, 20, irrigator::domain::RunReason::Manual});
+    TEST_ASSERT_EQUAL_UINT8(2, queue.at(0).zone);  // head moved; index 0 is still "next to run"
+    TEST_ASSERT_EQUAL_UINT8(4, queue.at(2).zone);
+}
+
+// Stop-all drops everything pending in one go (see UiIntentType::StopAllWatering) — clear() has to
+// reset the head too, not just the count, or the next push starts mid-buffer and at() misreports.
+void test_watering_queue_clear_empties_and_resets_head() {
+    irrigator::domain::WateringQueue<3> queue;
+    queue.push({1, 5, irrigator::domain::RunReason::Manual});
+    queue.push({2, 5, irrigator::domain::RunReason::Manual});
+    irrigator::domain::WateringRequest request;
+    queue.pop(request);  // head is now 1
+
+    queue.clear();
+    TEST_ASSERT_TRUE(queue.empty());
+    TEST_ASSERT_EQUAL_UINT8(0, queue.size());
+    TEST_ASSERT_FALSE(queue.pop(request));
+
+    TEST_ASSERT_TRUE(queue.push({7, 5, irrigator::domain::RunReason::Manual}));
+    TEST_ASSERT_EQUAL_UINT8(7, queue.at(0).zone);
+}
+
+// Zone 0 is the pump-only sentinel throughout (see WateringRequest::zone) — the whole
+// pump-only-vs-zone branch in IrrigationStateMachine keys off this one predicate.
+void test_watering_request_kind_treats_zone_zero_as_pump_only() {
+    const irrigator::domain::WateringRequest pumpOnly{0, 5, irrigator::domain::RunReason::Manual};
+    TEST_ASSERT_TRUE(pumpOnly.kind() == irrigator::domain::RunKind::PumpOnly);
+
+    const irrigator::domain::WateringRequest zoneRun{1, 5, irrigator::domain::RunReason::Manual};
+    TEST_ASSERT_TRUE(zoneRun.kind() == irrigator::domain::RunKind::ZoneWithPump);
+
+    const irrigator::domain::WateringRequest lastZone{irrigator::board::ZONE_COUNT, 5,
+                                                     irrigator::domain::RunReason::Schedule};
+    TEST_ASSERT_TRUE(lastZone.kind() == irrigator::domain::RunKind::ZoneWithPump);
+}
+
+// These strings go out over MQTT as the run's `reason` — HA templates match on them literally.
+void test_run_reason_to_string() {
+    TEST_ASSERT_EQUAL_STRING("manual", irrigator::domain::toString(irrigator::domain::RunReason::Manual));
+    TEST_ASSERT_EQUAL_STRING("schedule", irrigator::domain::toString(irrigator::domain::RunReason::Schedule));
+    TEST_ASSERT_EQUAL_STRING("mqtt", irrigator::domain::toString(irrigator::domain::RunReason::Mqtt));
+    TEST_ASSERT_EQUAL_STRING("abort", irrigator::domain::toString(irrigator::domain::RunReason::Abort));
+}
+
 void test_rain_skip_self_expires() {
     irrigator::domain::RainSkip rainSkip;
     rainSkip.setSkipUntil(2000);
     TEST_ASSERT_TRUE(rainSkip.shouldSkipScheduledRun(1999));
     TEST_ASSERT_FALSE(rainSkip.shouldSkipScheduledRun(2000));
     TEST_ASSERT_FALSE(rainSkip.shouldSkipScheduledRun(2001));
+}
+
+// A never-armed RainSkip must never skip, including at epoch 0 — the >0 guard is what stops the
+// default-constructed 0 deadline from reading as "skip everything before 1970".
+void test_rain_skip_unset_never_skips_and_clear_disarms() {
+    irrigator::domain::RainSkip rainSkip;
+    TEST_ASSERT_TRUE(rainSkip.skipUntil() == 0);
+    TEST_ASSERT_FALSE(rainSkip.shouldSkipScheduledRun(0));
+    TEST_ASSERT_FALSE(rainSkip.shouldSkipScheduledRun(-1));
+
+    rainSkip.setSkipUntil(5000);
+    TEST_ASSERT_TRUE(rainSkip.skipUntil() == 5000);
+    TEST_ASSERT_TRUE(rainSkip.shouldSkipScheduledRun(4999));
+
+    // cmd/skip_rain with a cleared deadline (or a manual override) must resume scheduling at once.
+    rainSkip.clear();
+    TEST_ASSERT_TRUE(rainSkip.skipUntil() == 0);
+    TEST_ASSERT_FALSE(rainSkip.shouldSkipScheduledRun(4999));
 }
 
 // void test_zone_run_starts_pump_before_watering_then_gracefully_stops() {
@@ -364,6 +651,92 @@ void test_abort_during_existing_grace_period_cuts_it_short() {
                             static_cast<uint8_t>(machine.state()));
 }
 
+// start()'s three rejection paths, all of which main.ino's enqueueOrStart() relies on returning
+// false rather than half-starting a run: an out-of-range zone, a zero-minute run, and a second
+// start while one is already in progress.
+void test_start_rejects_invalid_requests_and_leaves_state_untouched() {
+    irrigator::domain::IrrigationStateMachine machine;
+
+    TEST_ASSERT_FALSE(machine.start(
+        {static_cast<uint8_t>(irrigator::board::ZONE_COUNT + 1), 5, irrigator::domain::RunReason::Manual}, 0));
+    TEST_ASSERT_TRUE(machine.state() == irrigator::domain::IrrigationState::Idle);
+
+    TEST_ASSERT_FALSE(machine.start({1, 0, irrigator::domain::RunReason::Manual}, 0));
+    TEST_ASSERT_TRUE(machine.state() == irrigator::domain::IrrigationState::Idle);
+    TEST_ASSERT_FALSE(machine.isActive());
+}
+
+void test_start_is_refused_while_a_run_is_already_watering() {
+    irrigator::domain::IrrigationStateMachine machine;
+    TEST_ASSERT_TRUE(machine.start({1, 10, irrigator::domain::RunReason::Manual}, 1000));
+    TEST_ASSERT_FALSE(machine.canStartImmediately());
+
+    // The second request must be queued by the caller, not silently replace the running zone.
+    TEST_ASSERT_FALSE(machine.start({2, 10, irrigator::domain::RunReason::Mqtt}, 2000));
+    TEST_ASSERT_EQUAL_UINT8(1, machine.snapshot(2000).activeZone);
+}
+
+// canStartImmediately() is deliberately true during PumpGracePeriod so a queued run hands off to
+// the still-spinning pump instead of waiting out the full 60s tail (the case "Test all zones" hits
+// on every zone transition). The handed-off run must then be timed from its own start, not cut
+// short at the point the previous run's grace tail would have expired.
+void test_queued_run_hands_off_during_pump_grace_period_without_inheriting_its_deadline() {
+    irrigator::domain::IrrigationStateMachine machine;
+    TEST_ASSERT_TRUE(machine.start({1, 1, irrigator::domain::RunReason::Schedule}, 0));
+    machine.tick(60000UL);  // 1-minute run elapsed -> pump winding down
+    TEST_ASSERT_TRUE(machine.state() == irrigator::domain::IrrigationState::PumpGracePeriod);
+    TEST_ASSERT_TRUE(machine.canStartImmediately());
+
+    TEST_ASSERT_TRUE(machine.start({2, 5, irrigator::domain::RunReason::Schedule}, 61000UL));
+    TEST_ASSERT_TRUE(machine.state() == irrigator::domain::IrrigationState::Watering);
+    TEST_ASSERT_EQUAL_UINT8(2, machine.snapshot(61000UL).activeZone);
+
+    // The old tail would have ended at 60000 + PUMP_GRACEFUL_SHUTDOWN_MS; the new 5-minute run
+    // must still be watering well past that point.
+    machine.tick(60000UL + irrigator::board::PUMP_GRACEFUL_SHUTDOWN_MS);
+    TEST_ASSERT_TRUE(machine.state() == irrigator::domain::IrrigationState::Watering);
+    machine.tick(61000UL + 5UL * 60000UL);
+    TEST_ASSERT_TRUE(machine.state() == irrigator::domain::IrrigationState::PumpGracePeriod);
+}
+
+// snapshot() is what feeds the display countdown and the MQTT state payload, so each state's
+// pumpOn/elapsed/remaining combination matters on its own.
+void test_snapshot_reports_pump_and_countdown_per_state() {
+    irrigator::domain::IrrigationStateMachine machine;
+
+    const auto idle = machine.snapshot(1234);
+    TEST_ASSERT_TRUE(idle.state == irrigator::domain::IrrigationState::Idle);
+    TEST_ASSERT_FALSE(idle.pumpOn);
+    TEST_ASSERT_EQUAL_UINT32(0, idle.elapsedMs);
+    TEST_ASSERT_EQUAL_UINT32(0, idle.remainingMs);
+
+    TEST_ASSERT_TRUE(machine.start({3, 2, irrigator::domain::RunReason::Manual}, 10000UL));
+    const auto watering = machine.snapshot(10000UL + 30000UL);
+    TEST_ASSERT_TRUE(watering.pumpOn);
+    TEST_ASSERT_EQUAL_UINT8(3, watering.activeZone);
+    TEST_ASSERT_EQUAL_UINT32(30000UL, watering.elapsedMs);
+    TEST_ASSERT_EQUAL_UINT32(90000UL, watering.remainingMs);  // 2min run, 30s in
+
+    // Past the nominal end but before tick() has run: remaining floors at 0 rather than underflowing.
+    TEST_ASSERT_EQUAL_UINT32(0, machine.snapshot(10000UL + 200000UL).remainingMs);
+
+    machine.tick(10000UL + 2UL * 60000UL);
+    const auto grace = machine.snapshot(10000UL + 2UL * 60000UL);
+    TEST_ASSERT_TRUE(grace.state == irrigator::domain::IrrigationState::PumpGracePeriod);
+    TEST_ASSERT_TRUE(grace.pumpOn);  // valve shut, pump still spinning down
+    TEST_ASSERT_EQUAL_UINT32(0, grace.remainingMs);
+}
+
+void test_pump_only_snapshot_counts_down_against_zone_zero() {
+    irrigator::domain::IrrigationStateMachine machine;
+    TEST_ASSERT_TRUE(machine.start({0, 3, irrigator::domain::RunReason::Mqtt}, 0));
+    const auto shot = machine.snapshot(60000UL);
+    TEST_ASSERT_TRUE(shot.state == irrigator::domain::IrrigationState::PumpOnly);
+    TEST_ASSERT_EQUAL_UINT8(0, shot.activeZone);
+    TEST_ASSERT_TRUE(shot.pumpOn);
+    TEST_ASSERT_EQUAL_UINT32(120000UL, shot.remainingMs);
+}
+
 void test_config_store_round_trips_valid_json() {
     const char* json =
         R"({"ssid":"home","password":"secret","mqtt_broker":"192.168.1.10","mqtt_port":1884,)"
@@ -412,6 +785,103 @@ void test_config_store_allows_mqtt_fields_blank() {
         irrigator::domain::parseConfig(brokerWithoutPort, strlen(brokerWithoutPort), config));
 }
 
+// validateConfig is the gate parseConfig and the captive portal both run a candidate through; each
+// of its three rules exercised directly, at the boundary, rather than only via a JSON payload.
+void test_validate_config_rules_at_their_boundaries() {
+    irrigator::domain::DeviceConfig config;
+    TEST_ASSERT_FALSE(irrigator::domain::validateConfig(config));  // default: no SSID yet
+
+    snprintf(config.ssid, sizeof(config.ssid), "%s", "home");
+    TEST_ASSERT_TRUE(irrigator::domain::validateConfig(config));  // MQTT is optional
+
+    // A broker without a usable port is the one MQTT combination that's rejected.
+    snprintf(config.mqttBroker, sizeof(config.mqttBroker), "%s", "192.168.1.10");
+    config.mqttPort = 0;
+    TEST_ASSERT_FALSE(irrigator::domain::validateConfig(config));
+    config.mqttPort = 1;
+    TEST_ASSERT_TRUE(irrigator::domain::validateConfig(config));
+
+    config.timezoneOffsetHours = irrigator::board::TIMEZONE_OFFSET_MAX_HOURS;
+    TEST_ASSERT_TRUE(irrigator::domain::validateConfig(config));
+    config.timezoneOffsetHours = irrigator::board::TIMEZONE_OFFSET_MIN_HOURS;
+    TEST_ASSERT_TRUE(irrigator::domain::validateConfig(config));
+    config.timezoneOffsetHours = static_cast<int8_t>(irrigator::board::TIMEZONE_OFFSET_MAX_HOURS + 1);
+    TEST_ASSERT_FALSE(irrigator::domain::validateConfig(config));
+    config.timezoneOffsetHours = static_cast<int8_t>(irrigator::board::TIMEZONE_OFFSET_MIN_HOURS - 1);
+    TEST_ASSERT_FALSE(irrigator::domain::validateConfig(config));
+}
+
+// A default-constructed Settings has empty zone names, which validateSettings rejects — so
+// makeDefaultZones() isn't a convenience, it's the only way to build a valid baseline.
+void test_make_default_zones_is_the_valid_baseline_settings() {
+    irrigator::domain::Settings bare;
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(bare));
+
+    const irrigator::domain::Settings defaults = irrigator::domain::makeDefaultZones();
+    TEST_ASSERT_TRUE(irrigator::domain::validateSettings(defaults));
+    TEST_ASSERT_EQUAL_STRING("Zone 1", defaults.zoneNames[0]);
+    TEST_ASSERT_EQUAL_STRING("Zone 11", defaults.zoneNames[irrigator::board::ZONE_COUNT - 1]);
+    for (uint8_t i = 0; i < irrigator::board::ZONE_COUNT; ++i) {
+        TEST_ASSERT_TRUE(defaults.zoneEnabled[i]);
+    }
+}
+
+// Every validateSettings rule, one field at a time off an otherwise-valid baseline — parseSettings
+// rejects the whole file on any of these, so a rule silently going missing would let a bad
+// settings.json through instead of falling back to defaults.
+void test_validate_settings_rejects_each_out_of_range_field() {
+    const irrigator::domain::Settings baseline = irrigator::domain::makeDefaultZones();
+
+    irrigator::domain::Settings settings = baseline;
+    settings.wateringPercentage = 300;
+    TEST_ASSERT_TRUE(irrigator::domain::validateSettings(settings));  // 300 is the inclusive ceiling
+    settings.wateringPercentage = 301;
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+    settings.wateringPercentage = -1;
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+
+    settings = baseline;
+    settings.defaultManualDuration = 0;
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+    settings.defaultManualDuration = static_cast<uint8_t>(irrigator::board::MANUAL_DURATION_MAX_MINUTES + 1);
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+
+    settings = baseline;
+    settings.zoneNames[4][0] = '\0';  // a blank name would render as an empty menu row
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+
+    settings = baseline;
+    settings.valveCurrentBaseLevel = 3301;  // above the ADC's full-scale mV range
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+    settings = baseline;
+    settings.pumpCurrentBaseLevel = 3301;
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+
+    settings = baseline;
+    settings.latitude = 90.1f;
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+    settings = baseline;
+    settings.longitude = -180.1f;
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+
+    settings = baseline;
+    settings.upperLimitPercent = 39;  // below lowerLimitPercent's default 40
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+    settings = baseline;
+    settings.lowerLimitPercent = -1;
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+    settings = baseline;
+    settings.upperLimitPercent = 501;
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+
+    settings = baseline;
+    settings.rainSkipProbabilityPercent = 101;
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+    settings = baseline;
+    settings.rainSkipAmountMm = -1;
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+}
+
 // Pre-restructuring flat settings.json (no Zones/Location/Current_sensor/Watering groups) — the
 // per-field fallback (see Settings.h's parseSettings doc) must still recover its real values.
 void test_settings_store_defaults_missing_zone_names() {
@@ -450,6 +920,68 @@ void test_settings_store_round_trips() {
     TEST_ASSERT_TRUE(roundTripped.alertPumpOc);
     TEST_ASSERT_TRUE(roundTripped.alertValveUc);
     TEST_ASSERT_FALSE(roundTripped.alertValveOc);
+}
+
+// The round-trip above pins the Watering group's scalars; this covers the three groups it doesn't
+// (Zones names + enabled, Location, and the Watering group's string field), which is what boot-time
+// persist-after-parse actually has to preserve when it rewrites settings.json in the nested shape.
+void test_settings_store_round_trips_zones_location_and_api_key() {
+    irrigator::domain::Settings settings = irrigator::domain::makeDefaultZones();
+    snprintf(settings.zoneNames[0], sizeof(settings.zoneNames[0]), "%s", "Front lawn");
+    snprintf(settings.zoneNames[10], sizeof(settings.zoneNames[10]), "%s", "Trees right");
+    settings.zoneEnabled[3] = false;
+    settings.locationKnown = true;
+    settings.latitude = 32.25f;    // exactly representable, so no serializer rounding to reason about
+    settings.longitude = -117.5f;
+    snprintf(settings.city, sizeof(settings.city), "%s", "Testville");
+    snprintf(settings.weatherApiKey, sizeof(settings.weatherApiKey), "%s", "abc123deadbeef");
+    settings.defaultManualDuration = 9;
+    settings.rainSkipProbabilityPercent = 55;
+    settings.rainSkipAmountMm = 7;
+
+    char buffer[irrigator::board::SETTINGS_JSON_MAX_BYTES];
+    const size_t written = irrigator::domain::serializeSettings(settings, buffer, sizeof(buffer));
+    TEST_ASSERT_TRUE(written > 0);
+    TEST_ASSERT_TRUE(written < sizeof(buffer));  // not truncated against SETTINGS_JSON_MAX_BYTES
+
+    irrigator::domain::Settings roundTripped;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(buffer, written, roundTripped));
+    TEST_ASSERT_EQUAL_STRING("Front lawn", roundTripped.zoneNames[0]);
+    TEST_ASSERT_EQUAL_STRING("Trees right", roundTripped.zoneNames[10]);
+    TEST_ASSERT_FALSE(roundTripped.zoneEnabled[3]);
+    TEST_ASSERT_TRUE(roundTripped.zoneEnabled[4]);
+    TEST_ASSERT_TRUE(roundTripped.locationKnown);
+    TEST_ASSERT_EQUAL_FLOAT(32.25f, roundTripped.latitude);
+    TEST_ASSERT_EQUAL_FLOAT(-117.5f, roundTripped.longitude);
+    TEST_ASSERT_EQUAL_STRING("Testville", roundTripped.city);
+    TEST_ASSERT_EQUAL_STRING("abc123deadbeef", roundTripped.weatherApiKey);
+    TEST_ASSERT_EQUAL_UINT8(9, roundTripped.defaultManualDuration);
+    TEST_ASSERT_EQUAL_INT16(55, roundTripped.rainSkipProbabilityPercent);
+    TEST_ASSERT_EQUAL_INT16(7, roundTripped.rainSkipAmountMm);
+}
+
+// serializeJson() truncates against an undersized buffer and still reports a nonzero byte count
+// (see the 255-record test's note), so a nonzero return is NOT proof of success. Pinning the
+// consequence: the truncated output does not parse back, which is what a caller has to rely on.
+void test_serialize_into_undersized_buffer_produces_output_that_does_not_parse_back() {
+    irrigator::domain::DeviceConfig config;
+    snprintf(config.ssid, sizeof(config.ssid), "%s", "a-fairly-long-network-name");
+    snprintf(config.mqttBroker, sizeof(config.mqttBroker), "%s", "192.168.1.10");
+
+    char tiny[24];
+    const size_t written = irrigator::domain::serializeConfig(config, tiny, sizeof(tiny));
+    irrigator::domain::DeviceConfig parsed;
+    TEST_ASSERT_FALSE(irrigator::domain::parseConfig(tiny, written, parsed));
+
+    irrigator::domain::ScheduleList list;
+    list.records[0] = {1, 1, "06:30", 20, true};
+    list.count = 1;
+    char tinySchedule[16];
+    const size_t scheduleWritten =
+        irrigator::domain::serializeSchedule(list, tinySchedule, sizeof(tinySchedule));
+    irrigator::domain::ScheduleList parsedList;
+    TEST_ASSERT_FALSE(
+        irrigator::domain::parseSchedule(tinySchedule, scheduleWritten, parsedList));
 }
 
 // A settings.json written before auto_adjustment_enabled existed (or any upload that omits it)
@@ -679,6 +1211,119 @@ void test_merge_settings_updates_current_sensor_alert_toggles() {
     TEST_ASSERT_FALSE(merged.alertValveOc);
 }
 
+// The Zones merge accepts the current {"name":..,"enabled":..} object form and the legacy
+// plain-string form ("3": "Trees") that predates `enabled` — both still arrive from older HA
+// packages, and the string form must leave `enabled` alone rather than resetting it.
+void test_merge_settings_accepts_both_zone_shapes() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    existing.zoneEnabled[2] = false;
+
+    const char* json = R"({"Zones":{"1":{"name":"Front"},"3":"Trees"}})";
+    irrigator::domain::Settings merged;
+    char rejected[256];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("", rejected);
+    TEST_ASSERT_EQUAL_STRING("Front", merged.zoneNames[0]);
+    TEST_ASSERT_TRUE(merged.zoneEnabled[0]);  // object form omitted `enabled` -> untouched
+    TEST_ASSERT_EQUAL_STRING("Trees", merged.zoneNames[2]);
+    TEST_ASSERT_FALSE(merged.zoneEnabled[2]);  // string form can't carry `enabled` -> untouched
+}
+
+// zoneNames is char[16], so a longer name would silently truncate into something the user didn't
+// choose. It's rejected (and reported per-zone) instead, keeping the existing name.
+void test_merge_settings_rejects_oversized_zone_name_per_zone() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    snprintf(existing.zoneNames[2], sizeof(existing.zoneNames[2]), "%s", "Back");
+
+    const char* json = R"({"Zones":{"3":{"name":"a name well past sixteen characters"}}})";
+    irrigator::domain::Settings merged;
+    char rejected[256];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("Zones.3.name", rejected);
+    TEST_ASSERT_EQUAL_STRING("Back", merged.zoneNames[2]);
+}
+
+// A zone entry that's neither an object nor a string has nothing usable in it at all — rejected as
+// a whole rather than partially interpreted.
+void test_merge_settings_rejects_wrongly_typed_zone_entry() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+
+    const char* json = R"({"Zones":{"2":42}})";
+    irrigator::domain::Settings merged;
+    char rejected[256];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("Zones.2", rejected);
+    TEST_ASSERT_EQUAL_STRING("Zone 2", merged.zoneNames[1]);
+}
+
+void test_merge_settings_updates_weatherapi_key_and_rejects_oversized_one() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+
+    const char* json = R"({"Watering":{"weatherapi_key":"0123456789abcdef"}})";
+    irrigator::domain::Settings merged;
+    char rejected[256];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("", rejected);
+    TEST_ASSERT_EQUAL_STRING("0123456789abcdef", merged.weatherApiKey);
+
+    // The field is char[48]; a key that wouldn't fit is rejected rather than stored half-truncated
+    // (a truncated key fails every WeatherAPI call with no obvious cause).
+    const char* oversized =
+        R"({"Watering":{"weatherapi_key":"0123456789012345678901234567890123456789012345678"}})";
+    irrigator::domain::Settings mergedOversized;
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(merged, oversized, strlen(oversized),
+                                                      mergedOversized, rejected, sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("Watering.weatherapi_key", rejected);
+    TEST_ASSERT_EQUAL_STRING("0123456789abcdef", mergedOversized.weatherApiKey);
+}
+
+// The rejected-fields buffer is a best-effort alert payload: a null pointer, a zero size, or a
+// buffer too small for the field names must all truncate quietly rather than fail the merge (or
+// write past the end of the caller's array).
+void test_merge_tolerates_absent_or_undersized_rejected_fields_buffer() {
+    irrigator::domain::DeviceConfig existingConfig;
+    snprintf(existingConfig.ssid, sizeof(existingConfig.ssid), "%s", "home");
+    const char* badTimezone = R"({"ssid":"newhome","timezone":99})";
+    irrigator::domain::DeviceConfig mergedConfig;
+
+    TEST_ASSERT_TRUE(irrigator::domain::mergeConfig(existingConfig, badTimezone, strlen(badTimezone),
+                                                    mergedConfig, nullptr, 0));
+    TEST_ASSERT_EQUAL_STRING("newhome", mergedConfig.ssid);
+
+    // Undersized: "timezone" needs 9 bytes with its terminator, so it lands truncated but
+    // terminated, and the merge still applies everything that passed.
+    char cramped[5] = {'x', 'x', 'x', 'x', 'x'};
+    TEST_ASSERT_TRUE(irrigator::domain::mergeConfig(existingConfig, badTimezone, strlen(badTimezone),
+                                                    mergedConfig, cramped, sizeof(cramped)));
+    TEST_ASSERT_TRUE(strlen(cramped) < sizeof(cramped));
+    TEST_ASSERT_EQUAL_STRING("newhome", mergedConfig.ssid);
+
+    irrigator::domain::Settings existingSettings = irrigator::domain::makeDefaultZones();
+    const char* badPercentage = R"({"Watering":{"watering_percentage":500}})";
+    irrigator::domain::Settings mergedSettings;
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existingSettings, badPercentage,
+                                                      strlen(badPercentage), mergedSettings, nullptr,
+                                                      0));
+    TEST_ASSERT_EQUAL_INT16(existingSettings.wateringPercentage, mergedSettings.wateringPercentage);
+}
+
+void test_merge_settings_rejects_malformed_json_outright() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    irrigator::domain::Settings merged;
+    char rejected[64];
+    const char* malformed = "{not json";
+    TEST_ASSERT_FALSE(irrigator::domain::mergeSettings(existing, malformed, strlen(malformed), merged,
+                                                       rejected, sizeof(rejected)));
+    // A JSON array parses fine but isn't an object to merge from either.
+    const char* notAnObject = "[1,2,3]";
+    TEST_ASSERT_FALSE(irrigator::domain::mergeSettings(existing, notAnObject, strlen(notAnObject),
+                                                       merged, rejected, sizeof(rejected)));
+}
+
 void test_schedule_store_round_trips_valid_list() {
     const char* json =
         R"([{"zone":1,"day_of_week":1,"start_time":"06:30","duration_min":20,"active":true}])";
@@ -864,6 +1509,113 @@ void test_schedule_engine_skips_zero_duration_after_percentage() {
     const uint8_t count =
         engine.tick(now, 500000, schedule, true, noSkip, 0, due, irrigator::board::SCHEDULE_MAX_RECORDS);
     TEST_ASSERT_EQUAL_UINT8(0, count);
+}
+
+// Every reason a record is passed over, in one schedule: inactive, wrong day, wrong hour, wrong
+// minute. Only the last record matches, which also proves matching doesn't stop at the first miss.
+void test_schedule_engine_skips_inactive_and_non_matching_records() {
+    irrigator::domain::ScheduleEngine engine;
+    irrigator::domain::ScheduleList schedule;
+    schedule.records[0] = {1, 3, "06:30", 20, false};  // inactive
+    schedule.records[1] = {2, 4, "06:30", 20, true};   // wrong day
+    schedule.records[2] = {3, 3, "07:30", 20, true};   // wrong hour
+    schedule.records[3] = {4, 3, "06:31", 20, true};   // wrong minute
+    schedule.records[4] = {5, 3, "06:30", 20, true};   // the only match
+    schedule.count = 5;
+
+    const irrigator::domain::WallClock now{3, 6, 30};
+    irrigator::domain::RainSkip noSkip;
+    irrigator::domain::WateringRequest due[irrigator::board::SCHEDULE_MAX_RECORDS];
+
+    const uint8_t count =
+        engine.tick(now, 600000, schedule, true, noSkip, 100, due, irrigator::board::SCHEDULE_MAX_RECORDS);
+    TEST_ASSERT_EQUAL_UINT8(1, count);
+    TEST_ASSERT_EQUAL_UINT8(5, due[0].zone);
+    TEST_ASSERT_TRUE(due[0].reason == irrigator::domain::RunReason::Schedule);
+}
+
+// Several zones legitimately share one start time (staggered by the queue downstream), so a single
+// minute can produce more than one due request.
+void test_schedule_engine_returns_every_record_matching_the_same_minute() {
+    irrigator::domain::ScheduleEngine engine;
+    irrigator::domain::ScheduleList schedule;
+    schedule.records[0] = {1, 3, "06:30", 20, true};
+    schedule.records[1] = {2, 3, "06:30", 30, true};
+    schedule.records[2] = {3, 3, "06:30", 40, true};
+    schedule.count = 3;
+
+    const irrigator::domain::WallClock now{3, 6, 30};
+    irrigator::domain::RainSkip noSkip;
+    irrigator::domain::WateringRequest due[irrigator::board::SCHEDULE_MAX_RECORDS];
+
+    const uint8_t count =
+        engine.tick(now, 700000, schedule, true, noSkip, 100, due, irrigator::board::SCHEDULE_MAX_RECORDS);
+    TEST_ASSERT_EQUAL_UINT8(3, count);
+    TEST_ASSERT_EQUAL_UINT8(1, due[0].zone);
+    TEST_ASSERT_EQUAL_UINT8(3, due[2].zone);
+    TEST_ASSERT_EQUAL_UINT16(40, due[2].durationMin);
+}
+
+// dueCapacity is the caller's array bound (main.ino's runScheduleEngine sizes it deliberately) —
+// more matches than that must stop at the bound rather than writing past the end of it.
+void test_schedule_engine_never_writes_past_due_capacity() {
+    irrigator::domain::ScheduleEngine engine;
+    irrigator::domain::ScheduleList schedule;
+    schedule.records[0] = {1, 3, "06:30", 20, true};
+    schedule.records[1] = {2, 3, "06:30", 20, true};
+    schedule.records[2] = {3, 3, "06:30", 20, true};
+    schedule.count = 3;
+
+    const irrigator::domain::WallClock now{3, 6, 30};
+    irrigator::domain::RainSkip noSkip;
+    irrigator::domain::WateringRequest due[3] = {};
+
+    const uint8_t count = engine.tick(now, 800000, schedule, true, noSkip, 100, due, 2);
+    TEST_ASSERT_EQUAL_UINT8(2, count);
+    TEST_ASSERT_EQUAL_UINT8(1, due[0].zone);
+    TEST_ASSERT_EQUAL_UINT8(2, due[1].zone);
+    TEST_ASSERT_EQUAL_UINT8(0, due[2].zone);  // untouched
+}
+
+// The once-per-minute edge trigger must re-arm as the clock advances — the existing "fires once"
+// test only shows a later minute *not* firing (because nothing matched it); this shows a later
+// minute firing again for a record that does match it.
+void test_schedule_engine_fires_again_in_the_next_matching_minute() {
+    irrigator::domain::ScheduleEngine engine;
+    irrigator::domain::ScheduleList schedule;
+    schedule.records[0] = {1, 3, "06:30", 20, true};
+    schedule.records[1] = {2, 3, "06:31", 25, true};
+    schedule.count = 2;
+
+    irrigator::domain::RainSkip noSkip;
+    irrigator::domain::WateringRequest due[irrigator::board::SCHEDULE_MAX_RECORDS];
+
+    const uint8_t first = engine.tick({3, 6, 30}, 900000, schedule, true, noSkip, 100, due,
+                                      irrigator::board::SCHEDULE_MAX_RECORDS);
+    TEST_ASSERT_EQUAL_UINT8(1, first);
+    TEST_ASSERT_EQUAL_UINT8(1, due[0].zone);
+
+    const uint8_t second = engine.tick({3, 6, 31}, 900060, schedule, true, noSkip, 100, due,
+                                       irrigator::board::SCHEDULE_MAX_RECORDS);
+    TEST_ASSERT_EQUAL_UINT8(1, second);
+    TEST_ASSERT_EQUAL_UINT8(2, due[0].zone);
+    TEST_ASSERT_EQUAL_UINT16(25, due[0].durationMin);
+}
+
+// A rain skip that expires mid-window must not swallow later runs: the check is re-evaluated
+// against nowEpochSeconds every minute, not latched when the skip was armed.
+void test_schedule_engine_resumes_once_the_rain_skip_deadline_passes() {
+    irrigator::domain::ScheduleEngine engine;
+    const irrigator::domain::ScheduleList schedule = makeOneRecordSchedule();
+    const irrigator::domain::WallClock now{3, 6, 30};
+    irrigator::domain::RainSkip skip;
+    skip.setSkipUntil(1000000);
+    irrigator::domain::WateringRequest due[irrigator::board::SCHEDULE_MAX_RECORDS];
+
+    TEST_ASSERT_EQUAL_UINT8(0, engine.tick(now, 999960, schedule, true, skip, 100, due,
+                                           irrigator::board::SCHEDULE_MAX_RECORDS));
+    TEST_ASSERT_EQUAL_UINT8(1, engine.tick(now, 1000020, schedule, true, skip, 100, due,
+                                           irrigator::board::SCHEDULE_MAX_RECORDS));
 }
 
 void test_ui_state_machine_wakes_on_input_and_shows_normal() {
@@ -1798,6 +2550,273 @@ void test_ui_state_machine_schedule_delete_navigates_full_255_record_list() {
     TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());
 }
 
+// menuMainLayout is the single definition both the renderer and handleMenuMain read; pinning both
+// shapes directly means a row insertion can't quietly shift one consumer and not the other (which
+// is exactly how BACK broke once before — see kSettingsItemCount's comment).
+void test_ui_state_machine_menu_main_layout_shifts_by_two_while_watering() {
+    const auto idle = irrigator::domain::UiStateMachine::menuMainLayout(false);
+    TEST_ASSERT_EQUAL_UINT8(5, idle.itemCount);
+    TEST_ASSERT_EQUAL_UINT8(0, idle.scheduleIndex);
+    TEST_ASSERT_EQUAL_UINT8(1, idle.testAllIndex);
+    TEST_ASSERT_EQUAL_UINT8(2, idle.settingsIndex);
+    TEST_ASSERT_EQUAL_UINT8(3, idle.infoIndex);
+    TEST_ASSERT_EQUAL_UINT8(4, idle.backIndex);
+
+    // [Stop, Stop all] take indices 0 and 1, pushing everything else down by exactly 2.
+    const auto watering = irrigator::domain::UiStateMachine::menuMainLayout(true);
+    TEST_ASSERT_EQUAL_UINT8(7, watering.itemCount);
+    TEST_ASSERT_EQUAL_UINT8(2, watering.scheduleIndex);
+    TEST_ASSERT_EQUAL_UINT8(3, watering.testAllIndex);
+    TEST_ASSERT_EQUAL_UINT8(4, watering.settingsIndex);
+    TEST_ASSERT_EQUAL_UINT8(5, watering.infoIndex);
+    TEST_ASSERT_EQUAL_UINT8(6, watering.backIndex);
+}
+
+// The first event off a blank display only wakes it — a rotation must not also land the user in
+// the zone picker they never meant to open.
+void test_ui_state_machine_first_input_from_display_off_only_wakes() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::DisplayOff);
+
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 1000);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::None);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
+}
+
+// The 20s timeout is measured from the last input, not from when the screen was first shown, so
+// continued interaction keeps the display alive indefinitely.
+void test_ui_state_machine_every_input_rearms_the_interaction_timeout() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 1000);  // wake -> Normal
+
+    ui.tick(15000);
+    TEST_ASSERT_TRUE(ui.screen() != irrigator::domain::UiScreen::DisplayOff);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 15000);  // -> MenuMain, re-armed
+
+    ui.tick(1000 + irrigator::board::ACTIVE_INTERACTION_TIMEOUT_MS);  // the original deadline
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuMain);
+
+    ui.tick(15000 + irrigator::board::ACTIVE_INTERACTION_TIMEOUT_MS);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::DisplayOff);
+}
+
+// Blanking abandons an unsaved edit rather than resuming it on the next wake — otherwise the user
+// comes back to a half-adjusted value with no memory of having started it.
+void test_ui_state_machine_timeout_abandons_an_in_progress_edit() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.wateringPercentage = 100;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Schedule -> Test all zones
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Test all zones -> Settings
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
+    for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexPercentage; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 350 + i);
+    }
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);  // enter percentage edit
+    TEST_ASSERT_TRUE(ui.editing());
+
+    ui.tick(400 + irrigator::board::ACTIVE_INTERACTION_TIMEOUT_MS);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::DisplayOff);
+    TEST_ASSERT_FALSE(ui.editing());
+    TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());
+
+    // Waking lands back on Normal, not on the abandoned edit.
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 100000);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
+}
+
+// The Normal screen shows the next scheduled zone when idle+scheduled, so rotation must move
+// relative to that rather than jumping back to PUMP first (see handleNormal's `displayedZone`).
+void test_ui_state_machine_normal_rotation_starts_from_the_displayed_scheduled_zone() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.scheduleActive = true;
+    ctx.nextScheduledZone = 5;
+
+    ui.wake(0);
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 100);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ZonePicker);
+    TEST_ASSERT_EQUAL_UINT8(6, ui.pendingZone());
+
+    irrigator::domain::UiStateMachine back;
+    back.wake(0);
+    back.handleInput(irrigator::domain::UiInputEvent::CounterClockwise, ctx, 100);
+    TEST_ASSERT_EQUAL_UINT8(4, back.pendingZone());
+
+    // With scheduling off there's nothing displayed to move relative to, so it falls back to PUMP.
+    ctx.scheduleActive = false;
+    irrigator::domain::UiStateMachine unscheduled;
+    unscheduled.wake(0);
+    unscheduled.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 100);
+    TEST_ASSERT_EQUAL_UINT8(1, unscheduled.pendingZone());
+}
+
+// The per-record Active row is a direct toggle (no edit step), same shape as the Settings menu's
+// boolean rows — it emits the inverted value and leaves the cursor where it was.
+void test_ui_state_machine_schedule_active_field_is_a_direct_toggle() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.scheduleRecordCount = 1;
+    ctx.selectedScheduleActive = true;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuScheduleRoot
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 250);      // View/Edit -> MenuSchedule
+    for (int i = 0; i < irrigator::domain::UiStateMachine::kScheduleFieldActive; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300 + i);
+    }
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kScheduleFieldActive, ui.selectedIndex());
+
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::SetScheduleActive);
+    TEST_ASSERT_EQUAL_UINT8(0, intent.scheduleRecordIndex);
+    TEST_ASSERT_FALSE(intent.boolValue);  // inverted from ctx.selectedScheduleActive
+    TEST_ASSERT_FALSE(ui.editing());
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuSchedule);
+}
+
+// With no records, MenuSchedule is a one-row list (just BACK) — any click has to leave rather than
+// trying to edit a field of a record that doesn't exist.
+void test_ui_state_machine_menu_schedule_with_no_records_only_navigates_back() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.scheduleRecordCount = 0;
+    TEST_ASSERT_EQUAL_UINT16(1, irrigator::domain::UiStateMachine::scheduleItemCount(0));
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Schedule -> MenuScheduleRoot
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 250);      // View/Edit -> MenuSchedule
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuSchedule);
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300);  // single item: no movement
+    TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());
+
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::None);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuScheduleRoot);
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kMenuScheduleRootIndexViewEdit,
+                            ui.selectedIndex());
+}
+
+// One counter-clockwise tick off the first row is the fastest way to BACK, and clicking it must
+// actually leave — the failure mode kSettingsItemCount's comment describes (a row added to the
+// renderer but not here) shows up exactly as this click doing nothing.
+void test_ui_state_machine_settings_back_row_is_one_tick_backwards_and_exits() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Schedule -> Test all zones
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Test all zones -> Settings
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
+    TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::CounterClockwise, ctx, 350);
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexBack, ui.selectedIndex());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuMain);
+    TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());
+}
+
+// The factory-reset confirm is forced in from a hardware BOOT-button hold, not reached by rotary
+// navigation — it must override whatever screen (and unsaved edit) was showing.
+void test_ui_state_machine_factory_reset_confirm_overrides_any_screen_and_edit() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.wateringPercentage = 100;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);  // -> MenuSettings
+    for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexPercentage; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 350 + i);
+    }
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);  // enter percentage edit
+    TEST_ASSERT_TRUE(ui.editing());
+
+    ui.enterFactoryResetConfirm(500);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::FactoryResetConfirm);
+    TEST_ASSERT_FALSE(ui.editing());
+    TEST_ASSERT_FALSE(ui.factoryResetConfirmYesSelected());  // NO is always the default
+}
+
+void test_ui_state_machine_factory_reset_confirm_no_cancels_and_yes_emits_intent() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+
+    ui.enterFactoryResetConfirm(0);
+    const irrigator::domain::UiIntent noIntent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 100);
+    TEST_ASSERT_TRUE(noIntent.type == irrigator::domain::UiIntentType::None);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
+
+    // LongClick cancels too, without ever selecting anything.
+    ui.enterFactoryResetConfirm(200);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 300);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::Normal);
+
+    ui.enterFactoryResetConfirm(400);
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 500);
+    TEST_ASSERT_TRUE(ui.factoryResetConfirmYesSelected());
+    const irrigator::domain::UiIntent yesIntent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 600);
+    TEST_ASSERT_TRUE(yesIntent.type == irrigator::domain::UiIntentType::FactoryReset);
+    // Same imperative-override pattern as CalibrateConfirm: the caller performs the reset and then
+    // forces the result screen, so this stays put in the meantime.
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::FactoryResetConfirm);
+}
+
+// FactoryResetResult is a true terminal screen — main.ino restarts the device right after showing
+// it, so no rotary input may navigate away and leave a live UI on a wiped configuration.
+void test_ui_state_machine_factory_reset_result_is_terminal() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+
+    ui.showFactoryResetResult(true, 0);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::FactoryResetResult);
+    TEST_ASSERT_TRUE(ui.factoryResetSucceeded());
+
+    const irrigator::domain::UiInputEvent everyEvent[] = {
+        irrigator::domain::UiInputEvent::Clockwise, irrigator::domain::UiInputEvent::CounterClockwise,
+        irrigator::domain::UiInputEvent::Click, irrigator::domain::UiInputEvent::LongClick};
+    for (const irrigator::domain::UiInputEvent event : everyEvent) {
+        const irrigator::domain::UiIntent intent = ui.handleInput(event, ctx, 100);
+        TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::None);
+        TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::FactoryResetResult);
+    }
+
+    ui.showFactoryResetResult(false, 200);
+    TEST_ASSERT_FALSE(ui.factoryResetSucceeded());
+}
+
+// The result screens copy caller-supplied text into fixed 16/24-byte fields. A message longer than
+// that must truncate safely (and a null one must become empty) rather than run off the buffer —
+// these strings come straight from main.ino's formatting, not from a bounded enum.
+void test_ui_state_machine_result_screens_bound_caller_supplied_strings() {
+    irrigator::domain::UiStateMachine ui;
+
+    ui.showCalibrateResult(false, 0, "a message far longer than fifteen", false, 0, nullptr, 0);
+    TEST_ASSERT_EQUAL_STRING("a message far l", ui.calibrateValveMessage());  // char[16] -> 15 chars
+    TEST_ASSERT_EQUAL_STRING("", ui.calibratePumpMessage());
+
+    ui.showQueueAddResult(nullptr, 6, false, 100);
+    TEST_ASSERT_EQUAL_STRING("", ui.queueAddZoneLabel());
+    TEST_ASSERT_FALSE(ui.queueAddSucceeded());
+
+    ui.showQueueAddResult("11.a zone name that is far too long", 6, true, 200);
+    TEST_ASSERT_EQUAL_STRING("11.a zone name that is ", ui.queueAddZoneLabel());  // char[24] -> 23
+}
+
 void test_calendar_math_round_trips_and_weekday() {
     const int64_t days = irrigator::domain::daysFromCivil(2024, 3, 31);
     const irrigator::domain::CivilDate civil = irrigator::domain::civilFromDays(days);
@@ -1805,6 +2824,77 @@ void test_calendar_math_round_trips_and_weekday() {
     TEST_ASSERT_EQUAL_UINT(3, civil.month);
     TEST_ASSERT_EQUAL_UINT(31, civil.day);
     TEST_ASSERT_EQUAL_INT(0, irrigator::domain::weekdayFromDays(days));  // Sunday
+}
+
+void test_calendar_math_epoch_day_zero_is_thursday_1970_01_01() {
+    TEST_ASSERT_TRUE(irrigator::domain::daysFromCivil(1970, 1, 1) == 0);
+    const irrigator::domain::CivilDate civil = irrigator::domain::civilFromDays(0);
+    TEST_ASSERT_EQUAL_INT(1970, civil.year);
+    TEST_ASSERT_EQUAL_UINT(1, civil.month);
+    TEST_ASSERT_EQUAL_UINT(1, civil.day);
+    TEST_ASSERT_EQUAL_INT(4, irrigator::domain::weekdayFromDays(0));  // Thursday
+}
+
+// Gregorian leap rules: 2024 and 2000 have a Feb 29, 1900 does not. DstRules walks backwards from
+// March 31 to find the last Sunday, so a wrong day count here silently moves every DST transition.
+void test_calendar_math_handles_gregorian_leap_rules() {
+    TEST_ASSERT_TRUE(irrigator::domain::daysFromCivil(2024, 3, 1) -
+                         irrigator::domain::daysFromCivil(2024, 2, 28) == 2);
+    TEST_ASSERT_TRUE(irrigator::domain::daysFromCivil(2000, 3, 1) -
+                         irrigator::domain::daysFromCivil(2000, 2, 28) == 2);
+    TEST_ASSERT_TRUE(irrigator::domain::daysFromCivil(1900, 3, 1) -
+                         irrigator::domain::daysFromCivil(1900, 2, 28) == 1);
+
+    const irrigator::domain::CivilDate leapDay =
+        irrigator::domain::civilFromDays(irrigator::domain::daysFromCivil(2024, 2, 29));
+    TEST_ASSERT_EQUAL_INT(2024, leapDay.year);
+    TEST_ASSERT_EQUAL_UINT(2, leapDay.month);
+    TEST_ASSERT_EQUAL_UINT(29, leapDay.day);
+}
+
+// Negative day counts (pre-1970) take a different branch in weekdayFromDays, because C++'s % keeps
+// the sign of the dividend — an unclamped RTC read or a bad NTP response lands here.
+void test_calendar_math_weekday_for_pre_epoch_days() {
+    TEST_ASSERT_TRUE(irrigator::domain::daysFromCivil(1969, 12, 31) == -1);
+    TEST_ASSERT_EQUAL_INT(3, irrigator::domain::weekdayFromDays(-1));  // Wed 1969-12-31
+    TEST_ASSERT_EQUAL_INT(0, irrigator::domain::weekdayFromDays(-4));  // Sun 1969-12-28, branch edge
+    TEST_ASSERT_EQUAL_INT(5, irrigator::domain::weekdayFromDays(-6));  // Fri 1969-12-26
+    TEST_ASSERT_EQUAL_INT(6, irrigator::domain::weekdayFromDays(-5));  // Sat 1969-12-27
+
+    const irrigator::domain::CivilDate civil = irrigator::domain::civilFromDays(-1);
+    TEST_ASSERT_EQUAL_INT(1969, civil.year);
+    TEST_ASSERT_EQUAL_UINT(12, civil.month);
+    TEST_ASSERT_EQUAL_UINT(31, civil.day);
+}
+
+// formatIso8601Utc is the exact inverse of epochFromUtc and is what stamps outgoing timestamps
+// (cmd/skip_rain echoes, last-update reporting); the buffer is spec'd at 20 bytes, exactly the
+// 19 characters plus a terminator.
+void test_format_iso8601_utc_round_trips_and_fits_20_bytes() {
+    char buffer[20];
+    irrigator::domain::formatIso8601Utc(irrigator::domain::epochFromUtc(2026, 8, 9, 13, 5, 7), buffer,
+                                        sizeof(buffer));
+    TEST_ASSERT_EQUAL_STRING("2026-08-09T13:05:07", buffer);
+    TEST_ASSERT_EQUAL_UINT(19, strlen(buffer));
+
+    irrigator::domain::formatIso8601Utc(0, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL_STRING("1970-01-01T00:00:00", buffer);
+
+    // Midnight and the last second of a day are the two rollover points.
+    irrigator::domain::formatIso8601Utc(irrigator::domain::epochFromUtc(2024, 2, 29, 23, 59, 59),
+                                        buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL_STRING("2024-02-29T23:59:59", buffer);
+}
+
+// A negative epoch must floor to the previous day rather than truncating toward zero, or the
+// seconds-of-day term goes negative and the formatted time is nonsense.
+void test_format_iso8601_utc_handles_pre_epoch_seconds() {
+    char buffer[20];
+    irrigator::domain::formatIso8601Utc(-1, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL_STRING("1969-12-31T23:59:59", buffer);
+
+    irrigator::domain::formatIso8601Utc(-86400, buffer, sizeof(buffer));
+    TEST_ASSERT_EQUAL_STRING("1969-12-31T00:00:00", buffer);
 }
 
 void test_dst_rules_matches_known_2024_eu_transitions() {
@@ -1819,6 +2909,45 @@ void test_dst_rules_matches_known_2024_eu_transitions() {
 
     TEST_ASSERT_TRUE(isEuDstActive(epochFromUtc(2024, 6, 15, 12, 0, 0)));
     TEST_ASSERT_FALSE(isEuDstActive(epochFromUtc(2024, 1, 15, 12, 0, 0)));
+}
+
+void test_standard_offset_from_geolocation_is_season_independent() {
+    using irrigator::domain::epochFromUtc;
+    using irrigator::domain::standardUtcOffsetHoursFromCurrent;
+
+    const int64_t summer = epochFromUtc(2024, 6, 15, 12, 0, 0);
+    const int64_t winter = epochFromUtc(2024, 1, 15, 12, 0, 0);
+
+    // The property that matters: ip-api reports +3h for Central Europe in summer and +2h in
+    // winter, and both must store the same standard +2 — otherwise the offset a device happens to
+    // resolve in July drifts by an hour come October, when Clock re-applies DST on top.
+    TEST_ASSERT_EQUAL_INT8(2, standardUtcOffsetHoursFromCurrent(3 * 3600, summer));
+    TEST_ASSERT_EQUAL_INT8(2, standardUtcOffsetHoursFromCurrent(2 * 3600, winter));
+
+    // Same round trip on the other side of UTC (US Eastern: -4h summer, -5h winter) and at UTC
+    // itself (London: +1h summer, 0 winter).
+    TEST_ASSERT_EQUAL_INT8(-5, standardUtcOffsetHoursFromCurrent(-4 * 3600, summer));
+    TEST_ASSERT_EQUAL_INT8(-5, standardUtcOffsetHoursFromCurrent(-5 * 3600, winter));
+    TEST_ASSERT_EQUAL_INT8(0, standardUtcOffsetHoursFromCurrent(3600, summer));
+    TEST_ASSERT_EQUAL_INT8(0, standardUtcOffsetHoursFromCurrent(0, winter));
+}
+
+void test_standard_offset_from_geolocation_truncates_and_clamps() {
+    using irrigator::domain::epochFromUtc;
+    using irrigator::domain::standardUtcOffsetHoursFromCurrent;
+
+    const int64_t winter = epochFromUtc(2024, 1, 15, 12, 0, 0);
+
+    // Sub-hour zones truncate toward zero, symmetrically on both sides of UTC (India +05:30,
+    // Nepal +05:45, Marquesas -09:30) — the stored field is whole hours.
+    TEST_ASSERT_EQUAL_INT8(5, standardUtcOffsetHoursFromCurrent(5 * 3600 + 1800, winter));
+    TEST_ASSERT_EQUAL_INT8(5, standardUtcOffsetHoursFromCurrent(5 * 3600 + 2700, winter));
+    TEST_ASSERT_EQUAL_INT8(-9, standardUtcOffsetHoursFromCurrent(-(9 * 3600 + 1800), winter));
+
+    // A nonsensical `offset` clamps into range rather than producing a config validateConfig()
+    // would reject and a boot that falls back to defaults.
+    TEST_ASSERT_EQUAL_INT8(13, standardUtcOffsetHoursFromCurrent(99 * 3600, winter));
+    TEST_ASSERT_EQUAL_INT8(-13, standardUtcOffsetHoursFromCurrent(-99 * 3600, winter));
 }
 
 void test_wifi_quality_thresholds_and_bar_count() {
@@ -1855,27 +2984,47 @@ int main(int argc, char** argv) {
     RUN_TEST(test_manual_duration_adjusts_by_formula_and_clamps);
     RUN_TEST(test_scheduled_duration_uses_schedule_clamp);
     RUN_TEST(test_watering_percentage_rounds_to_nearest_minute);
+    RUN_TEST(test_adjust_duration_step_grows_with_magnitude);
+    RUN_TEST(test_adjust_duration_pulls_out_of_range_current_into_range_first);
+    RUN_TEST(test_adjust_duration_saturates_at_both_bounds);
+    RUN_TEST(test_adjust_duration_inverted_range_is_a_no_op);
+    RUN_TEST(test_watering_percentage_edge_cases);
     RUN_TEST(test_auto_adjustment_percentage_base_case_is_100);
     RUN_TEST(test_auto_adjustment_percentage_temp_above_base_increases_it);
     RUN_TEST(test_auto_adjustment_percentage_rain_reduces_it);
     RUN_TEST(test_auto_adjustment_percentage_clamps_to_upper_limit);
     RUN_TEST(test_auto_adjustment_percentage_below_lower_limit_sets_zero);
+    RUN_TEST(test_auto_adjustment_percentage_exactly_on_lower_limit_is_kept_not_zeroed);
+    RUN_TEST(test_auto_adjustment_percentage_exactly_on_upper_limit_is_not_clamped_down);
+    RUN_TEST(test_auto_adjustment_percentage_zero_lower_limit_floors_at_zero);
     RUN_TEST(test_should_skip_for_rain_probability_inclusive_amount_exclusive);
     RUN_TEST(test_should_skip_for_rain_uses_configured_thresholds);
     RUN_TEST(test_open_meteo_now_index_is_days_back_times_24_plus_hour);
     RUN_TEST(test_open_meteo_now_index_at_midnight);
+    RUN_TEST(test_open_meteo_now_index_with_no_past_days_is_just_the_hour);
     RUN_TEST(test_summarize_past_average_daily_max_temperature_averages_first_n_days);
     RUN_TEST(test_summarize_past_average_daily_max_temperature_rejects_short_array);
     RUN_TEST(test_summarize_past_rainfall_sums_first_n_days);
     RUN_TEST(test_summarize_past_rainfall_rejects_short_array);
     RUN_TEST(test_summarize_forecast_rain_window_computes_max_and_sum);
     RUN_TEST(test_summarize_forecast_rain_window_rejects_short_array);
+    RUN_TEST(test_summarize_forecast_rain_window_accepts_window_ending_exactly_at_array_end);
+    RUN_TEST(test_summarize_forecast_rain_window_rejects_when_only_the_amount_array_is_short);
     RUN_TEST(test_summarize_weather_api_forecast_rain_window_matches_from_now_epoch);
     RUN_TEST(test_summarize_weather_api_forecast_rain_window_fails_when_not_enough_hours);
+    RUN_TEST(test_summarize_weather_api_forecast_rain_window_spans_day_boundary_and_stops_at_window);
+    RUN_TEST(test_summarize_weather_api_forecast_rain_window_reports_zero_qualifying_hours);
     RUN_TEST(test_start_time_validation);
+    RUN_TEST(test_start_time_validation_rejects_malformed_lengths_without_overrunning);
     RUN_TEST(test_schedule_record_validation);
     RUN_TEST(test_watering_queue_capacity_and_fifo);
+    RUN_TEST(test_watering_queue_wraps_around_and_preserves_fifo_order);
+    RUN_TEST(test_watering_queue_peek_and_size_accessors);
+    RUN_TEST(test_watering_queue_clear_empties_and_resets_head);
+    RUN_TEST(test_watering_request_kind_treats_zone_zero_as_pump_only);
+    RUN_TEST(test_run_reason_to_string);
     RUN_TEST(test_rain_skip_self_expires);
+    RUN_TEST(test_rain_skip_unset_never_skips_and_clear_disarms);
     // RUN_TEST(test_zone_run_starts_pump_before_watering_then_gracefully_stops);
     RUN_TEST(test_pump_only_does_not_enter_grace_period);
     RUN_TEST(test_abort_while_watering_still_gives_pump_its_graceful_shutdown);
@@ -1883,12 +3032,22 @@ int main(int argc, char** argv) {
     // RUN_TEST(test_abort_during_pump_prestart_also_gives_pump_its_graceful_shutdown);
     RUN_TEST(test_abort_pump_only_stops_immediately);
     RUN_TEST(test_abort_during_existing_grace_period_cuts_it_short);
+    RUN_TEST(test_start_rejects_invalid_requests_and_leaves_state_untouched);
+    RUN_TEST(test_start_is_refused_while_a_run_is_already_watering);
+    RUN_TEST(test_queued_run_hands_off_during_pump_grace_period_without_inheriting_its_deadline);
+    RUN_TEST(test_snapshot_reports_pump_and_countdown_per_state);
+    RUN_TEST(test_pump_only_snapshot_counts_down_against_zone_zero);
     RUN_TEST(test_config_store_round_trips_valid_json);
     RUN_TEST(test_config_store_rejects_missing_required_fields);
     RUN_TEST(test_config_store_allows_mqtt_fields_blank);
+    RUN_TEST(test_validate_config_rules_at_their_boundaries);
+    RUN_TEST(test_make_default_zones_is_the_valid_baseline_settings);
+    RUN_TEST(test_validate_settings_rejects_each_out_of_range_field);
     RUN_TEST(test_settings_store_defaults_missing_zone_names);
     RUN_TEST(test_settings_store_rejects_out_of_range_percentage);
     RUN_TEST(test_settings_store_round_trips);
+    RUN_TEST(test_settings_store_round_trips_zones_location_and_api_key);
+    RUN_TEST(test_serialize_into_undersized_buffer_produces_output_that_does_not_parse_back);
     RUN_TEST(test_settings_store_defaults_auto_adjustment_enabled_to_true_when_missing);
     RUN_TEST(test_settings_store_defaults_alert_toggles_to_true_when_missing);
     RUN_TEST(test_settings_store_migrates_full_flat_json_via_fallback);
@@ -1903,6 +3062,12 @@ int main(int argc, char** argv) {
     RUN_TEST(test_merge_settings_upper_lower_limit_cross_validated_together);
     RUN_TEST(test_merge_settings_never_reads_device_owned_location_fields);
     RUN_TEST(test_merge_settings_updates_current_sensor_alert_toggles);
+    RUN_TEST(test_merge_settings_accepts_both_zone_shapes);
+    RUN_TEST(test_merge_settings_rejects_oversized_zone_name_per_zone);
+    RUN_TEST(test_merge_settings_rejects_wrongly_typed_zone_entry);
+    RUN_TEST(test_merge_settings_updates_weatherapi_key_and_rejects_oversized_one);
+    RUN_TEST(test_merge_tolerates_absent_or_undersized_rejected_fields_buffer);
+    RUN_TEST(test_merge_settings_rejects_malformed_json_outright);
     RUN_TEST(test_schedule_store_round_trips_valid_list);
     RUN_TEST(test_schedule_store_rejects_whole_file_on_one_bad_record);
     RUN_TEST(test_schedule_max_records_is_255);
@@ -1913,6 +3078,11 @@ int main(int argc, char** argv) {
     RUN_TEST(test_schedule_engine_respects_rain_skip);
     RUN_TEST(test_schedule_engine_applies_watering_percentage);
     RUN_TEST(test_schedule_engine_skips_zero_duration_after_percentage);
+    RUN_TEST(test_schedule_engine_skips_inactive_and_non_matching_records);
+    RUN_TEST(test_schedule_engine_returns_every_record_matching_the_same_minute);
+    RUN_TEST(test_schedule_engine_never_writes_past_due_capacity);
+    RUN_TEST(test_schedule_engine_fires_again_in_the_next_matching_minute);
+    RUN_TEST(test_schedule_engine_resumes_once_the_rain_skip_deadline_passes);
     RUN_TEST(test_ui_state_machine_wakes_on_input_and_shows_normal);
     RUN_TEST(test_ui_state_machine_active_interaction_timeout_returns_to_display_off);
     RUN_TEST(test_ui_state_machine_zone_and_duration_picker_flow_emits_start_watering);
@@ -1947,8 +3117,27 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_schedule_item_count_does_not_overflow_uint8);
     RUN_TEST(test_ui_state_machine_menu_schedule_navigates_past_the_old_uint8_wrap_point);
     RUN_TEST(test_ui_state_machine_schedule_delete_navigates_full_255_record_list);
+    RUN_TEST(test_ui_state_machine_menu_main_layout_shifts_by_two_while_watering);
+    RUN_TEST(test_ui_state_machine_first_input_from_display_off_only_wakes);
+    RUN_TEST(test_ui_state_machine_every_input_rearms_the_interaction_timeout);
+    RUN_TEST(test_ui_state_machine_timeout_abandons_an_in_progress_edit);
+    RUN_TEST(test_ui_state_machine_normal_rotation_starts_from_the_displayed_scheduled_zone);
+    RUN_TEST(test_ui_state_machine_schedule_active_field_is_a_direct_toggle);
+    RUN_TEST(test_ui_state_machine_menu_schedule_with_no_records_only_navigates_back);
+    RUN_TEST(test_ui_state_machine_settings_back_row_is_one_tick_backwards_and_exits);
+    RUN_TEST(test_ui_state_machine_factory_reset_confirm_overrides_any_screen_and_edit);
+    RUN_TEST(test_ui_state_machine_factory_reset_confirm_no_cancels_and_yes_emits_intent);
+    RUN_TEST(test_ui_state_machine_factory_reset_result_is_terminal);
+    RUN_TEST(test_ui_state_machine_result_screens_bound_caller_supplied_strings);
     RUN_TEST(test_calendar_math_round_trips_and_weekday);
+    RUN_TEST(test_calendar_math_epoch_day_zero_is_thursday_1970_01_01);
+    RUN_TEST(test_calendar_math_handles_gregorian_leap_rules);
+    RUN_TEST(test_calendar_math_weekday_for_pre_epoch_days);
+    RUN_TEST(test_format_iso8601_utc_round_trips_and_fits_20_bytes);
+    RUN_TEST(test_format_iso8601_utc_handles_pre_epoch_seconds);
     RUN_TEST(test_wifi_quality_thresholds_and_bar_count);
     RUN_TEST(test_dst_rules_matches_known_2024_eu_transitions);
+    RUN_TEST(test_standard_offset_from_geolocation_is_season_independent);
+    RUN_TEST(test_standard_offset_from_geolocation_truncates_and_clamps);
     return UNITY_END();
 }
