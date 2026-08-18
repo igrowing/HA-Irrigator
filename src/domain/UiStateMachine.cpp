@@ -158,10 +158,15 @@ UiIntent UiStateMachine::handleNormal(UiInputEvent event, const Context& ctx) {
     // through the queue regardless of whether it can start immediately). handleDurationPicker's
     // Click is what tells the two cases apart and shows the "Added to queue" confirmation.
     //
-    // Rotate relative to whatever the Normal screen is currently showing (the next scheduled
-    // zone when idle+scheduled, PUMP otherwise) rather than always starting from PUMP.
+    // Rotate relative to whatever the Normal screen is currently showing (the running zone while
+    // watering, the next scheduled zone when idle+scheduled, PUMP otherwise) rather than always
+    // starting from PUMP. The three cases and their precedence mirror IrrigatorUi::renderNormal's
+    // `running`/`scheduled`/else chain for the big middle line exactly — if that chain changes,
+    // this one has to change with it, or the knob starts moving relative to a zone that isn't the
+    // one on screen.
     const bool scheduled = ctx.scheduleActive && ctx.nextScheduledZone != 0;
-    const uint8_t displayedZone = scheduled ? ctx.nextScheduledZone : 0;
+    const uint8_t displayedZone =
+        ctx.wateringActive ? ctx.activeZone : (scheduled ? ctx.nextScheduledZone : 0);
 
     switch (event) {
         case UiInputEvent::Clockwise:
@@ -173,7 +178,12 @@ UiIntent UiStateMachine::handleNormal(UiInputEvent event, const Context& ctx) {
             screen_ = UiScreen::ZonePicker;
             break;
         case UiInputEvent::Click:
-            pendingZone_ = 0;  // Pump-only: the implicit default candidate.
+            // While watering, a click with no prior rotation means "another run of the zone I'm
+            // looking at" — the running zone is what the screen is showing, so skipping the zone
+            // picker has to land on that zone, not on PUMP. Idle keeps the pump-only default:
+            // there the screen shows PUMP too (see renderNormal's else branch), so a bare click
+            // still matches what's displayed.
+            pendingZone_ = ctx.wateringActive ? ctx.activeZone : 0;
             pendingDuration_ = ctx.defaultManualDuration;
             screen_ = UiScreen::DurationPicker;
             break;

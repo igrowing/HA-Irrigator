@@ -116,6 +116,9 @@ const char* IrrigatorUi::dayOfWeekName(uint8_t isoDay) {
     ctx.alertValveUc = data.settings != nullptr ? data.settings->alertValveUc : false;
     ctx.alertValveOc = data.settings != nullptr ? data.settings->alertValveOc : false;
     ctx.nextScheduledZone = data.nextScheduledZone;
+    // Only read when wateringActive (see Context::activeZone) — the snapshot leaves this at 0 for
+    // a pump-only run, which is exactly the PUMP the screen shows in that case anyway.
+    ctx.activeZone = data.snapshot.activeZone;
     ctx.scheduleRecordCount = data.schedule != nullptr ? data.schedule->count : 0;
     ctx.wateringPercentage = data.settings != nullptr ? data.settings->wateringPercentage : 0;
     ctx.upperLimitPercent = data.settings != nullptr ? data.settings->upperLimitPercent : 0;

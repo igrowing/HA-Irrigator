@@ -1768,6 +1768,60 @@ void test_ui_state_machine_watering_active_rotation_queues_next_watering() {
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::DurationPicker);
 }
 
+// While watering, the Normal screen's big line is the *running* zone (IrrigatorUi::renderNormal's
+// `running` branch), so both gestures have to move relative to that zone: a bare click means
+// "queue zone 7 again" and lands straight on zone 7's duration, and a rotation steps to its
+// neighbour — not to PUMP, which is what both used to do.
+void test_ui_state_machine_watering_active_gestures_start_from_running_zone() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.wateringActive = true;
+    ctx.activeZone = 7;
+    ctx.defaultManualDuration = 5;
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);  // wake -> Normal
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 100);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::DurationPicker);
+    TEST_ASSERT_EQUAL_UINT8(7, ui.pendingZone());
+    TEST_ASSERT_EQUAL_UINT16(5, ui.pendingDuration());
+
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 200);  // cancel -> Normal
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ZonePicker);
+    TEST_ASSERT_EQUAL_UINT8(8, ui.pendingZone());
+}
+
+// The running zone wins over the next scheduled one: with a schedule active, the screen still
+// shows what's watering right now, so that's what the knob has to move relative to.
+void test_ui_state_machine_watering_active_running_zone_beats_next_scheduled() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.wateringActive = true;
+    ctx.activeZone = 7;
+    ctx.scheduleActive = true;
+    ctx.nextScheduledZone = 2;
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);  // wake -> Normal
+    ui.handleInput(irrigator::domain::UiInputEvent::CounterClockwise, ctx, 100);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::ZonePicker);
+    TEST_ASSERT_EQUAL_UINT8(6, ui.pendingZone());
+}
+
+// A pump-only run shows PUMP on the Normal screen (activeZone stays 0), so a bare click keeps the
+// pump-only default rather than jumping into a zone.
+void test_ui_state_machine_pump_only_run_click_keeps_pump() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.wateringActive = true;
+    ctx.activeZone = 0;
+    ctx.defaultManualDuration = 5;
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);  // wake -> Normal
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 100);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::DurationPicker);
+    TEST_ASSERT_EQUAL_UINT8(0, ui.pendingZone());
+}
+
 void test_ui_state_machine_queue_add_result_shows_outcome_and_ok_returns_to_normal() {
     irrigator::domain::UiStateMachine ui;
     ui.wake(0);
@@ -3091,6 +3145,9 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_long_click_cancels_duration_picker);
     RUN_TEST(test_ui_state_machine_watering_active_long_click_opens_menu);
     RUN_TEST(test_ui_state_machine_watering_active_rotation_queues_next_watering);
+    RUN_TEST(test_ui_state_machine_watering_active_gestures_start_from_running_zone);
+    RUN_TEST(test_ui_state_machine_watering_active_running_zone_beats_next_scheduled);
+    RUN_TEST(test_ui_state_machine_pump_only_run_click_keeps_pump);
     RUN_TEST(test_ui_state_machine_queue_add_result_shows_outcome_and_ok_returns_to_normal);
     RUN_TEST(test_ui_state_machine_stop_confirm_flow);
     RUN_TEST(test_ui_state_machine_stop_all_requires_confirmation_then_stops_and_clears);

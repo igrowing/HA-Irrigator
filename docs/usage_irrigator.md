@@ -201,6 +201,12 @@ watering something:
 4. **Click** to confirm, or **hold the button down** at any point to cancel and return to the
    normal screen without starting anything.
 
+Both the knob and the first click always act on whatever the middle line is showing. Turning it
+steps away from that zone (so while zone 7 is watering, one click clockwise offers zone 8), and
+clicking straight through without turning skips the zone picker and keeps that same zone — a
+quick way to line up a second run of the zone you're watching. Idle with nothing scheduled, the
+line reads `PUMP`, so a bare click still gets you a pump-only run.
+
 What happens on that last click depends on whether anything is already running:
 
 - **Nothing running**: watering starts right away, same as always.

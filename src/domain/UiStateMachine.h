@@ -53,6 +53,12 @@ public:
         // this mirrors. handleNormal starts CW/CCW from here instead of always from PUMP, so a
         // rotation moves relative to what's on screen rather than jumping back to PUMP first.
         uint8_t nextScheduledZone = 0;
+        // Zone of the run that's currently active (0 = a pump-only run), only meaningful when
+        // wateringActive. Same purpose as nextScheduledZone above, for the other branch of
+        // IrrigatorUi::renderNormal: while watering, the big line on screen is the *running*
+        // zone, so that — not the next scheduled one, and not PUMP — is what handleNormal's
+        // rotation and click have to move relative to.
+        uint8_t activeZone = 0;
         // Only need to be valid when a MenuSchedule row is selected; the caller refreshes these
         // from the live schedule record at selectedIndex()/kScheduleFieldsPerRecord before
         // calling handleInput().
