@@ -559,6 +559,15 @@ void reportValveClosed() {
 
 bool startIrrigation(const WateringRequest& request, uint32_t nowMs) {
     if (!irrigation.start(request, nowMs)) {
+        // Previously a bare `return false` - the request was popped off the queue and dropped with
+        // no report on any channel, which is indistinguishable from "the device ignored me".
+        char alertMsg[128];
+        snprintf(alertMsg, sizeof(alertMsg),
+                 R"({"error":"watering request dropped","zone":%u,"duration":%u,"state":%u})",
+                 static_cast<unsigned>(request.zone),
+                 static_cast<unsigned>(request.durationMin),
+                 static_cast<unsigned>(irrigation.state()));
+        mqtt.publishAlert(alertMsg);
         return false;
     }
     activeRequestForReporting = request;
@@ -1224,6 +1233,10 @@ void publishQueueState() {
 // pop-report-start sequence itself.
 void pumpQueue(uint32_t nowMs) {
     if (!irrigation.canStartImmediately()) {
+        // Not a fault, and deliberately unreported: a queued request correctly waits here for the
+        // duration of whatever is already running. Worth knowing when reading MQTT, though - this
+        // silent return is why a cmd/run can produce a `/queue` push echo and then nothing at all
+        // for minutes, which looks exactly like a device that ignored the rest of the command.
         return;
     }
     WateringRequest next;
