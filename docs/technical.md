@@ -544,17 +544,54 @@ after the first watering has already run at the last-known percentage still help
 `schedule.json`'s per-zone `duration_min` is already the base runtime at a 20°C reference temperature (`AUTOADJUSTMENT_BASE_TEMP_C`), so there's no separate mm-of-water/flow-rate conversion — the whole calculation collapses to one percentage, applied through the exact same `watering_percentage` → `ScheduleEngine::tick()` path the manual **Adjust** setting already uses.
 Both inputs below are **historical** (trailing `AUTOADJUSTMENT_PAST_WEATHER_DAYS`, 5 days) — never the forecast:
 
+The main formula is:
 ```
 Percentage = 100 + (avgPastTemp5Days - 20) * temp_modifier_pct_per_degree
                   - rainPast5Days * rain_modifier_pct_per_mm
 ```
+
+Let's review an example:
+
+**Data received**
+
+Daily (past 5 days feed Step 2; today/tomorrow are ignored by the formula):
+
+| Date	| rain_sum (mm)	| max temp (°C) |
+|-|-|-|
+|2026-08-17	| 0.0	| 27.7|
+|2026-08-18	| 0.0	| 29.5|
+|2026-08-19	| 14.2 |	30.3|
+|2026-08-20	| 19.4 |	26.5|
+|2026-08-21	| 35.3 |	21.3|
+|2026-08-22 (today)	| 0.0	| 25.3|
+|2026-08-23 (tomorrow)	| 0.0	| 25.2|
+
+Next-12h hourly window (06:00→17:00 UTC today, nowIndex=126), feeds Step 1: every hour came back precipitation_probability=0%, precipitation=0mm. So max prob = 0%, summed rain = 0mm.
+
+**Step 1 — Rain-skip check**
+
+`shouldSkipForRain`(prob>=70%, amount>4mm) (board_config.h:121-122, or from `settings.json`): 0% >= 70% → false. No skip.
+
+**Step 2 — Correction formula**
+
+```
+percentage = 100 + (avgPastTempC − 20.0) × 10.0 − rainPastDaysMm × 1.6
+avgPastTempC = (27.7+29.5+30.3+26.5+21.3)/5 = 27.06 °C
+rainPastDaysMm = 0+0+14.2+19.4+35.3 = 68.9 mm
+
+percentage = 100 + (27.06 − 20.0)×10 − 68.9×1.6
+           = 100 + 70.6 − 75.79
+           = 94.81  →  rounds to 95%
+```
+
+95 is between your configured lower_limit=40 and upper_limit=200, so it's neither skipped nor clamped — final result: wateringPercentage = 95%.
 
 then clamped: below `lower_limit` → **0%** (skip the cycle entirely, not clamped up to the limit);
 above `upper_limit` → capped at `upper_limit`. `temp_modifier_pct_per_degree` (`board_config.h`'s
 `AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE`, 10.0) is tuned so the factory default
 lower/upper limits (40%/200%) land at meaningful real-world temperatures — the 200% cap at exactly
 30°C, the 40% floor at 14°C (both holding rainfall at 0mm; see docs/usage_irrigator.md's Step 2
-table for the full grid). `rain_modifier_pct_per_mm` (1.1) is still an **untuned placeholder** —
+table for the full grid). `rain_modifier_pct_per_mm` (1.6) is still an **untuned placeholder** —
 needs site-specific calibration against this climate/these zones; see `src/domain/AutoAdjustment.cpp`
 and its unit tests for the exact behavior at each threshold.
 

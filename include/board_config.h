@@ -113,7 +113,7 @@ static constexpr int16_t AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT = 40;
 // real-world calibration against this specific climate/zones (see docs/technical.md).
 static constexpr float AUTOADJUSTMENT_BASE_TEMP_C = 20.0f;
 static constexpr float AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE = 10.0f;
-static constexpr float AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM = 1.1f;
+static constexpr float AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM = 1.6f;
 
 // Rain-skip (Step 1) is the only *forecast*-based check — probability is inclusive (>=), amount
 // is not (>), matching shouldSkipForRain()'s exact comparison. Both thresholds are user-configurable
