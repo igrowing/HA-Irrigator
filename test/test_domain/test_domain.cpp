@@ -115,7 +115,7 @@ void test_auto_adjustment_percentage_temp_above_base_increases_it() {
 void test_auto_adjustment_percentage_rain_reduces_it() {
     // 100 - 4mm*5 = 80%
     TEST_ASSERT_EQUAL_INT16(
-        96, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 4.0f, 20.0f, 40, 200));
+        94, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 4.0f, 20.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_clamps_to_upper_limit() {

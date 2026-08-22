@@ -123,6 +123,17 @@ void MqttService::attemptReconnect(uint32_t nowMs) {
 }
 
 void MqttService::onConnected() {
+    // Nagle holds a small outgoing segment while a previous small one is still unacknowledged;
+    // paired with the broker's delayed ACK that can park a ~150-byte /state in the send buffer for
+    // up to ~200ms. Normally invisible - but this device has been resetting mid-run (boot_reason
+    // "other_watchdog"), and anything still buffered when the CPU resets is discarded silently.
+    // startIrrigation() publishes /state and the relay energises ~20ms later in the same loop()
+    // iteration, squarely inside that window, which is how a /state could be published
+    // successfully (publish() returned true) and never observed on the broker. Disabling Nagle
+    // pushes each publish out on its own segment immediately. Must be called AFTER connect() -
+    // there is no socket fd before that, so a call in begin() would silently do nothing.
+    wifiClient_.setNoDelay(true);
+
     const String cmdTopic = config_.prefix + "/cmd/#";
     mqttClient_.subscribe(cmdTopic.c_str(), 1);
     publishAvailability(true);
