@@ -17,6 +17,8 @@ GeoLocationResult WeatherService::fetchGeoLocation() {
     GeoLocationResult result;
 
     HTTPClient http;
+    http.setConnectTimeout(board::HTTP_CONNECT_TIMEOUT_MS);
+    http.setTimeout(board::HTTP_RESPONSE_TIMEOUT_MS);
     if (!http.begin(board::GEO_IP_API_URL)) {
         ::irrigator::drivers::Log.error("Geolocation: could not begin HTTP request");
         snprintf(result.errorReason, sizeof(result.errorReason), "could not begin HTTP request");
@@ -83,7 +85,12 @@ WeatherFetchResult WeatherService::fetchForecastOpenMeteo(float latitude,
     // Public weather API, no cert pinning worth the flash/RAM cost on an ESP32 for this class of
     // read-only, non-sensitive data — the same trade-off common ESP32 weather integrations make.
     client.setInsecure();
+    // Bounds the mbedTLS handshake, which HTTPClient's own connect timeout does NOT cover - a
+    // stalled handshake here is what blocked this task for 70 seconds. See TLS_HANDSHAKE_TIMEOUT_S.
+    client.setHandshakeTimeout(board::TLS_HANDSHAKE_TIMEOUT_S);
     HTTPClient http;
+    http.setConnectTimeout(board::HTTP_CONNECT_TIMEOUT_MS);
+    http.setTimeout(board::HTTP_RESPONSE_TIMEOUT_MS);
     if (!http.begin(client, url)) {
         ::irrigator::drivers::Log.error("Open-Meteo: could not begin HTTPS request");
         snprintf(result.errorReason, sizeof(result.errorReason), "could not begin HTTPS request");
@@ -231,7 +238,12 @@ namespace {
 bool fetchWeatherApiJson(const char* url, JsonDocument& filter, JsonDocument& doc, char* errorReason, size_t errorReasonSize) {
     WiFiClientSecure client;
     client.setInsecure();
+    // Bounds the mbedTLS handshake, which HTTPClient's own connect timeout does NOT cover - a
+    // stalled handshake here is what blocked this task for 70 seconds. See TLS_HANDSHAKE_TIMEOUT_S.
+    client.setHandshakeTimeout(board::TLS_HANDSHAKE_TIMEOUT_S);
     HTTPClient http;
+    http.setConnectTimeout(board::HTTP_CONNECT_TIMEOUT_MS);
+    http.setTimeout(board::HTTP_RESPONSE_TIMEOUT_MS);
     if (!http.begin(client, url)) {
         snprintf(errorReason, errorReasonSize, "could not begin HTTPS request");
         return false;

@@ -104,6 +104,19 @@ public:
     // payloads (/status, /download/*) you would need in order to notice.
     uint16_t bufferSize() const;
 
+    // Publish-path health counters, surfaced in /status. A single failure is a transient; a
+    // climbing count correlated against rssi_db is the RF link telling you something.
+    uint32_t publishFailures() const { return publishFailures_; }
+    uint32_t publishRetrySuccesses() const { return publishRetrySuccesses_; }
+    uint32_t publishSkippedOffline() const { return publishSkippedOffline_; }
+    uint32_t forcedReconnects() const { return forcedReconnects_; }
+
+    // Spacing between the small publishes that go out back-to-back on a fresh connection. Four
+    // rapid writes into a socket that is milliseconds old is where every observed publish failure
+    // clustered (always the LAST of the burst, /watering_percentage). Public so main.ino's
+    // ConnectedHandler paces its own seed publishes with the same number.
+    static constexpr uint32_t kConnectSeedSpacingMs = 20;
+
 private:
     void attemptReconnect(uint32_t nowMs);
     void onConnected();
@@ -115,8 +128,14 @@ private:
     // rather than only at begin() — see its definition for why that matters.
     void ensureBufferSize();
 
-    // Turns a failed publish into a small (always-fits) /alert naming the topic and both sizes.
+    // Turns a failed publish into a small (always-fits) /alert naming the topic, both sizes, and
+    // the two fields that actually discriminate the cause (RSSI and PubSubClient's state).
     void reportPublishFailure(const String& topicSuffix, size_t payloadLength);
+
+    // Tears the MQTT session down after a publish has failed every attempt, so loop()'s normal
+    // reconnect path rebuilds it within kReconnectIntervalMs. See its definition for why this is
+    // the right response to a write failure even though PubSubClient itself shrugs one off.
+    void forceReconnect(const char* reason);
 
     // Splices a "datetime" field (from nowEpochProvider_) into a JSON object payload, or wraps a
     // plain-text payload as {"datetime":...,"message":...}. Returns the payload unchanged if no
@@ -142,6 +161,17 @@ private:
     // publishRaw() itself, so a broker-side/socket failure (as opposed to an oversized payload)
     // would otherwise have each failed alert trigger another one, without bound.
     bool reportingPublishFailure_ = false;
+
+    // Retry budget for a single publish. Three attempts spaced kPublishRetryDelayMs apart covers
+    // a momentary TX-queue stall (the radio busy, a beacon interval, a retransmit burst) without
+    // adding meaningful latency to the overwhelmingly common first-attempt success.
+    static constexpr uint8_t kPublishAttempts = 3;
+    static constexpr uint32_t kPublishRetryDelayMs = 5;
+
+    uint32_t publishFailures_ = 0;
+    uint32_t publishRetrySuccesses_ = 0;
+    uint32_t publishSkippedOffline_ = 0;
+    uint32_t forcedReconnects_ = 0;
 
     uint32_t bootMs_ = 0;
     bool bootStatusPublished_ = false;

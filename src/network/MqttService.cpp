@@ -136,7 +136,12 @@ void MqttService::onConnected() {
 
     const String cmdTopic = config_.prefix + "/cmd/#";
     mqttClient_.subscribe(cmdTopic.c_str(), 1);
+    delay(kConnectSeedSpacingMs);
     publishAvailability(true);
+    // Every publish failure observed on this device was the LAST of the four small writes that go
+    // out here back-to-back into a socket only milliseconds old. Pacing them costs ~80ms on a path
+    // that runs once per connection, and takes the burst out of the failure window.
+    delay(kConnectSeedSpacingMs);
     // After `/online`=true so any HA sensor gated on availability is already live when the seeded
     // state/echo topics land. main.ino publishes the retained `/scheduled`, plus `/auto_adjustment`
     // and `/watering_percentage` (not retained -- see their publish*() comments below), here from
@@ -181,21 +186,76 @@ bool MqttService::consumeBootStatusDue(uint32_t nowMs) {
 
 bool MqttService::publishRaw(const String& topicSuffix, const String& payload, bool retained) {
     if (!connected()) {
+        // Counted rather than reported: publishing an alert about being unable to publish is
+        // futile, and this path is legitimately hit during a reconnect window. It used to be
+        // entirely invisible, which is what made "the device ignored my command" unfalsifiable.
+        ++publishSkippedOffline_;
         return false;
     }
     const String topic = config_.prefix + topicSuffix;
-    const bool ok = mqttClient_.publish(topic.c_str(),
-                                        reinterpret_cast<const uint8_t*>(payload.c_str()),
-                                        payload.length(),
-                                        retained);
-    if (!ok) {
-        ::irrigator::drivers::Log.printf("[WARN] MQTT publish to %s failed (payload %u B, buffer %u B)\n",
-                                         topic.c_str(),
-                                         static_cast<unsigned>(payload.length()),
-                                         static_cast<unsigned>(mqttClient_.getBufferSize()));
-        reportPublishFailure(topicSuffix, payload.length());
+
+    // PubSubClient::publish() returns false for exactly three reasons: not connected (excluded
+    // above), payload larger than the buffer (excluded in practice - 25600 bytes against payloads
+    // of 1-2KB), and _client->write() returning short. On this device it is always the third, and
+    // a short write is a momentary radio/TX-queue condition, not a permanent one - so a couple of
+    // retries a few ms apart usually lands it.
+    for (uint8_t attempt = 1; attempt <= kPublishAttempts; ++attempt) {
+        if (mqttClient_.publish(topic.c_str(),
+                                reinterpret_cast<const uint8_t*>(payload.c_str()),
+                                payload.length(),
+                                retained)) {
+            if (attempt > 1) {
+                ++publishRetrySuccesses_;
+                ::irrigator::drivers::Log.printf("[INFO] MQTT publish to %s succeeded on attempt %u\n",
+                                                 topic.c_str(),
+                                                 static_cast<unsigned>(attempt));
+            }
+            return true;
+        }
+        if (attempt < kPublishAttempts) {
+            delay(kPublishRetryDelayMs);
+        }
     }
-    return ok;
+
+    ++publishFailures_;
+    ::irrigator::drivers::Log.printf(
+        "[WARN] MQTT publish to %s failed all %u attempts (payload %u B, buffer %u B, rssi %d, state %d)\n",
+        topic.c_str(),
+        static_cast<unsigned>(kPublishAttempts),
+        static_cast<unsigned>(payload.length()),
+        static_cast<unsigned>(mqttClient_.getBufferSize()),
+        static_cast<int>(WiFi.RSSI()),
+        mqttClient_.state());
+    reportPublishFailure(topicSuffix, payload.length());
+
+    // Skipped while reporting: the /alert publish is nested inside the outer failing one, and
+    // tearing the session down here would kill the report before it goes out. The outer call
+    // does it a moment later.
+    if (!reportingPublishFailure_) {
+        forceReconnect("publish failed on every attempt");
+    }
+    return false;
+}
+
+// A failed write means the socket is very likely already dead - and PubSubClient does NOT act on
+// that: write() returns false while _state stays MQTT_CONNECTED and the fd stays open, so
+// connected() keeps answering true. Left alone, nothing notices until the keepalive machinery
+// does, and that machinery is slow by construction: the client sends its first PINGREQ only after
+// kMqttKeepAliveSec and concludes the connection is dead only after twice that, while the broker
+// gives up at 1.5x and fires the LWT first. Observed on this device: a failed publish at 23:57:28
+// was the last thing to reach the broker, /online went false exactly 300s later, and the device
+// did not reconnect until after that. Every command HA sent in between went into a dead socket.
+//
+// Tearing the session down here collapses that to one kReconnectIntervalMs tick. disconnect()
+// attempts a clean DISCONNECT first, which on a genuinely dead socket simply fails and costs
+// nothing; on a merely degraded one it spares the broker (and HA) a spurious LWT.
+void MqttService::forceReconnect(const char* reason) {
+    ++forcedReconnects_;
+    ::irrigator::drivers::Log.printf("[WARN] MQTT forcing reconnect: %s\n", reason);
+    mqttClient_.disconnect();
+    // So loop()'s !connected() branch reconnects on its very next pass, rather than waiting out a
+    // fresh kReconnectIntervalMs measured from whenever the previous attempt happened to be.
+    lastReconnectAttemptMs_ = 0;
 }
 
 // A failed publish used to be visible only on a serial console nobody is watching (agents.md
@@ -212,12 +272,15 @@ void MqttService::reportPublishFailure(const String& topicSuffix, size_t payload
         return;
     }
     reportingPublishFailure_ = true;
-    char alertMsg[192];
+    char alertMsg[240];
     snprintf(alertMsg, sizeof(alertMsg),
-             R"({"publish":"%s","error":"failed - payload %u B, MQTT buffer %u B"})",
+             R"({"publish":"%s","error":"failed %u attempts - payload %u B, MQTT buffer %u B","rssi_db":%d,"mqtt_state":%d})",
              topicSuffix.c_str(),
+             static_cast<unsigned>(kPublishAttempts),
              static_cast<unsigned>(payloadLength),
-             static_cast<unsigned>(mqttClient_.getBufferSize()));
+             static_cast<unsigned>(mqttClient_.getBufferSize()),
+             static_cast<int>(WiFi.RSSI()),
+             mqttClient_.state());
     publishRaw("/alert", withDatetime(alertMsg), false);
     reportingPublishFailure_ = false;
 }
@@ -306,13 +369,18 @@ void MqttService::publishAutoAdjustmentEnabled(bool enabled) {
     publishRaw("/auto_adjustment", enabled ? "true" : "false", false);
 }
 
-// NOT retained (deliberately, unlike publishScheduled): a stale retained value here would
-// misrepresent sensor.irrigator_watering_percentage_echo indefinitely if the broker held it past a
-// device restart. Still seeded on every connect via the ConnectedHandler, so a subscriber that's
-// already listening at that moment gets the current value promptly; it just isn't held by the
-// broker for one that subscribes later.
+// Retained as of 2026-08-29; it deliberately was not before. This is the most consequential
+// number the device publishes: computeAdjustedPercentage() returns 0 to mean "skip today's cycle
+// entirely" rather than clamping to lower_limit, so a lost message is the difference between HA
+// showing "not watering today" and showing yesterday's figure. It was also, repeatedly, the exact
+// publish that failed - being the last of the connect-time seed burst.
+//
+// The original objection was that a stale retained value would misrepresent
+// sensor.irrigator_watering_percentage_echo past a device restart. That no longer holds: HA gates
+// these entities on the retained `/online`, which the LWT drives to false when the device goes
+// away, so a retained value cannot be shown as live while the device is offline.
 void MqttService::publishWateringPercentage(int16_t value) {
-    publishRaw("/watering_percentage", String(value), false);
+    publishRaw("/watering_percentage", String(value), true);
 }
 
 void MqttService::publishOtaCompleted(const String& isoTimestamp) {
