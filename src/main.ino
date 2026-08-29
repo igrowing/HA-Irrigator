@@ -492,6 +492,17 @@ String buildStatusJson(uint32_t nowMs) {
     // being dropped silently — including this very /status message, so seeing a small number here
     // at all means it has since self-healed. See MqttService::ensureBufferSize().
     doc["mqtt_buffer_bytes"] = mqtt.bufferSize();
+    // Publish-path health. All four are cumulative since boot and normally read 0; watch them
+    // against rssi_db rather than in isolation. publish_failures counts publishes that failed
+    // every retry (each also forced a reconnect); publish_retried counts ones that failed at least
+    // once then succeeded - the near misses, and the earliest sign the link is degrading;
+    // publish_offline counts publishes dropped because MQTT was disconnected at the time, which
+    // used to be entirely silent; mqtt_forced_reconnects counts sessions torn down by
+    // forceReconnect() rather than by the keepalive.
+    doc["publish_failures"] = mqtt.publishFailures();
+    doc["publish_retried"] = mqtt.publishRetrySuccesses();
+    doc["publish_offline"] = mqtt.publishSkippedOffline();
+    doc["mqtt_forced_reconnects"] = mqtt.forcedReconnects();
     // Pairs with boot_reason above: "panic" tells you it crashed, this tells you whether there's
     // still something to *read* about it (a dump survives reboots until cmd/coredump_clear erases
     // it, so this stays true across later clean boots — see docs/coredump.md).
@@ -1950,9 +1961,16 @@ void enterOperationalMode() {
     // this seed is also the only way a subscriber that's already listening gets those two promptly
     // on reconnect, rather than waiting for the next actual change.
     mqtt.setConnectedHandler([]() {
+        // Paced, not fired back-to-back: every publish failure this device has reported was the
+        // last small write of this burst, going into a socket only milliseconds old. See
+        // MqttService::kConnectSeedSpacingMs.
+        constexpr uint32_t kSeedSpacingMs = irrigator::network::MqttService::kConnectSeedSpacingMs;
         mqtt.publishScheduled(settings.scheduleActive);
+        delay(kSeedSpacingMs);
         mqtt.publishAutoAdjustmentEnabled(settings.autoAdjustmentEnabled);
+        delay(kSeedSpacingMs);
         mqtt.publishWateringPercentage(settings.wateringPercentage);
+        delay(kSeedSpacingMs);
         // One-shot per boot: report what schedule_active was actually loaded from flash, so the
         // change-tracer timeline in sensor.irrigator_last_alert has a known starting point. If this
         // says `false` right after a reboot that followed a confirmed `true`, the flip happened on
@@ -2714,6 +2732,10 @@ void loop() {
                 renderData.mqttTopicText = mqtt.prefix();
                 renderData.wifiRssi = cachedWifiRssi;
                 renderData.uptimeSeconds = nowMs / 1000UL;
+                renderData.queueCount = wateringQueue.size();
+                for (uint8_t i = 0; i < renderData.queueCount; ++i) {
+                    renderData.queueItems[i] = wateringQueue.at(i);
+                }
                 // "DD-MM HH:MM" in local wall time, not main.ino's own lastWeatherUpdateDate global
                 // (that stays "YYYY-MM-DD" - it's the once-per-day gating key compared against
                 // `today` in weatherAutoAdjustStatus()/runAutoAdjustmentIfDue(), reformatting it

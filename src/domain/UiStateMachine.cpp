@@ -117,6 +117,8 @@ UiIntent UiStateMachine::handleInput(UiInputEvent event, const Context& ctx, uin
             return handleStopConfirm(event);
         case UiScreen::MenuMain:
             return handleMenuMain(event, ctx);
+        case UiScreen::MenuQueue:
+            return handleMenuQueue(event, ctx);
         case UiScreen::MenuScheduleRoot:
             return handleMenuScheduleRoot(event);
         case UiScreen::MenuSchedule:
@@ -318,13 +320,13 @@ UiIntent UiStateMachine::handleDeadEndResult(UiInputEvent event) {
 
 UiStateMachine::MenuMainLayout UiStateMachine::menuMainLayout(bool wateringActive) {
     if (wateringActive) {
-        return {7, 2, 3, 4, 5, 6};
+        return {8, 0, 1, 2, 3, 4, 5, 6, 7};
     }
-    return {5, 0, 1, 2, 3, 4};
+    return {5, 0, 0, 0, 0, 1, 2, 3, 4};
 }
 
 UiIntent UiStateMachine::handleMenuMain(UiInputEvent event, const Context& ctx) {
-    // Item order, matching IrrigatorUi::renderMenuMain: [Stop, Stop all] (watering only),
+    // Item order, matching IrrigatorUi::renderMenuMain: [Queue, Stop, Stop all] (watering only),
     // Schedule, Test all zones, Settings, Info, BACK.
     const MenuMainLayout layout = menuMainLayout(ctx.wateringActive);
     UiIntent intent;
@@ -337,11 +339,14 @@ UiIntent UiStateMachine::handleMenuMain(UiInputEvent event, const Context& ctx) 
             selectedIndex_ = stepIndex(selectedIndex_, layout.itemCount, false);
             break;
         case UiInputEvent::Click: {
-            if (ctx.wateringActive && selectedIndex_ == 0) {
+            if (ctx.wateringActive && selectedIndex_ == layout.queueIndex) {
+                screen_ = UiScreen::MenuQueue;
+                selectedIndex_ = 0;
+            } else if (ctx.wateringActive && selectedIndex_ == layout.stopIndex) {
                 stopConfirmYes_ = false;
                 stopAllPending_ = false;
                 screen_ = UiScreen::StopConfirm;
-            } else if (ctx.wateringActive && selectedIndex_ == 1) {
+            } else if (ctx.wateringActive && selectedIndex_ == layout.stopAllIndex) {
                 stopConfirmYes_ = false;
                 stopAllPending_ = true;
                 screen_ = UiScreen::StopConfirm;
@@ -365,6 +370,36 @@ UiIntent UiStateMachine::handleMenuMain(UiInputEvent event, const Context& ctx) 
         }
         case UiInputEvent::LongClick:
             screen_ = UiScreen::Normal;
+            selectedIndex_ = 0;
+            break;
+    }
+    return intent;
+}
+
+// Read-only, same shape as MenuInfo: the queue can only be viewed here (per spec, on-device we can
+// only "stop all" blindly), so only the trailing BACK row is clickable — the data rows just scroll
+// past. With an empty queue, queueMenuItemCount(0) == 1, so BACK is the only row and stepIndex's
+// count==1 wraparound keeps selectedIndex_ pinned at 0 regardless of rotation.
+UiIntent UiStateMachine::handleMenuQueue(UiInputEvent event, const Context& ctx) {
+    const uint16_t itemCount = queueMenuItemCount(ctx.queueSize);
+    const uint16_t backIndex = static_cast<uint16_t>(itemCount - 1);
+    UiIntent intent;
+
+    switch (event) {
+        case UiInputEvent::Clockwise:
+            selectedIndex_ = stepIndex(selectedIndex_, itemCount, true);
+            break;
+        case UiInputEvent::CounterClockwise:
+            selectedIndex_ = stepIndex(selectedIndex_, itemCount, false);
+            break;
+        case UiInputEvent::Click:
+            if (selectedIndex_ == backIndex) {
+                screen_ = UiScreen::MenuMain;
+                selectedIndex_ = 0;
+            }
+            break;
+        case UiInputEvent::LongClick:
+            screen_ = UiScreen::MenuMain;
             selectedIndex_ = 0;
             break;
     }

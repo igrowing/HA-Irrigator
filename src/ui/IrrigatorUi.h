@@ -6,6 +6,7 @@
 #include <time.h>
 
 #include "../domain/IrrigationStateMachine.h"
+#include "../domain/IrrigationTypes.h"
 #include "../domain/Schedule.h"
 #include "../domain/Settings.h"
 #include "../domain/UiStateMachine.h"
@@ -29,6 +30,13 @@ struct RenderData {
     struct tm wallClockLocal {};
     uint8_t nextScheduledZone = 0;  // 0 = none upcoming
     char nextScheduledZoneName[16] = "";
+    // Snapshot of the rows waiting behind the currently-active run, copied by the caller (main.ino)
+    // each poll() from WateringQueue::at()/size() — WateringQueue itself isn't referenced here since
+    // it's a ring buffer (not contiguous in memory) and this layer would otherwise need its Capacity
+    // template parameter. MenuQueue (UiStateMachine::Context::queueSize mirrors queueCount) renders
+    // straight from this; only the first queueCount entries are valid.
+    ::irrigator::domain::WateringRequest queueItems[irrigator::board::WATERING_QUEUE_DEPTH];
+    uint8_t queueCount = 0;
     // Weather auto-adjustment's last successful update, pre-formatted "DD-MM HH:MM" in local wall
     // time by the caller (main.ino, from lastWeatherUpdateEpoch via Clock::localTimeAt) - in-RAM
     // only, not part of Settings, so this resets to "" on every reboot. Not the same string as
@@ -100,6 +108,7 @@ private:
     void renderDurationPicker(const RenderData& data);
     void renderStopConfirm(const RenderData& data);
     void renderMenuMain(const RenderData& data);
+    void renderMenuQueue(const RenderData& data);
     void renderMenuScheduleRoot();
     void renderMenuSchedule(const RenderData& data);
     void renderScheduleAdd(const RenderData& data);

@@ -1850,7 +1850,10 @@ void test_ui_state_machine_stop_confirm_flow() {
     ctx.wateringActive = true;
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
-    TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());  // Stop is item 0 while watering
+    TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());  // Queue is item 0 while watering
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 150);  // Queue -> Stop
+    TEST_ASSERT_EQUAL_UINT16(1, ui.selectedIndex());
 
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);  // -> StopConfirm
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::StopConfirm);
@@ -1872,8 +1875,9 @@ void test_ui_state_machine_stop_all_requires_confirmation_then_stops_and_clears(
     ctx.wateringActive = true;
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
-    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Stop -> Stop all
-    TEST_ASSERT_EQUAL_UINT16(1, ui.selectedIndex());
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Queue -> Stop
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Stop -> Stop all
+    TEST_ASSERT_EQUAL_UINT16(2, ui.selectedIndex());
 
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);  // -> StopConfirm
     TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::StopConfirm);
@@ -1896,7 +1900,8 @@ void test_ui_state_machine_stop_all_confirm_no_cancels_without_intent() {
     ctx.wateringActive = true;
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
-    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Stop -> Stop all
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Queue -> Stop
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Stop -> Stop all
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> StopConfirm
 
     // NO stays selected by default; confirming without toggling to YES must not stop anything.
@@ -2607,7 +2612,7 @@ void test_ui_state_machine_schedule_delete_navigates_full_255_record_list() {
 // menuMainLayout is the single definition both the renderer and handleMenuMain read; pinning both
 // shapes directly means a row insertion can't quietly shift one consumer and not the other (which
 // is exactly how BACK broke once before — see kSettingsItemCount's comment).
-void test_ui_state_machine_menu_main_layout_shifts_by_two_while_watering() {
+void test_ui_state_machine_menu_main_layout_shifts_by_three_while_watering() {
     const auto idle = irrigator::domain::UiStateMachine::menuMainLayout(false);
     TEST_ASSERT_EQUAL_UINT8(5, idle.itemCount);
     TEST_ASSERT_EQUAL_UINT8(0, idle.scheduleIndex);
@@ -2616,14 +2621,87 @@ void test_ui_state_machine_menu_main_layout_shifts_by_two_while_watering() {
     TEST_ASSERT_EQUAL_UINT8(3, idle.infoIndex);
     TEST_ASSERT_EQUAL_UINT8(4, idle.backIndex);
 
-    // [Stop, Stop all] take indices 0 and 1, pushing everything else down by exactly 2.
+    // [Queue, Stop, Stop all] take indices 0, 1 and 2, pushing everything else down by exactly 3.
     const auto watering = irrigator::domain::UiStateMachine::menuMainLayout(true);
-    TEST_ASSERT_EQUAL_UINT8(7, watering.itemCount);
-    TEST_ASSERT_EQUAL_UINT8(2, watering.scheduleIndex);
-    TEST_ASSERT_EQUAL_UINT8(3, watering.testAllIndex);
-    TEST_ASSERT_EQUAL_UINT8(4, watering.settingsIndex);
-    TEST_ASSERT_EQUAL_UINT8(5, watering.infoIndex);
-    TEST_ASSERT_EQUAL_UINT8(6, watering.backIndex);
+    TEST_ASSERT_EQUAL_UINT8(8, watering.itemCount);
+    TEST_ASSERT_EQUAL_UINT8(0, watering.queueIndex);
+    TEST_ASSERT_EQUAL_UINT8(1, watering.stopIndex);
+    TEST_ASSERT_EQUAL_UINT8(2, watering.stopAllIndex);
+    TEST_ASSERT_EQUAL_UINT8(3, watering.scheduleIndex);
+    TEST_ASSERT_EQUAL_UINT8(4, watering.testAllIndex);
+    TEST_ASSERT_EQUAL_UINT8(5, watering.settingsIndex);
+    TEST_ASSERT_EQUAL_UINT8(6, watering.infoIndex);
+    TEST_ASSERT_EQUAL_UINT8(7, watering.backIndex);
+}
+
+// Queue only appears while watering, and clicking it opens a read-only submenu rather than
+// confirming an action (unlike Stop/Stop all).
+void test_ui_state_machine_menu_main_queue_item_opens_menu_queue() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.wateringActive = true;
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());  // Queue is item 0 while watering
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);  // -> MenuQueue
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuQueue);
+    TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());
+}
+
+// With nothing queued behind the active run, MenuQueue is a one-row list (just BACK) — same shape
+// as MenuSchedule with zero records — and any click has to leave immediately.
+void test_ui_state_machine_menu_queue_empty_shows_only_back() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.wateringActive = true;
+    ctx.queueSize = 0;
+    TEST_ASSERT_EQUAL_UINT16(1, irrigator::domain::UiStateMachine::queueMenuItemCount(0));
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Queue -> MenuQueue
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuQueue);
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 300);  // single item: no movement
+    TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());
+
+    const irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::None);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuMain);
+    TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());
+}
+
+// With items queued, MenuQueue lists them (read-only — clicking a data row is a no-op) followed by
+// a trailing BACK row that actually navigates back.
+void test_ui_state_machine_menu_queue_with_items_lists_them_then_back() {
+    irrigator::domain::UiStateMachine ui;
+    irrigator::domain::UiStateMachine::Context ctx;
+    ctx.wateringActive = true;
+    ctx.queueSize = 3;
+    TEST_ASSERT_EQUAL_UINT16(4, irrigator::domain::UiStateMachine::queueMenuItemCount(3));
+
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
+    ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 200);      // Queue -> MenuQueue
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuQueue);
+
+    // Clicking a data row (not BACK) does nothing — the queue is view-only from this screen.
+    irrigator::domain::UiIntent intent =
+        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::None);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuQueue);
+
+    for (int i = 0; i < 3; ++i) {
+        ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 350 + i);
+    }
+    TEST_ASSERT_EQUAL_UINT16(3, ui.selectedIndex());  // BACK is the 4th row (index 3)
+
+    intent = ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);
+    TEST_ASSERT_TRUE(intent.type == irrigator::domain::UiIntentType::None);
+    TEST_ASSERT_TRUE(ui.screen() == irrigator::domain::UiScreen::MenuMain);
+    TEST_ASSERT_EQUAL_UINT16(0, ui.selectedIndex());
 }
 
 // The first event off a blank display only wakes it — a rotation must not also land the user in
@@ -3152,6 +3230,9 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_stop_confirm_flow);
     RUN_TEST(test_ui_state_machine_stop_all_requires_confirmation_then_stops_and_clears);
     RUN_TEST(test_ui_state_machine_stop_all_confirm_no_cancels_without_intent);
+    RUN_TEST(test_ui_state_machine_menu_main_queue_item_opens_menu_queue);
+    RUN_TEST(test_ui_state_machine_menu_queue_empty_shows_only_back);
+    RUN_TEST(test_ui_state_machine_menu_queue_with_items_lists_them_then_back);
     RUN_TEST(test_ui_state_machine_settings_percentage_edit);
     RUN_TEST(test_ui_state_machine_settings_upper_lower_limit_edit);
     RUN_TEST(test_ui_state_machine_settings_schedule_active_toggle_is_first_item);
@@ -3174,7 +3255,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_schedule_item_count_does_not_overflow_uint8);
     RUN_TEST(test_ui_state_machine_menu_schedule_navigates_past_the_old_uint8_wrap_point);
     RUN_TEST(test_ui_state_machine_schedule_delete_navigates_full_255_record_list);
-    RUN_TEST(test_ui_state_machine_menu_main_layout_shifts_by_two_while_watering);
+    RUN_TEST(test_ui_state_machine_menu_main_layout_shifts_by_three_while_watering);
     RUN_TEST(test_ui_state_machine_first_input_from_display_off_only_wakes);
     RUN_TEST(test_ui_state_machine_every_input_rearms_the_interaction_timeout);
     RUN_TEST(test_ui_state_machine_timeout_abandons_an_in_progress_edit);

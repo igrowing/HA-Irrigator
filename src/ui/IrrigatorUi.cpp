@@ -120,6 +120,7 @@ const char* IrrigatorUi::dayOfWeekName(uint8_t isoDay) {
     // a pump-only run, which is exactly the PUMP the screen shows in that case anyway.
     ctx.activeZone = data.snapshot.activeZone;
     ctx.scheduleRecordCount = data.schedule != nullptr ? data.schedule->count : 0;
+    ctx.queueSize = data.queueCount;
     ctx.wateringPercentage = data.settings != nullptr ? data.settings->wateringPercentage : 0;
     ctx.upperLimitPercent = data.settings != nullptr ? data.settings->upperLimitPercent : 0;
     ctx.lowerLimitPercent = data.settings != nullptr ? data.settings->lowerLimitPercent : 0;
@@ -206,6 +207,9 @@ void IrrigatorUi::render(uint32_t nowMs, const RenderData& data) {
             break;
         case ::irrigator::domain::UiScreen::MenuMain:
             renderMenuMain(data);
+            break;
+        case ::irrigator::domain::UiScreen::MenuQueue:
+            renderMenuQueue(data);
             break;
         case ::irrigator::domain::UiScreen::MenuScheduleRoot:
             renderMenuScheduleRoot();
@@ -559,9 +563,11 @@ void IrrigatorUi::renderMenuMain(const RenderData& data) {
 
     drawMenuList(
         "MENU", layout.itemCount, uiState_.selectedIndex(), [this, &data, wateringActive, layout](uint16_t index, char* buffer, size_t size) {
-            if (wateringActive && index == 0) {
+            if (wateringActive && index == layout.queueIndex) {
+                snprintf(buffer, size, "Queue");
+            } else if (wateringActive && index == layout.stopIndex) {
                 snprintf(buffer, size, "Stop %s", zoneLabel(data, data.snapshot.activeZone));
-            } else if (wateringActive && index == 1) {
+            } else if (wateringActive && index == layout.stopAllIndex) {
                 snprintf(buffer, size, "Stop all");
             } else if (index == layout.scheduleIndex) {
                 snprintf(buffer, size, "Schedule");
@@ -577,6 +583,22 @@ void IrrigatorUi::renderMenuMain(const RenderData& data) {
                 buffer[0] = '\0';
             }
         });
+}
+
+// Read-only list of what's waiting behind the currently-active run — see UiStateMachine::
+// handleMenuQueue's doc for why only BACK is clickable here. With queueCount==0 this is a single
+// "BACK" row, matching the spec's "queue empty -> BACK only" display.
+void IrrigatorUi::renderMenuQueue(const RenderData& data) {
+    const uint16_t itemCount = ::irrigator::domain::UiStateMachine::queueMenuItemCount(data.queueCount);
+
+    drawMenuList("QUEUE", itemCount, uiState_.selectedIndex(), [this, &data](uint16_t index, char* buffer, size_t size) {
+        if (index >= data.queueCount) {
+            snprintf(buffer, size, "BACK");
+            return;
+        }
+        const auto& item = data.queueItems[index];
+        snprintf(buffer, size, "%s %u min", zoneLabel(data, item.zone), static_cast<unsigned>(item.durationMin));
+    });
 }
 
 void IrrigatorUi::renderMenuSettings(const RenderData& data) {

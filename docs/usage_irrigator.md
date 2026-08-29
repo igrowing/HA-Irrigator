@@ -230,7 +230,8 @@ Hold the button down from the normal screen to open the menu:
 
 ```
 MENU
-> Stop ZONE 3        (only shown while watering)
+> Queue              (only shown while watering)
+  Stop ZONE 3        (only shown while watering)
   Stop all           (only shown while watering)
   Schedule
   Test all zones
@@ -242,6 +243,25 @@ MENU
 Turn the knob to move the `>` selector, click to choose. Any menu times out back to the normal
 screen after 20 seconds of no input, and turning the knob past the last item wraps back around to
 the first.
+
+### Queue
+
+Only shown while a zone or the pump is actively running — the very first item in the menu, ahead
+of **Stop**/**Stop all**, since those two are the only device-side control you otherwise have over
+what's lined up (see **How watering requests queue**, above). This screen is read-only — a
+view onto what's waiting, not a way to reorder or drop individual items:
+
+```
+QUEUE
+> 2.Zone2 15 min
+  5.Zone5 10 min
+  BACK
+```
+
+Each row shows a queued watering's zone and duration, in the order it'll run. Turn the knob to
+scroll; clicking a zone/duration row does nothing (it's just for viewing). Click `BACK` (or hold
+the button down anywhere on the list) to return to the menu. If nothing is waiting behind the
+current run, the list is just `BACK` on its own.
 
 ### Stop `<zone>` / Stop all
 

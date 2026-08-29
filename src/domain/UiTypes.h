@@ -13,6 +13,7 @@ enum class UiScreen : uint8_t {
     DurationPicker,
     StopConfirm,
     MenuMain,
+    MenuQueue,
     MenuScheduleRoot,
     MenuSchedule,
     ScheduleAdd,

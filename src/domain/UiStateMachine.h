@@ -38,6 +38,11 @@ public:
         bool alertValveUc = false;
         bool alertValveOc = false;
         uint8_t scheduleRecordCount = 0;
+        // Rows waiting behind the currently-active run — see WateringQueue::size() in main.ino.
+        // Only meaningful while wateringActive, but harmless to read otherwise (menuQueueItemCount
+        // just adds 1 for BACK either way). Doesn't include the active run itself: that's shown by
+        // the Normal screen (activeZone) already, not by MenuQueue.
+        uint8_t queueSize = 0;
         int16_t wateringPercentage = 0;
         int16_t upperLimitPercent = 0;
         int16_t lowerLimitPercent = 0;
@@ -105,8 +110,8 @@ public:
     static constexpr uint8_t kScheduleAddIndexSave = 4;
     static constexpr uint8_t kScheduleAddIndexBack = 5;
 
-    // MenuMain's item order/count depends on whether a run is active — [Stop, Stop all] only
-    // appear while watering, shifting every index after them by 2. One source for both the
+    // MenuMain's item order/count depends on whether a run is active — [Queue, Stop, Stop all]
+    // only appear while watering, shifting every index after them by 3. One source for both the
     // renderer's row order and handleMenuMain's click routing, instead of each independently
     // recomputing the same offsets (see agents.md's layer-separation rule for why this lives here
     // rather than in IrrigatorUi: it's the same navigation-bounds concern kScheduleFieldsPerRecord
@@ -114,6 +119,9 @@ public:
     // covered by the native test suite instead of only by hardware smoke-testing).
     struct MenuMainLayout {
         uint8_t itemCount;
+        uint8_t queueIndex;    // only valid while watering
+        uint8_t stopIndex;     // only valid while watering
+        uint8_t stopAllIndex;  // only valid while watering
         uint8_t scheduleIndex;
         uint8_t testAllIndex;
         uint8_t settingsIndex;
@@ -121,6 +129,13 @@ public:
         uint8_t backIndex;
     };
     static MenuMainLayout menuMainLayout(bool wateringActive);
+
+    // MenuQueue: the rows waiting behind the currently-active run, plus a trailing BACK row — same
+    // "N items + 1" shape as scheduleItemCount() above. With an empty queue this is 1 (just BACK),
+    // which is exactly the "nothing queued" display the spec calls for.
+    static constexpr uint16_t queueMenuItemCount(uint8_t queueSize) {
+        return static_cast<uint16_t>(static_cast<uint16_t>(queueSize) + 1);
+    }
 
     // MenuTestAll: 3 rows — Run, Dur./zone, BACK.
     static constexpr uint8_t kTestAllItemCount = 3;
@@ -280,6 +295,7 @@ private:
     UiIntent handleDurationPicker(UiInputEvent event, const Context& ctx);
     UiIntent handleStopConfirm(UiInputEvent event);
     UiIntent handleMenuMain(UiInputEvent event, const Context& ctx);
+    UiIntent handleMenuQueue(UiInputEvent event, const Context& ctx);
     UiIntent handleMenuScheduleRoot(UiInputEvent event);
     UiIntent handleMenuSchedule(UiInputEvent event, const Context& ctx);
     UiIntent handleMenuScheduleEdit(UiInputEvent event, uint8_t fieldIndex, uint8_t recordIndex);

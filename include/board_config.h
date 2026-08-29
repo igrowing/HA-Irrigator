@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.1.11"
+#define APP_VERSION "1.1.13"
 #endif
 
 namespace irrigator::board {
@@ -133,6 +133,15 @@ static constexpr int AUTOADJUSTMENT_LEAD_TIME_MINUTES = 180;
 // arrives late still helps later same-day waterings or tomorrow's, so this is just the pacing
 // between attempts, not a timeout.
 static constexpr uint32_t AUTOADJUSTMENT_RETRY_INTERVAL_MS = 5UL * 60UL * 1000UL;
+
+// Bounds on every outbound HTTP/HTTPS call (weather providers, ip-api geolocation). Without these
+// the ESP32 HTTPClient default 5s connect timeout applies but nothing bounds the TLS handshake,
+// and a stalled handshake was observed blocking the weather task for 70 SECONDS - holding its
+// ~60KB of TLS buffers the whole time. The retry loop above already re-attempts every 5 minutes,
+// so failing fast costs nothing and giving up slowly costs a lot.
+static constexpr int32_t HTTP_CONNECT_TIMEOUT_MS = 8000;
+static constexpr uint16_t HTTP_RESPONSE_TIMEOUT_MS = 8000;
+static constexpr unsigned long TLS_HANDSHAKE_TIMEOUT_S = 10;
 
 // `offset` is the located region's CURRENT UTC offset in seconds, DST already folded in — it's
 // what replaces the timezone dropdown the captive portal used to ask for (see
