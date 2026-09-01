@@ -435,6 +435,10 @@
                 name: City
               - entity: sensor.irrigator_coordinates
                 name: Coordinates
+              - entity: sensor.irrigator_last_weather_update
+                name: Last update date/time
+              - entity: sensor.irrigator_last_decision
+                name: Last decision
           - type: entities
             entities:
               - entity: input_text.irrigator_zone_1_name

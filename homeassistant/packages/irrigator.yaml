@@ -188,6 +188,21 @@ mqtt:
       device: *irrigator_device
       availability: *irrigator_availability
 
+    # Read-only echo of the device's own /skip_rain_until topic (published by
+    # applyRainSkipDecision() / cmd/skip_rain_until in main.ino). Payload is a bare, naive UTC
+    # timestamp string ("2026-09-02T06:00:00", no zone suffix) - deliberately NOT given
+    # device_class: timestamp here, since HA rejects a tz-naive value for that class; consumers
+    # (sensor.irrigator_last_decision below) append "+00:00" before parsing, same as the
+    # pump-remaining sensors. The topic is not retained and not re-seeded on reconnect, but the
+    # mqtt integration restores this entity's last state across an HA restart, so the "Skip
+    # until ..." decision survives one. No availability: block - a skip window that's still valid
+    # should keep showing even if the device briefly drops off MQTT.
+    - name: "Rain Skip Until"
+      unique_id: irrigator_rain_skip_until
+      icon: mdi:weather-rainy
+      state_topic: "irrigatorF4/skip_rain_until"
+      device: *irrigator_device
+
   # NOTE: the device-side mirror of schedule.json is a trigger-based template
   # sensor (sensor.irrigator_schedule, further down under `template:`), not a
   # plain `mqtt: sensor:` here - it needs to listen on two different topics
@@ -418,10 +433,25 @@ template:
       # Schedule Active" above, for the same reason: writes go through
       # script.irrigator_enqueue_or_publish so they queue for retry when offline, and it carries
       # no `availability:` so it's never greyed out.
+      #
+      # Unlike "Irrigator Schedule Active", the echo topic behind it
+      # (binary_sensor.irrigator_auto_adjustment_state / irrigatorF4/auto_adjustment) is NOT
+      # retained on the broker (deliberate, see MqttService::publishAutoAdjustmentEnabled), and
+      # the device only re-seeds it on its OWN MQTT reconnect. So after an HA-only restart while
+      # the device stays connected, that binary_sensor is 'unknown' and this switch would read
+      # off even when auto-adjustment is on. Fall back to the auto_adjustment_enabled key of the
+      # /status payload, which the "Irrigator - request data" automation re-requests via
+      # cmd/status on every HA start / device-reconnect.
       - name: "Irrigator Auto-adjustment"
         unique_id: irrigator_auto_adjustment
         icon: mdi:weather-partly-rainy
-        state: "{{ is_state('binary_sensor.irrigator_auto_adjustment_state', 'on') }}"
+        state: >-
+          {% set echo = states('binary_sensor.irrigator_auto_adjustment_state') %}
+          {% if echo in ['on', 'off'] %}
+            {{ echo == 'on' }}
+          {% else %}
+            {{ state_attr('sensor.irrigator_address_2', 'auto_adjustment_enabled') | default(false, true) }}
+          {% endif %}
         turn_on:
           - action: script.irrigator_enqueue_or_publish
             data: {topic: "irrigatorF4/cmd/auto_adjustment", payload: "true"}
@@ -797,6 +827,49 @@ template:
         icon: mdi:tune-variant
         state: >-
           {{ (state_attr('sensor.irrigator_settings', 'Current_sensor') or {}).get('pump_current_base_level', 0) }}
+
+      # "Last update date/time" row of the "Auto-adjustment by the Weather" card. `last_weather_update`
+      # is a top-level key of the /status payload (main.ino's buildStatusJson), an ISO string in
+      # naive UTC that the device omits entirely until its first successful weather fetch THIS
+      # session - so this reads `unknown` after a device reboot until the next daily auto-adjustment
+      # run lands. device_class: timestamp makes the entities-card row render it as relative age
+      # ("2 hours ago") with the absolute time on hover; "+00:00" is appended so the tz-naive value
+      # parses as the UTC instant it actually is (same trick as the pump-remaining sensors above).
+      - name: "Irrigator Last Weather Update"
+        unique_id: irrigator_last_weather_update
+        device_class: timestamp
+        icon: mdi:weather-partly-rainy
+        state: >-
+          {% set t = state_attr('sensor.irrigator_address_2', 'last_weather_update') %}
+          {% if t %}{{ (t ~ '+00:00') | as_datetime }}{% endif %}
+
+      # "Last decision" row of the "Auto-adjustment by the Weather" card. Per the two topics the
+      # device publishes its auto-adjustment outcome on:
+      #   - /skip_rain_until wins WHILE its timestamp is still in the future -> "Skip until <local>"
+      #   - once that instant has passed (or no skip was ever issued) -> "Set to X%" from the
+      #     retained /watering_percentage echo (sensor.irrigator_watering_percentage_echo).
+      # now() in the template makes HA re-evaluate this once a minute, so it flips from the skip
+      # text to the percentage text on its own the moment the skip window closes - no automation.
+      - name: "Irrigator Last Decision"
+        unique_id: irrigator_last_decision
+        icon: mdi:scale-balance
+        state: >-
+          {% set skip = states('sensor.irrigator_rain_skip_until') %}
+          {% set skip_dt = (skip ~ '+00:00') | as_datetime(none)
+             if skip not in ['unknown', 'unavailable', 'none', '', none] else none %}
+          {% if skip_dt is not none and skip_dt > now() %}
+            Skip until {{ skip_dt | as_timestamp | timestamp_custom('%a %d %b %H:%M', true) }}
+          {% else %}
+            {% set pct = states('sensor.irrigator_watering_percentage_echo') %}
+            {% if pct in ['unknown', 'unavailable', '', none] %}
+              {% set pct = states('sensor.irrigator_settings') %}
+            {% endif %}
+            {% if pct in ['unknown', 'unavailable', '', none] %}
+              Set to ?%
+            {% else %}
+              Set to {{ pct | int }}%
+            {% endif %}
+          {% endif %}
 
   - button:
       # Formerly "Irrigator Refresh From Device" - same entity (unique_id unchanged, so no
