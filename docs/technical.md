@@ -161,10 +161,10 @@ device's actual prefix in every example below.
 | `/cmd/stop` | empty, or `all`  |  |  | **No special response** Response will be either adding to the queue or alert. Stops the current run — closes the valve immediately, but a zone run's pump still gets its normal graceful-shutdown tail rather than cutting immediately (a pump-only run has no such tail). Plain/empty payload also pops and starts the next queued item, if any; `all` also empties the queue. |
 | `/cmd/scheduled` | bool | `/scheduled` | bool | Turn the schedule on/off, write the schedule state in settings.json if changed, report back true/false. |
 | `/cmd/auto_adjustment` | bool | `/auto_adjustment` | bool | Master on/off for weather-based auto-adjustment (both the daily percentage recalculation and the rain-skip check) — persisted to `settings.json`'s `auto_adjustment_enabled`, reported back true/false. |
-| `/cmd/watering_percentage` | integer | `/watering_percentage` | integer | Sets the schedule-wide watering multiplier (0–300%), persisted to `settings.json`. |
+| `/cmd/watering_percentage` | integer | `/watering_percentage` | integer | Sets the schedule-wide watering multiplier (0–300%; `0` from the auto-adjustment pipeline means "skip today's cycle entirely", not "water at 0%" — see **Weather-based irrigation auto-adjustment** below). **Retained message** — see **Wi-Fi/MQTT connection resilience** below for why. |
 | `/cmd/skip_rain_until` | `"2026-07-12T06:00:00"` |  `/skip_rain_until` | `"2026-07-12T06:00:00"` | Suppresses **scheduled** runs until this UTC timestamp (manual/MQTT runs are never affected — this only gates the schedule engine). |
 |  |  | `/online` |  boolean (LWT on ungraceful disconnect, or explicitly before a deliberate restart). | **Retained message**. Matches Home Assistant's default MQTT `availability_topic` convention. |
-| `/cmd/status` | "" | `/status`  | JSON: `datetime`, `firmware_version`, `boot_reason`, `ip`, `uptime_s`, `rssi_db`, `wifi_quality` (verbal, `miserable`/`poor`/`fair`/`good`/`excellent`), `free_heap_bytes`, `free_storage_bytes`, `cpu_temp_c`, `coredump_available` (read together with `boot_reason` — see [coredump.md](coredump.md)). No `outputs`/current section — which zone/pump is on is `/state`'s job (fired on every start/stop, and on `cmd/state`), and current readings only have a meaningful number outside `cmd/calibrate`'s response as a comparison against a calibrated base; see **True-RMS current sampling** below. | ~15s after boot and on request.  |
+| `/cmd/status` | "" | `/status`  | JSON: `datetime`, `firmware_version`, `boot_reason`, `ip`, `uptime_s`, `rssi_db`, `wifi_quality` (verbal, `miserable`/`poor`/`fair`/`good`/`excellent`), `free_heap_bytes`, `free_storage_bytes`, `mqtt_buffer_bytes`, `cpu_temp_c`, `coredump_available` (read together with `boot_reason` — see [coredump.md](coredump.md)), `publish_failures`, `publish_retried`, `publish_offline`, `mqtt_forced_reconnects` (cumulative since boot — see **Wi-Fi/MQTT connection resilience** below). No `outputs`/current section — which zone/pump is on is `/state`'s job (fired on every start/stop, and on `cmd/state`), and current readings only have a meaningful number outside `cmd/calibrate`'s response as a comparison against a calibrated base; see **True-RMS current sampling** below. | ~15s after boot and on request.  |
 |  |  | `/alert` | see **Error reporting** below | Fire-and-forget notices: current out of expected range, watering queue full, OTA result, and any command/topic error. Not retained, not queued for delivery guarantees. Every alert carries a `datetime` field — JSON alerts get it spliced in alongside their other keys, plain-text alerts are wrapped as `{"datetime":"...","message":"..."}`. |
 | `/cmd/restart` | "" |  |  | **No special response** Publishes `false` to `online`, then restarts. |
 | `/cmd/ota` | FW `.bin` URL | `/ota_started` then `/ota_completed` | `"true"`, then `"2026-07-12T06:00:00"` |  `/ota_started` fires the instant the command is accepted (before the HTTP GET), separately from success/failure - `cmd/#` is only delivered at QoS 0, so a caller can't tell "broker accepted my publish" from "device actually received it" without a distinct receipt signal (see [ota.md](ota.md)'s retry logic, built on exactly this). Downloads and flashes the URL, restarts on success. Blocking by design — see [agents.md](../agents.md) for why. See [ota.md](ota.md) for the higher-level tooling built on top of this. |
@@ -212,6 +212,85 @@ topic to confirm it otherwise:
 ```json
 {"delete":"settings.json","info":"file deleted"}
 ```
+
+### Wi-Fi/MQTT connection resilience
+
+Before 2026-08-29 the device would occasionally go dark for minutes at a time — `/state` on a
+watering start silently missing, or `/status`/`/watering_percentage` failing to publish. (A
+separate, harder fault — `boot_reason: "other_watchdog"`, a hardware watchdog reset around a relay
+transition that bypassed the panic handler and left no core dump — had already gone quiet after an
+earlier round of Wi-Fi power-save/TX-power tuning in `connectWifiOnce()`, and is not what this
+section is about; see [coredump.md](coredump.md) for how `boot_reason`/`coredump_available` work in
+general.) Since the cluster of fixes below landed together on 2026-08-29, the device has held one
+continuous MQTT session for days at a stretch with zero silent drops. What actually changed:
+
+- **`wifiClient_.setNoDelay(true)`** (`MqttService::onConnected()`), disabling Nagle's algorithm on
+  the MQTT `WiFiClient`. Nagle holds a small outgoing segment while a previous one is still
+  unacknowledged, which — paired with the broker's own delayed-ACK behavior — could park a
+  ~150-byte `/state` in the send buffer for up to ~200ms. `startIrrigation()` publishes `/state` and
+  energizes the relay a few milliseconds later in the same `loop()` iteration, squarely inside that
+  window: the publish would report success (the bytes were handed to the socket) while the segment
+  itself was still sitting unsent when the moment it described had already passed. Disabling Nagle
+  pushes each publish out on its own TCP segment immediately.
+
+- **Retry + forced reconnect on a failed publish** (`MqttService::publishRaw()` /
+  `forceReconnect()`). `PubSubClient::publish()` returns `false` for exactly three reasons: not
+  connected, payload larger than the buffer, or the underlying socket write coming up short. On this
+  device it was always the third — a momentary radio/TX-queue condition, not a dead link — so a
+  failed publish is now retried up to `kPublishAttempts` (3) times, `kPublishRetryDelayMs` (5ms)
+  apart, before being treated as a real failure.
+  <br>The more important half: PubSubClient does **not** notice a dead socket on its own. A failed
+  `write()` leaves `_state` at `MQTT_CONNECTED` and the file descriptor open, so `connected()` keeps
+  answering `true` while every subsequent publish — and every inbound `cmd/*` the broker tries to
+  deliver — goes into a socket that leads nowhere. The only thing that used to notice was the
+  keepalive: the client sends its first `PINGREQ` only after `kMqttKeepAliveSec` (200s) of silence
+  and gives up after twice that, while the broker's own `1.5×keepalive` rule (300s) fires the LWT
+  first. Measured on this device: a failed publish was the last thing to reach the broker, `/online`
+  flipped to `false` exactly 300s later, and the device only reconnected after that — a 5-minute
+  outage from one dropped write. Once every retry is exhausted, `forceReconnect()` now calls
+  `mqttClient_.disconnect()` and resets the reconnect timer so `MqttService::loop()` rebuilds the
+  session on its very next pass — collapsing that ~300-400s recovery to about one second.
+
+- **Paced connect-time seed publishes** (`MqttService::kConnectSeedSpacingMs`, 20ms). On every
+  (re)connect the device fires `/online`, then (from `main.ino`'s `ConnectedHandler`) `/scheduled`,
+  `/auto_adjustment`, and `/watering_percentage` — four small writes back-to-back into a TCP socket
+  that is only milliseconds old. Every publish failure this device ever reported was the *last*
+  message of that burst. A 20ms gap between each publish (~80ms total, once per connection) moves
+  the burst out of the socket's just-opened, still-settling window.
+
+- **`/watering_percentage` is now retained.** It carries the auto-adjustment pipeline's most
+  consequential number — `0` means "skip today's watering entirely," not "water at 0%" — and it was
+  repeatedly the exact message lost to the burst above. Retaining it means a dropped publish no
+  longer erases that information from the broker's point of view; the next subscriber (or an HA
+  restart) still sees the last value the device actually sent, and it self-corrects on the next
+  successful publish. (The original reason this was *not* retained — a stale value surviving past a
+  device restart — no longer applies: every one of these entities is gated in Home Assistant on the
+  retained `/online`, which the LWT drives to `false` whenever the device is actually down, so a
+  retained value can't be shown as live while the device is offline.)
+
+- **Bounded HTTP/TLS timeouts** on all three outbound HTTPS calls (`WeatherService.cpp`: Open-Meteo,
+  WeatherAPI, and `ip-api.com` geolocation). `HTTPClient`'s own connect timeout does **not** cover
+  the mbedTLS handshake — a stalled handshake was observed blocking the weather task for 70 seconds,
+  holding its ~60KB of TLS buffers the entire time. `client.setHandshakeTimeout(TLS_HANDSHAKE_TIMEOUT_S)`
+  (10s) plus `http.setConnectTimeout()`/`setTimeout()` (`HTTP_CONNECT_TIMEOUT_MS`/
+  `HTTP_RESPONSE_TIMEOUT_MS`, 8s each — see `board_config.h`) cap the worst case per provider at
+  ~10s. This doesn't touch MQTT directly, but a background task blocked for over a minute delays
+  `loop()`'s own MQTT servicing indirectly and was worth closing at the same time.
+
+- **Four new health counters**, cumulative since boot and surfaced in `/status` (see the
+  Command/response table above): `publish_failures` (every retry exhausted — each one also forced a
+  reconnect), `publish_retried` (failed at least once, then succeeded — the near-misses, and the
+  earliest sign the link is degrading, worth watching *before* `publish_failures` climbs),
+  `publish_offline` (a publish attempted while `!connected()` — previously silent), and
+  `mqtt_forced_reconnects` (sessions torn down by the mechanism above rather than by the keepalive).
+  Read these against `rssi_db` — a climbing count on a device with poor signal is the RF link
+  telling you something; the same count on a device with good signal points elsewhere.
+
+None of this is a claim that the underlying link itself got better — RSSI at the device's location
+is unchanged (-68 to -72dBm, "fair"). What changed is that a **transient** write failure — which the
+data shows self-heals within milliseconds — no longer gets escalated into a **multi-minute** outage
+by machinery (Nagle's buffering, the keepalive's slow death-detection) that was built for a
+different failure shape than the one this device actually has.
 
 ### Examples
 
