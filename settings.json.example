@@ -1,0 +1,40 @@
+{
+  "Watering": {
+    "watering_percentage": 200,
+    "schedule_active": true,
+    "default_manual_duration": 2,
+    "auto_adjustment_enabled": true,
+    "upper_limit": 200,
+    "lower_limit": 40,
+    "rain_skip_probability_percent": 70,
+    "rain_skip_amount_mm": 4,
+    "weatherapi_key": "your_api_key_here"
+  },
+  "Location": {
+    "location_known": false,
+    "latitude": 0.0,
+    "longitude": 0.0,
+    "city": "Null"
+  },
+  "Current_sensor": {
+    "valve_current_base_level": 205,
+    "pump_current_base_level": 328,
+    "alert_pump_uc": false,
+    "alert_pump_oc": true,
+    "alert_valve_uc": true,
+    "alert_valve_oc": true
+  },
+  "Zones": {
+    "1": {"name": "Trees left", "enabled": true},
+    "2": {"name": "Triangle", "enabled": true},
+    "3": {"name": "Back left", "enabled": true},
+    "4": {"name": "Mid-left", "enabled": true},
+    "5": {"name": "Mid-right", "enabled": true},
+    "6": {"name": "Back gate", "enabled": true},
+    "7": {"name": "Back right", "enabled": true},
+    "8": {"name": "Trees right", "enabled": true},
+    "9": {"name": "Ginko", "enabled": true},
+    "10": {"name": "Front", "enabled": true},
+    "11": {"name": "Zone 11", "enabled": false}
+  }
+}

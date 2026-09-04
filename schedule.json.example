@@ -1,0 +1,22 @@
+[
+  {"zone":1,"day_of_week":2,"start_time":"06:00","duration_min":30,"active":true},
+  {"zone":8,"day_of_week":2,"start_time":"06:30","duration_min":30,"active":true},
+  {"zone":2,"day_of_week":3,"start_time":"06:30","duration_min":9,"active":true},
+  {"zone":3,"day_of_week":3,"start_time":"06:25","duration_min":9,"active":true},
+  {"zone":4,"day_of_week":3,"start_time":"06:17","duration_min":12,"active":true},
+  {"zone":5,"day_of_week":3,"start_time":"06:10","duration_min":12,"active":true},
+  {"zone":6,"day_of_week":3,"start_time":"06:05","duration_min":12,"active":true},
+  {"zone":7,"day_of_week":3,"start_time":"06:00","duration_min":12,"active":true},
+  {"zone":9,"day_of_week":3,"start_time":"05:55","duration_min":10,"active":true},
+  {"zone":10,"day_of_week":3,"start_time":"05:45","duration_min":13,"active":true},
+  {"zone":1,"day_of_week":5,"start_time":"06:00","duration_min":30,"active":true},
+  {"zone":8,"day_of_week":5,"start_time":"06:30","duration_min":30,"active":true},
+  {"zone":2,"day_of_week":6,"start_time":"06:30","duration_min":9,"active":true},
+  {"zone":3,"day_of_week":6,"start_time":"06:25","duration_min":9,"active":true},
+  {"zone":4,"day_of_week":6,"start_time":"06:17","duration_min":12,"active":true},
+  {"zone":5,"day_of_week":6,"start_time":"06:10","duration_min":12,"active":true},
+  {"zone":6,"day_of_week":6,"start_time":"06:05","duration_min":12,"active":true},
+  {"zone":7,"day_of_week":6,"start_time":"06:00","duration_min":12,"active":true},
+  {"zone":9,"day_of_week":6,"start_time":"05:55","duration_min":10,"active":true},
+  {"zone":10,"day_of_week":6,"start_time":"05:45","duration_min":13,"active":true}
+]
