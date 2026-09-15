@@ -2246,6 +2246,32 @@ void consumeWeatherAutoAdjustResult(uint32_t nowMs) {
     }
 }
 
+// Shared by weatherAutoAdjustStatus (read-only reporting) and runAutoAdjustmentIfDue (which acts
+// on it) so the two "when is a check due" gates can't drift apart. Two paths:
+//  - A watering is scheduled today: due once within AUTOADJUSTMENT_LEAD_TIME_MINUTES of the day's
+//    first start (checked earlier on cmd/weather's manual trigger, which bypasses this entirely).
+//  - Nothing is scheduled today: due once AUTOADJUSTMENT_OFFDAY_CHECK_INTERVAL_S has passed since
+//    the last successful check (or immediately if there's never been one), so the weather pipeline
+//    and rain-skip still get exercised daily even through a stretch with an empty schedule.
+// Returns nullptr when due "on schedule grounds"; callers still need their own
+// weatherTaskInFlight/retry-timer gates on top of that.
+const char* autoAdjustScheduleGateReason(const struct tm& timeinfo, int64_t nowEpoch) {
+    const uint8_t isoDayOfWeek = timeinfo.tm_wday == 0 ? 7 : static_cast<uint8_t>(timeinfo.tm_wday);
+    const int firstStartMinutes = earliestScheduleStartMinutesToday(isoDayOfWeek);
+    if (firstStartMinutes >= 0) {
+        const int nowMinutes = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+        if (nowMinutes < firstStartMinutes - irrigator::board::AUTOADJUSTMENT_LEAD_TIME_MINUTES) {
+            return "waiting_for_window";
+        }
+        return nullptr;
+    }
+    if (lastWeatherUpdateEpoch != 0 &&
+        nowEpoch - lastWeatherUpdateEpoch < irrigator::board::AUTOADJUSTMENT_OFFDAY_CHECK_INTERVAL_S) {
+        return "no_schedule_waiting_recheck";
+    }
+    return nullptr;
+}
+
 // Mirrors runAutoAdjustmentIfDue's gates exactly, read-only — see that function for what each one
 // means. Kept as a single source of truth for "why hasn't this run" rather than duplicating the
 // reasoning independently and risking the two drifting apart.
@@ -2265,14 +2291,9 @@ const char* weatherAutoAdjustStatus() {
     if (strcmp(lastWeatherUpdateDate, today) == 0) {
         return "done_today";
     }
-    const uint8_t isoDayOfWeek = timeinfo.tm_wday == 0 ? 7 : static_cast<uint8_t>(timeinfo.tm_wday);
-    const int firstStartMinutes = earliestScheduleStartMinutesToday(isoDayOfWeek);
-    if (firstStartMinutes < 0) {
-        return "no_schedule_today";
-    }
-    const int nowMinutes = timeinfo.tm_hour * 60 + timeinfo.tm_min;
-    if (nowMinutes < firstStartMinutes - irrigator::board::AUTOADJUSTMENT_LEAD_TIME_MINUTES) {
-        return "waiting_for_window";
+    const char* gateReason = autoAdjustScheduleGateReason(timeinfo, clockService.epoch());
+    if (gateReason != nullptr) {
+        return gateReason;
     }
     if (weatherTaskInFlight) {
         return "fetch_in_progress";
@@ -2320,12 +2341,13 @@ bool startWeatherFetch(const char* today, int64_t nowEpoch) {
     return true;
 }
 
-// Daily weather-based adjustment cycle. Opens
-// AUTOADJUSTMENT_LEAD_TIME_MINUTES before the day's first scheduled watering (or immediately at
-// boot if that window has already passed) and, once open, retries every
-// AUTOADJUSTMENT_RETRY_INTERVAL_MS until a forecast is successfully applied for today —
-// deliberately uncapped: a forecast that only arrives after the first watering has already run
-// still helps later same-day runs or informs the rain-skip decision in time to save water.
+// Daily weather-based adjustment cycle. On a day with a watering scheduled, opens
+// AUTOADJUSTMENT_LEAD_TIME_MINUTES before its first start (or immediately at boot if that window
+// has already passed) and, once open, retries every AUTOADJUSTMENT_WEATHER_RETRY_INTERVAL_MS. On a
+// day with nothing scheduled, instead waits for AUTOADJUSTMENT_OFFDAY_CHECK_INTERVAL_S to pass
+// since the last successful check. Either way, retries are deliberately uncapped: a forecast that
+// only arrives after the first watering has already run still helps later same-day runs or
+// tomorrow's, or informs the rain-skip decision in time to save water.
 void runAutoAdjustmentIfDue(uint32_t nowMs) {
     consumeWeatherAutoAdjustResult(nowMs);
 
@@ -2347,24 +2369,19 @@ void runAutoAdjustmentIfDue(uint32_t nowMs) {
         return;  // Already completed today's cycle.
     }
 
-    const uint8_t isoDayOfWeek = timeinfo.tm_wday == 0 ? 7 : static_cast<uint8_t>(timeinfo.tm_wday);
-    const int firstStartMinutes = earliestScheduleStartMinutesToday(isoDayOfWeek);
-    if (firstStartMinutes < 0) {
-        return;  // Nothing scheduled today; nothing to correct.
-    }
-    const int nowMinutes = timeinfo.tm_hour * 60 + timeinfo.tm_min;
-    if (nowMinutes < firstStartMinutes - irrigator::board::AUTOADJUSTMENT_LEAD_TIME_MINUTES) {
-        return;  // Lead-time window hasn't opened yet.
+    const int64_t nowEpoch = clockService.epoch();
+    if (autoAdjustScheduleGateReason(timeinfo, nowEpoch) != nullptr) {
+        return;  // Neither the pre-watering window nor the off-day recheck interval is open yet.
     }
 
     if (weatherAttempted &&
-        nowMs - lastWeatherAttemptMs < irrigator::board::AUTOADJUSTMENT_RETRY_INTERVAL_MS) {
+        nowMs - lastWeatherAttemptMs < irrigator::board::AUTOADJUSTMENT_WEATHER_RETRY_INTERVAL_MS) {
         return;
     }
     weatherAttempted = true;
     lastWeatherAttemptMs = nowMs;
 
-    startWeatherFetch(today, clockService.epoch());  // Retry paced by lastWeatherAttemptMs above regardless of outcome.
+    startWeatherFetch(today, nowEpoch);  // Retry paced by lastWeatherAttemptMs above regardless of outcome.
 }
 
 void runScheduleEngine(uint32_t nowMs) {

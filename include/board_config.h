@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.1.13"
+#define APP_VERSION "1.1.14"
 #endif
 
 namespace irrigator::board {
@@ -127,12 +127,22 @@ static constexpr int64_t AUTOADJUSTMENT_RAIN_SKIP_DURATION_S = 24LL * 3600;
 // the rain-skip check above looks forward.
 static constexpr uint8_t AUTOADJUSTMENT_PAST_WEATHER_DAYS = 5;
 static constexpr uint8_t AUTOADJUSTMENT_FORECAST_WINDOW_HOURS = 12;
-// How far ahead of the day's first scheduled watering the fetch/retry cycle starts.
-static constexpr int AUTOADJUSTMENT_LEAD_TIME_MINUTES = 180;
+// How far ahead of the day's first scheduled watering the fetch/retry cycle starts, on days that
+// have a watering scheduled. Kept short so the reading stays close to watering time; the retry
+// pacing below is correspondingly tight (5 attempts fit in this window) rather than the old
+// 3h/5min combo.
+static constexpr int AUTOADJUSTMENT_LEAD_TIME_MINUTES = 5;
 // Retries are deliberately unbounded (not capped at a fixed attempt count): a forecast that
 // arrives late still helps later same-day waterings or tomorrow's, so this is just the pacing
-// between attempts, not a timeout.
+// between attempts, not a timeout. Used for the pre-watering check above.
+static constexpr uint32_t AUTOADJUSTMENT_WEATHER_RETRY_INTERVAL_MS = 1UL * 60UL * 1000UL;
+// Geolocation's own retry pacing (separate concern from the weather-fetch retry above).
 static constexpr uint32_t AUTOADJUSTMENT_RETRY_INTERVAL_MS = 5UL * 60UL * 1000UL;
+// On days with nothing scheduled, how often to check anyway — keeps the weather pipeline
+// (and its failure alerts) exercised daily instead of going silent for however long the
+// schedule stays empty, and lets a rain-skip decision land ahead of tomorrow's first watering
+// rather than waiting for that day's own 5-minute pre-watering window.
+static constexpr int64_t AUTOADJUSTMENT_OFFDAY_CHECK_INTERVAL_S = 24LL * 3600;
 
 // Bounds on every outbound HTTP/HTTPS call (weather providers, ip-api geolocation). Without these
 // the ESP32 HTTPClient default 5s connect timeout applies but nothing bounds the TLS handshake,

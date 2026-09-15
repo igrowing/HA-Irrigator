@@ -100,3 +100,48 @@ The schematics is built to provide the follwing current sensitivity:
 | Pump | 0.047| 47 | 24.5 |
 
 This means, having `CURRENT_CALIBRATION_MIN_BASE_LEVEL = 30` will fail the calibration of valve which consumes less than 36 mA and the pump that draws less than 640 mA.
+
+
+## Water flow sensing
+
+### Flow meter: TUF-2000M
+
+An ultrasonic clamp-on flow meter — no pipe-cutting install, reads flow rate and totalized volume over Modbus RTU on RS-485. It also carries its own onboard relay (OCT), configurable locally on the meter to trip on a flow-rate or totalizer threshold — that relay is meant to drive the shut-off valve directly as a hardware failsafe (see below), independent of the ESP32/Wi-Fi being alive.
+
+### RS-485 GPIOs
+
+Every strapping-safe, output-capable GPIO is already claimed by zones/pump/LED/rotary/ADC/I2C (see [board_config.h](../include/board_config.h)), and GPIO0/1/3 are off-limits (factory-reset button, and `Serial`/flashing). That leaves only GPIO2 and GPIO12 — both ESP32 boot-strapping pins:
+
+| Signal | PIN |
+|--|--|
+| TX → converter TXD | 2 | 
+| RX ← converter RXD | 36 | 
+| DE/RE | — (unused/automatic) | 
+| GND | GND | 
+| VIN | 3V3 |
+
+### RS-485 converter: Waveshare TTL TO RS485 (C)
+
+Picked over a plain MAX485-style breakout for two reasons:
+- **Galvanic isolation.** This cable run parallels mains wiring through the garage; the module isolates the RS-485 bus side (both power and signal, via an onboard isolated DC-DC plus a digital isolator) from the ESP32's own logic and ground, so an induced spike on the bus has no metallic path to the MCU even if it gets past the onboard TVS clamp first.
+- **Automatic direction switching**, built into the chip — no DE/RE control needed, so the link only spends the 2 GPIOs above instead of 3.
+
+Also has onboard 120Ω termination (enabled by soldering a jumper) and 200W surge / 6kV ESD protection on the bus side. TTL-side pinout: VCC / TXD / RXD / GND (to the ESP32's 3.3V, GPIO2, GPIO36, GND); RS-485 side: A+ / B- / PE.
+
+### Wiring the RS-485 cable
+
+- Shielded twisted pair for A/B.
+- Land the shield on the converter's **PE** terminal, at the ESP32 end only — don't also ground it at the flow meter end (that turns the shield into a ground-loop path), and don't bridge PE to the TTL-side GND (that defeats the isolation).
+- Run a common GND wire alongside A/B out to the flow meter anyway, so both ends' transceivers share a reference within their common-mode range.
+
+### Why the 120Ω terminator matters
+
+RS-485 is a shared differential line; an un-terminated cable end reflects a fast signal edge back down the wire instead of absorbing it, corrupting bytes — worse at higher baud rates or longer runs. A 120Ω resistor at each of the two *physical ends* of the bus (matched to the cable's characteristic impedance) soaks up the edge instead of reflecting it. Enable it only at the two endpoints, never at an intermediate device on a multi-drop run — extra resistors along the way just overload the driver and attenuate the signal for everyone.
+
+### Room for more RS-485 devices later
+
+RS-485/Modbus is multi-drop: a shut-off valve controller or any other Modbus RTU device can join the same A/B pair later with its own slave ID — no extra ESP32 pins or a second converter needed, they all share this one bus.
+
+### Shut-off valve strategy
+
+Prefer the TUF-2000M's own relay, configured locally (flow-rate or totalizer threshold), as the failsafe that closes a master shut-off valve even when the ESP32 or Wi-Fi is down — the same "don't trust the network for safety-critical stuff" principle the current-sensing overcurrent checks already follow. Poll flow readings over Modbus in firmware as well, for HA reporting/logging and for schedule-aware logic the meter alone can't know (e.g. unusually high volume mid-cycle for whichever zone is currently running).
