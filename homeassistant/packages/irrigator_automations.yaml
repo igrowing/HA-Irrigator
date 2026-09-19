@@ -212,6 +212,16 @@ automation:
           input_boolean.turn_{{ 'on' if (state_attr('sensor.irrigator_settings', 'Current_sensor') or {}).get('alert_valve_oc', true) else 'off' }}
         target:
           entity_id: input_boolean.irrigator_alert_valve_oc
+      # FlowMeter group - same sync pattern as the Current_sensor toggles above.
+      - action: >-
+          input_boolean.turn_{{ 'on' if (state_attr('sensor.irrigator_settings', 'FlowMeter') or {}).get('flow_meter_enabled', true) else 'off' }}
+        target:
+          entity_id: input_boolean.irrigator_flow_meter_enabled
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.irrigator_expected_flow_rate_lpm
+        data:
+          value: "{{ (state_attr('sensor.irrigator_settings', 'FlowMeter') or {}).get('expected_flow_rate_lpm', 0) }}"
       # schedule_active is deliberately NOT touched here anymore. It used to
       # be "self-set" via switch.turn_on/off from settings.json's value - but
       # switch.irrigator_schedule_active's turn_on/off PUBLISHES cmd/scheduled
@@ -315,6 +325,8 @@ automation:
           - input_boolean.irrigator_alert_pump_oc
           - input_boolean.irrigator_alert_valve_uc
           - input_boolean.irrigator_alert_valve_oc
+          - input_boolean.irrigator_flow_meter_enabled
+          - input_number.irrigator_expected_flow_rate_lpm
     conditions:
       - condition: template
         value_template: "{{ states('sensor.irrigator_settings') not in ['unknown', 'unavailable'] }}"

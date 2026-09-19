@@ -8,11 +8,14 @@
 #include "../../src/domain/ConfigStore.h"
 #include "../../src/domain/DstRules.h"
 #include "../../src/domain/DurationAdjuster.h"
+#include "../../src/domain/FlowConsumptionTracker.h"
+#include "../../src/domain/FlowPublishGate.h"
 #include "../../src/domain/IrrigationStateMachine.h"
 #include "../../src/domain/RainSkip.h"
 #include "../../src/domain/Schedule.h"
 #include "../../src/domain/ScheduleEngine.h"
 #include "../../src/domain/Settings.h"
+#include "../../src/domain/Tuf2000mProtocol.h"
 #include "../../src/domain/UiStateMachine.h"
 #include "../../src/domain/WateringQueue.h"
 #include "../../src/domain/WifiQuality.h"
@@ -880,6 +883,14 @@ void test_validate_settings_rejects_each_out_of_range_field() {
     settings = baseline;
     settings.rainSkipAmountMm = -1;
     TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+
+    settings = baseline;
+    settings.expectedFlowRateLpm = 500;
+    TEST_ASSERT_TRUE(irrigator::domain::validateSettings(settings));  // 500 is the inclusive ceiling
+    settings.expectedFlowRateLpm = 501;
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+    settings.expectedFlowRateLpm = -1;
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
 }
 
 // Pre-restructuring flat settings.json (no Zones/Location/Current_sensor/Watering groups) — the
@@ -920,6 +931,21 @@ void test_settings_store_round_trips() {
     TEST_ASSERT_TRUE(roundTripped.alertPumpOc);
     TEST_ASSERT_TRUE(roundTripped.alertValveUc);
     TEST_ASSERT_FALSE(roundTripped.alertValveOc);
+}
+
+void test_settings_store_round_trips_flow_meter_fields() {
+    irrigator::domain::Settings settings = irrigator::domain::makeDefaultZones();
+    settings.flowMeterEnabled = false;
+    settings.expectedFlowRateLpm = 12;
+
+    char buffer[irrigator::board::SETTINGS_JSON_MAX_BYTES];
+    const size_t written = irrigator::domain::serializeSettings(settings, buffer, sizeof(buffer));
+    TEST_ASSERT_TRUE(written > 0);
+
+    irrigator::domain::Settings roundTripped;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(buffer, written, roundTripped));
+    TEST_ASSERT_FALSE(roundTripped.flowMeterEnabled);
+    TEST_ASSERT_EQUAL_INT16(12, roundTripped.expectedFlowRateLpm);
 }
 
 // The round-trip above pins the Watering group's scalars; this covers the three groups it doesn't
@@ -1004,6 +1030,17 @@ void test_settings_store_defaults_alert_toggles_to_true_when_missing() {
     TEST_ASSERT_TRUE(settings.alertPumpOc);
     TEST_ASSERT_TRUE(settings.alertValveUc);
     TEST_ASSERT_TRUE(settings.alertValveOc);
+}
+
+// FlowMeter is also new, with no pre-restructuring flat key to fall back to - a settings.json
+// missing it entirely must default to enabled/unconfigured (see Settings.h's field comments), the
+// same "don't silently disable/misconfigure a feature on upgrade" reasoning as the alert toggles.
+void test_settings_store_defaults_flow_meter_fields_when_missing() {
+    const char* json = R"({"Watering":{"watering_percentage":80}})";
+    irrigator::domain::Settings settings;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(json, strlen(json), settings));
+    TEST_ASSERT_TRUE(settings.flowMeterEnabled);
+    TEST_ASSERT_EQUAL_INT16(0, settings.expectedFlowRateLpm);
 }
 
 // A full pre-restructuring flat settings.json — one field from each of the four new groups —
@@ -1209,6 +1246,34 @@ void test_merge_settings_updates_current_sensor_alert_toggles() {
     TEST_ASSERT_TRUE(merged.alertPumpOc);
     TEST_ASSERT_TRUE(merged.alertValveUc);
     TEST_ASSERT_FALSE(merged.alertValveOc);
+}
+
+void test_merge_settings_updates_flow_meter_fields() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    TEST_ASSERT_TRUE(existing.flowMeterEnabled);
+    TEST_ASSERT_EQUAL_INT16(0, existing.expectedFlowRateLpm);
+
+    const char* json = R"({"FlowMeter":{"flow_meter_enabled":false,"expected_flow_rate_lpm":15}})";
+    irrigator::domain::Settings merged;
+    char rejected[256];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("", rejected);
+    TEST_ASSERT_FALSE(merged.flowMeterEnabled);
+    TEST_ASSERT_EQUAL_INT16(15, merged.expectedFlowRateLpm);
+}
+
+void test_merge_settings_rejects_out_of_range_expected_flow_rate() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    existing.expectedFlowRateLpm = 20;
+
+    const char* json = R"({"FlowMeter":{"expected_flow_rate_lpm":501}})";
+    irrigator::domain::Settings merged;
+    char rejected[256];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("FlowMeter.expected_flow_rate_lpm", rejected);
+    TEST_ASSERT_EQUAL_INT16(20, merged.expectedFlowRateLpm);  // kept existing's value, not clamped
 }
 
 // The Zones merge accepts the current {"name":..,"enabled":..} object form and the legacy
@@ -3109,6 +3174,333 @@ void test_wifi_quality_thresholds_and_bar_count() {
     TEST_ASSERT_EQUAL_UINT8(0, wifiQualityBarCount(WifiQuality::Miserable));
 }
 
+// --- Tuf2000mProtocol: decodeSwappedFloat ------------------------------------------------------
+
+void test_decode_swapped_float_matches_reference_project_byte_order() {
+    using irrigator::domain::decodeSwappedFloat;
+
+    // 12.5f as IEEE-754 is 0x41480000. github.com/tczerwonka/tuf2000-modbus-reader's decode reads
+    // the two registers in wire order into buf[0]/buf[1], swaps them (buf[0]<->buf[1]), then
+    // memcpy's the pair into a float on a little-endian host - i.e. the float's low 16 bits come
+    // from the SECOND register (reg1) and its high 16 bits from the FIRST (reg0). So reg0 carries
+    // the high word (0x4148), reg1 the low word (0x0000).
+    TEST_ASSERT_EQUAL_FLOAT(12.5f, decodeSwappedFloat(0x4148, 0x0000));
+
+    // 0.0f both ways, and a value whose low word is non-zero (reg1 != 0) to exercise both halves:
+    // -1.0f is 0xBF800000 (high word 0xBF80, low word 0x0000); 1.0f is 0x3F800000. Pick a value
+    // with a non-zero low word: 1.5f is 0x3FC00000 - still a zero low word. Use 3.14159274f
+    // (0x40490FDB): high word 0x4049, low word 0x0FDB.
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, decodeSwappedFloat(0x0000, 0x0000));
+    TEST_ASSERT_EQUAL_FLOAT(-1.0f, decodeSwappedFloat(0xBF80, 0x0000));
+    TEST_ASSERT_FLOAT_WITHIN(0.0001f, 3.14159274f, decodeSwappedFloat(0x4049, 0x0FDB));
+}
+
+// --- Tuf2000mProtocol: Tuf2000mPollTracker -----------------------------------------------------
+
+void test_poll_tracker_token_round_trips_field_and_sequence() {
+    using irrigator::domain::Tuf2000mPollTracker;
+
+    const uint32_t token = Tuf2000mPollTracker::makeToken(7, Tuf2000mPollTracker::kTotalizer);
+    TEST_ASSERT_EQUAL_UINT32(7, Tuf2000mPollTracker::pollSeqOf(token));
+    TEST_ASSERT_TRUE(Tuf2000mPollTracker::kTotalizer == Tuf2000mPollTracker::fieldOf(token));
+
+    // All three fields, at a poll sequence large enough to matter (not just 0/1).
+    const uint32_t seq = 12345;
+    TEST_ASSERT_TRUE(Tuf2000mPollTracker::kFlowRate ==
+                     Tuf2000mPollTracker::fieldOf(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kFlowRate)));
+    TEST_ASSERT_TRUE(Tuf2000mPollTracker::kTotalizer ==
+                     Tuf2000mPollTracker::fieldOf(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kTotalizer)));
+    TEST_ASSERT_TRUE(Tuf2000mPollTracker::kSignalQuality ==
+                     Tuf2000mPollTracker::fieldOf(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality)));
+    TEST_ASSERT_EQUAL_UINT32(seq, Tuf2000mPollTracker::pollSeqOf(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality)));
+}
+
+void test_poll_tracker_begin_poll_increments_sequence_and_starts_in_flight() {
+    irrigator::domain::Tuf2000mPollTracker tracker;
+
+    const uint32_t seq1 = tracker.beginPoll(1000);
+    TEST_ASSERT_EQUAL_UINT32(seq1, tracker.activePollSeq());
+    TEST_ASSERT_TRUE(tracker.inFlight());
+    TEST_ASSERT_FALSE(tracker.failed());
+    TEST_ASSERT_EQUAL_UINT32(1000, tracker.startedAtMs());
+
+    const uint32_t seq2 = tracker.beginPoll(2000);
+    TEST_ASSERT_TRUE(seq2 > seq1);  // Monotonically increasing, never reused.
+    TEST_ASSERT_EQUAL_UINT32(seq2, tracker.activePollSeq());
+}
+
+void test_poll_tracker_completes_only_after_every_field_reports() {
+    using irrigator::domain::Tuf2000mPollTracker;
+    Tuf2000mPollTracker tracker;
+
+    const uint32_t seq = tracker.beginPoll(0);
+    const uint32_t flowToken = Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kFlowRate);
+    const uint32_t totalToken = Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kTotalizer);
+    const uint32_t sigToken = Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality);
+
+    TEST_ASSERT_FALSE(tracker.recordField(flowToken, true));
+    TEST_ASSERT_TRUE(tracker.inFlight());  // Still waiting on 2 more fields.
+    TEST_ASSERT_FALSE(tracker.recordField(totalToken, true));
+    TEST_ASSERT_TRUE(tracker.inFlight());
+    TEST_ASSERT_TRUE(tracker.recordField(sigToken, true));  // The 3rd field completes the poll.
+    TEST_ASSERT_FALSE(tracker.inFlight());
+    TEST_ASSERT_FALSE(tracker.failed());
+}
+
+void test_poll_tracker_any_field_error_marks_the_whole_poll_failed() {
+    using irrigator::domain::Tuf2000mPollTracker;
+    Tuf2000mPollTracker tracker;
+
+    const uint32_t seq = tracker.beginPoll(0);
+    tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kFlowRate), true);
+    tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kTotalizer), false);
+    const bool complete =
+        tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality), true);
+
+    TEST_ASSERT_TRUE(complete);
+    TEST_ASSERT_TRUE(tracker.failed());  // One failed field poisons the whole poll's reading.
+}
+
+void test_poll_tracker_stale_reply_from_abandoned_poll_is_ignored() {
+    using irrigator::domain::Tuf2000mPollTracker;
+    Tuf2000mPollTracker tracker;
+
+    const uint32_t staleSeq = tracker.beginPoll(0);
+    const uint32_t staleToken = Tuf2000mPollTracker::makeToken(staleSeq, Tuf2000mPollTracker::kFlowRate);
+    tracker.forceClear();  // Watchdog gave up on this poll (see isStuck()) before it completed.
+
+    const uint32_t newSeq = tracker.beginPoll(9000);
+
+    // The old poll's late reply must not be mistaken for part of the new one: isCurrent() rejects
+    // it, and feeding it to recordField() must neither complete the new poll nor corrupt its state.
+    TEST_ASSERT_FALSE(tracker.isCurrent(staleToken));
+    TEST_ASSERT_FALSE(tracker.recordField(staleToken, false));
+    TEST_ASSERT_TRUE(tracker.inFlight());   // New poll still waiting on all 3 fields.
+    TEST_ASSERT_FALSE(tracker.failed());    // The stale error must not poison the new poll.
+
+    // The new poll still completes normally on its own 3 fields.
+    tracker.recordField(Tuf2000mPollTracker::makeToken(newSeq, Tuf2000mPollTracker::kFlowRate), true);
+    tracker.recordField(Tuf2000mPollTracker::makeToken(newSeq, Tuf2000mPollTracker::kTotalizer), true);
+    TEST_ASSERT_TRUE(tracker.recordField(Tuf2000mPollTracker::makeToken(newSeq, Tuf2000mPollTracker::kSignalQuality), true));
+    TEST_ASSERT_FALSE(tracker.failed());
+}
+
+void test_poll_tracker_is_stuck_only_once_timeout_elapsed_while_in_flight() {
+    irrigator::domain::Tuf2000mPollTracker tracker;
+
+    tracker.beginPoll(1000);
+    TEST_ASSERT_FALSE(tracker.isStuck(1000, 8000));     // No time elapsed yet.
+    TEST_ASSERT_FALSE(tracker.isStuck(8999, 8000));     // Just under the timeout.
+    TEST_ASSERT_TRUE(tracker.isStuck(9000, 8000));      // Exactly at the timeout.
+    TEST_ASSERT_TRUE(tracker.isStuck(20000, 8000));     // Well past it.
+
+    tracker.forceClear();
+    TEST_ASSERT_FALSE(tracker.isStuck(999999, 8000));   // Nothing in flight - can't be stuck.
+}
+
+void test_poll_tracker_force_clear_lets_a_new_poll_start_without_finishing_the_old_one() {
+    using irrigator::domain::Tuf2000mPollTracker;
+    Tuf2000mPollTracker tracker;
+
+    tracker.beginPoll(0);
+    TEST_ASSERT_TRUE(tracker.inFlight());
+    tracker.forceClear();
+    TEST_ASSERT_FALSE(tracker.inFlight());
+
+    // A fresh poll behaves normally afterwards - forceClear() doesn't wedge the tracker: the first
+    // two fields don't complete it, the third does.
+    const uint32_t seq = tracker.beginPoll(100);
+    TEST_ASSERT_TRUE(tracker.inFlight());
+    TEST_ASSERT_FALSE(tracker.failed());
+    TEST_ASSERT_FALSE(tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kFlowRate), true));
+    TEST_ASSERT_FALSE(tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kTotalizer), true));
+    TEST_ASSERT_TRUE(tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality), true));
+    TEST_ASSERT_FALSE(tracker.inFlight());
+}
+
+// --- FlowPublishGate -----------------------------------------------------------------------
+
+void test_flow_publish_gate_publishes_immediately_on_the_very_first_reading() {
+    irrigator::domain::FlowPublishGate gate;
+
+    // Idle, zero flow, first call ever - still publishes, so HA/an MQTT explorer sees something
+    // right away instead of waiting out the first cadence window.
+    TEST_ASSERT_TRUE(gate.shouldPublish(0, false, 0.0f));
+}
+
+void test_flow_publish_gate_active_state_uses_a_flat_once_per_minute_cadence() {
+    irrigator::domain::FlowPublishGate gate;
+    TEST_ASSERT_TRUE(gate.shouldPublish(0, true, 0.0f));  // Bootstrap publish.
+
+    // Well under a minute later: no publish, regardless of how much volume moved.
+    TEST_ASSERT_FALSE(gate.shouldPublish(1000, true, 500.0f));
+    TEST_ASSERT_FALSE(gate.shouldPublish(59999, true, 500.0f));
+    // Exactly at the minute boundary: publishes (>=, not >).
+    TEST_ASSERT_TRUE(gate.shouldPublish(60000, true, 500.0f));
+    // And the cadence restarts from that new publish, not the original one.
+    TEST_ASSERT_FALSE(gate.shouldPublish(60999, true, 500.0f));
+    TEST_ASSERT_TRUE(gate.shouldPublish(120000, true, 500.0f));
+}
+
+void test_flow_publish_gate_idle_state_never_publishes_below_threshold_no_matter_how_long() {
+    irrigator::domain::FlowPublishGate gate;
+    TEST_ASSERT_TRUE(gate.shouldPublish(0, false, 0.0f));  // Bootstrap, baseline = 0L.
+
+    // Under the 1L idle threshold, even long after the once-a-minute cap would otherwise allow a
+    // publish - a quiet pipe generates no idle MQTT traffic at all.
+    TEST_ASSERT_FALSE(gate.shouldPublish(60000, false, 0.5f));
+    TEST_ASSERT_FALSE(gate.shouldPublish(600000, false, 0.9f));  // 10 minutes in, still under 1L.
+}
+
+void test_flow_publish_gate_idle_state_needs_both_the_threshold_and_the_minute_cap() {
+    irrigator::domain::FlowPublishGate gate;
+    TEST_ASSERT_TRUE(gate.shouldPublish(0, false, 0.0f));  // Bootstrap, baseline = 0L, lastPublishMs = 0.
+
+    // Crossing the 1 liter mark just 20s after the bootstrap publish - the threshold IS met
+    // (1.5L accumulated), but the once-a-minute cap (measured from the last actual publish, at
+    // t=0) still holds it back...
+    TEST_ASSERT_FALSE(gate.shouldPublish(20000, false, 1.5f));
+    // ...and the accumulated volume isn't lost while it waits - a later reading with NO further
+    // flow at all (totalizer unchanged) still publishes once the cap expires, carrying the same
+    // 1.5L that was sitting there the whole time.
+    TEST_ASSERT_TRUE(gate.shouldPublish(65000, false, 1.5f));
+}
+
+void test_flow_publish_gate_idle_leak_over_one_liter_per_minute_publishes_every_minute() {
+    irrigator::domain::FlowPublishGate gate;
+    TEST_ASSERT_TRUE(gate.shouldPublish(0, false, 0.0f));  // Bootstrap, baseline = 0L.
+
+    // A steady idle leak of 2L/min: each minute crosses the 1L threshold well before the cap
+    // expires, so the cap (not the threshold) is what paces it to exactly once/minute - a real
+    // leak surfaces promptly without flooding MQTT.
+    TEST_ASSERT_FALSE(gate.shouldPublish(30000, false, 1.0f));   // +1L at 30s: threshold not yet crossed (needs > 1L).
+    TEST_ASSERT_TRUE(gate.shouldPublish(60000, false, 2.0f));    // +2L cumulative, minute elapsed: publishes.
+    TEST_ASSERT_FALSE(gate.shouldPublish(90000, false, 3.0f));   // Another +1L, but only 30s since last publish.
+    TEST_ASSERT_TRUE(gate.shouldPublish(120000, false, 4.0f));   // Minute's up again: publishes.
+}
+
+void test_flow_publish_gate_switching_from_active_to_idle_does_not_inherit_stale_accumulation() {
+    irrigator::domain::FlowPublishGate gate;
+    TEST_ASSERT_TRUE(gate.shouldPublish(0, true, 0.0f));  // Bootstrap while active.
+
+    // While active, the idle accumulator is reset on every call (active doesn't consult it), even
+    // though the run itself moves 5L - none of that should ever be attributed to idle leakage.
+    TEST_ASSERT_FALSE(gate.shouldPublish(30000, true, 5.0f));
+
+    // The run ends; idle resumes. If the run's own 5L had carried into the idle accumulator, this
+    // +0.4L reading would total 5.4L and wrongly cross the 1L threshold - it doesn't, because only
+    // the delta AFTER the active->idle switch (0.4L) is counted.
+    TEST_ASSERT_FALSE(gate.shouldPublish(61000, false, 5.4f));
+
+    // Confirms the accumulator really did start over at 0 (not 5.0, and not silently stuck): more
+    // idle flow keeps accumulating normally on top of that 0.4L and eventually crosses the 1L
+    // threshold on its own.
+    TEST_ASSERT_FALSE(gate.shouldPublish(90000, false, 5.5f));
+    TEST_ASSERT_TRUE(gate.shouldPublish(100000, false, 6.5f));
+}
+
+void test_flow_publish_gate_ignores_a_totalizer_that_moves_backwards() {
+    irrigator::domain::FlowPublishGate gate;
+    TEST_ASSERT_TRUE(gate.shouldPublish(0, false, 10.0f));  // Bootstrap, baseline = 10L.
+
+    // A totalizer reading lower than the previous one (shouldn't happen on real hardware, but
+    // defensively must not produce a negative delta that could cancel out real accumulated volume
+    // or otherwise misbehave).
+    TEST_ASSERT_FALSE(gate.shouldPublish(30000, false, 9.0f));
+    // Recovers to a +0.5L delta from the previous (lower) reading - still well under the 1L
+    // threshold, and nowhere near the original 10L baseline the backwards jump lost.
+    TEST_ASSERT_FALSE(gate.shouldPublish(60000, false, 9.5f));
+}
+
+// --- FlowConsumptionTracker: FlowLifetimeCounters ----------------------------------------------
+
+void test_flow_lifetime_counters_attributes_to_the_watering_zone() {
+    irrigator::domain::FlowLifetimeCounters counters;
+    counters.addDelta(/*activeZone=*/3, /*pumpOn=*/true, /*deltaLiters=*/2.5f);
+    TEST_ASSERT_EQUAL_FLOAT(2.5f, counters.zoneLiters(3));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.zoneLiters(1));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.otherLiters());
+
+    // Accumulates across calls rather than overwriting.
+    counters.addDelta(3, true, 1.5f);
+    TEST_ASSERT_EQUAL_FLOAT(4.0f, counters.zoneLiters(3));
+}
+
+void test_flow_lifetime_counters_attributes_fully_idle_flow_to_other() {
+    irrigator::domain::FlowLifetimeCounters counters;
+    counters.addDelta(/*activeZone=*/0, /*pumpOn=*/false, /*deltaLiters=*/0.3f);
+    TEST_ASSERT_EQUAL_FLOAT(0.3f, counters.otherLiters());
+    for (uint8_t zone = 1; zone <= irrigator::board::ZONE_COUNT; ++zone) {
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.zoneLiters(zone));
+    }
+}
+
+// A pump-only run (or the post-valve-close pump-graceful-shutdown tail) is neither a zone watering
+// nor "every valve closed" in the leak-detection sense - see the class comment for why this delta
+// is discarded rather than forced into one bucket or the other.
+void test_flow_lifetime_counters_discards_pump_only_delta() {
+    irrigator::domain::FlowLifetimeCounters counters;
+    counters.addDelta(/*activeZone=*/0, /*pumpOn=*/true, /*deltaLiters=*/5.0f);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.otherLiters());
+    for (uint8_t zone = 1; zone <= irrigator::board::ZONE_COUNT; ++zone) {
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.zoneLiters(zone));
+    }
+}
+
+void test_flow_lifetime_counters_zones_are_independent_and_out_of_range_reads_zero() {
+    irrigator::domain::FlowLifetimeCounters counters;
+    counters.addDelta(1, true, 1.0f);
+    counters.addDelta(11, true, 2.0f);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, counters.zoneLiters(1));
+    TEST_ASSERT_EQUAL_FLOAT(2.0f, counters.zoneLiters(11));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.zoneLiters(2));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.zoneLiters(0));   // out of range (below)
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.zoneLiters(12));  // out of range (above ZONE_COUNT)
+}
+
+// --- FlowConsumptionTracker: FlowRunVolumeTracker ----------------------------------------------
+
+void test_flow_run_volume_tracker_computes_liters_between_begin_and_stop() {
+    irrigator::domain::FlowRunVolumeTracker tracker;
+    tracker.beginRun(/*totalizerM3=*/10.0f, /*haveTotalizer=*/true);
+    const float liters = tracker.takeVolumeLitersOnStop(/*totalizerM3=*/10.012f, /*haveTotalizer=*/true);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 12.0f, liters);  // 0.012 m3 * 1000 = 12 L
+}
+
+// A later stop event for the SAME logical run (reportStop() firing after reportValveClosed()
+// already reported it, once a zone+pump run's pump graceful-shutdown tail also ends) must read
+// back 0, not repeat the same number or drift further.
+void test_flow_run_volume_tracker_reports_zero_on_a_second_stop_for_the_same_run() {
+    irrigator::domain::FlowRunVolumeTracker tracker;
+    tracker.beginRun(10.0f, true);
+    const float first = tracker.takeVolumeLitersOnStop(10.005f, true);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 5.0f, first);
+    const float second = tracker.takeVolumeLitersOnStop(10.005f, true);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, second);
+}
+
+void test_flow_run_volume_tracker_reports_zero_without_a_matching_begin() {
+    irrigator::domain::FlowRunVolumeTracker tracker;
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, tracker.takeVolumeLitersOnStop(10.0f, true));
+}
+
+// beginRun(haveTotalizer=false) means no flow reading had landed yet when the run started (a cold
+// boot right before a run, or flow sensing unavailable) - takeVolumeLitersOnStop() must not
+// fabricate a delta against an uninitialized 0.0f baseline.
+void test_flow_run_volume_tracker_reports_zero_when_totalizer_was_never_known_at_start() {
+    irrigator::domain::FlowRunVolumeTracker tracker;
+    tracker.beginRun(0.0f, /*haveTotalizer=*/false);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, tracker.takeVolumeLitersOnStop(0.5f, true));
+}
+
+// Same defensive stance as FlowPublishGate: a totalizer that didn't move forward (or even ticked
+// backwards) reports 0 liters, never a negative volume.
+void test_flow_run_volume_tracker_never_reports_a_negative_volume() {
+    irrigator::domain::FlowRunVolumeTracker tracker;
+    tracker.beginRun(10.0f, true);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, tracker.takeVolumeLitersOnStop(9.999f, true));
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -3277,5 +3669,33 @@ int main(int argc, char** argv) {
     RUN_TEST(test_dst_rules_matches_known_2024_eu_transitions);
     RUN_TEST(test_standard_offset_from_geolocation_is_season_independent);
     RUN_TEST(test_standard_offset_from_geolocation_truncates_and_clamps);
+    RUN_TEST(test_decode_swapped_float_matches_reference_project_byte_order);
+    RUN_TEST(test_poll_tracker_token_round_trips_field_and_sequence);
+    RUN_TEST(test_poll_tracker_begin_poll_increments_sequence_and_starts_in_flight);
+    RUN_TEST(test_poll_tracker_completes_only_after_every_field_reports);
+    RUN_TEST(test_poll_tracker_any_field_error_marks_the_whole_poll_failed);
+    RUN_TEST(test_poll_tracker_stale_reply_from_abandoned_poll_is_ignored);
+    RUN_TEST(test_poll_tracker_is_stuck_only_once_timeout_elapsed_while_in_flight);
+    RUN_TEST(test_poll_tracker_force_clear_lets_a_new_poll_start_without_finishing_the_old_one);
+    RUN_TEST(test_flow_publish_gate_publishes_immediately_on_the_very_first_reading);
+    RUN_TEST(test_flow_publish_gate_active_state_uses_a_flat_once_per_minute_cadence);
+    RUN_TEST(test_flow_publish_gate_idle_state_never_publishes_below_threshold_no_matter_how_long);
+    RUN_TEST(test_flow_publish_gate_idle_state_needs_both_the_threshold_and_the_minute_cap);
+    RUN_TEST(test_flow_publish_gate_idle_leak_over_one_liter_per_minute_publishes_every_minute);
+    RUN_TEST(test_flow_publish_gate_switching_from_active_to_idle_does_not_inherit_stale_accumulation);
+    RUN_TEST(test_flow_publish_gate_ignores_a_totalizer_that_moves_backwards);
+    RUN_TEST(test_settings_store_defaults_flow_meter_fields_when_missing);
+    RUN_TEST(test_settings_store_round_trips_flow_meter_fields);
+    RUN_TEST(test_merge_settings_updates_flow_meter_fields);
+    RUN_TEST(test_merge_settings_rejects_out_of_range_expected_flow_rate);
+    RUN_TEST(test_flow_lifetime_counters_attributes_to_the_watering_zone);
+    RUN_TEST(test_flow_lifetime_counters_attributes_fully_idle_flow_to_other);
+    RUN_TEST(test_flow_lifetime_counters_discards_pump_only_delta);
+    RUN_TEST(test_flow_lifetime_counters_zones_are_independent_and_out_of_range_reads_zero);
+    RUN_TEST(test_flow_run_volume_tracker_computes_liters_between_begin_and_stop);
+    RUN_TEST(test_flow_run_volume_tracker_reports_zero_on_a_second_stop_for_the_same_run);
+    RUN_TEST(test_flow_run_volume_tracker_reports_zero_without_a_matching_begin);
+    RUN_TEST(test_flow_run_volume_tracker_reports_zero_when_totalizer_was_never_known_at_start);
+    RUN_TEST(test_flow_run_volume_tracker_never_reports_a_negative_volume);
     return UNITY_END();
 }

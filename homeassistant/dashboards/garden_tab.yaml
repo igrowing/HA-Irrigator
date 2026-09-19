@@ -522,6 +522,15 @@
               - entity: button.irrigator_calibrate
                 icon: mdi:abacus
                 name: Calibrate Current Sensors
+          - type: entities
+            title: Flow-Meter Anomaly Check
+            entities:
+              - entity: input_boolean.irrigator_flow_meter_enabled
+                name: Enabled
+              - entity: input_number.irrigator_expected_flow_rate_lpm
+                name: Expected Flow Rate (L/min)
+              - entity: sensor.irrigator_flow_rate
+                name: Live Flow Rate (for reference)
           - type: tile
             entity: button.irrigator_refresh_from_device
             icon: mdi:cloud-download-outline
@@ -555,6 +564,301 @@
             grid_options:
               columns: 12
               rows: 2
+      - type: grid
+        cards:
+          - type: heading
+            heading: Water Flow
+          - type: tile
+            entity: sensor.irrigator_flow_rate
+          - type: tile
+            entity: sensor.irrigator_flow_total
+      - type: grid
+        cards:
+          - type: heading
+            heading: Water Consumption
+          # Lifetime (since-boot) liters per zone, one conditional card per enabled zone - same
+          # enabled-sensor-gated pattern as the Status & Manual Control section's per-zone cards
+          # above. `type: statistic` reads HA's own long-term statistics for the underlying
+          # total_increasing sensor (see irrigator.yaml), which is what makes the rolling 24h
+          # window reliable across a device reboot resetting the RAM-only counter back to 0.
+          #
+          # NOTE: `period: {rolling_window: {duration: {hours: 24}}}` needs a fairly recent Home
+          # Assistant release - confirm it's available on yours (the statistic card's period
+          # options have evolved across releases). If it's not, fall back to
+          # `period: {calendar: {period: day}}` instead ("since local midnight" rather than a
+          # strict trailing 24h).
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_1_enabled_sensor
+                state: "on"
+            card:
+              type: vertical-stack
+              cards:
+                - type: statistic
+                  entity: sensor.irrigator_zone_1_water_total
+                  name: Zone 1 (24h)
+                  stat_type: change
+                  period:
+                    rolling_window:
+                      duration:
+                        hours: 24
+                - type: tile
+                  entity: sensor.irrigator_zone_1_water_total
+                  name: History
+                  icon: mdi:history
+                  vertical: false
+                  tap_action:
+                    action: more-info
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_2_enabled_sensor
+                state: "on"
+            card:
+              type: vertical-stack
+              cards:
+                - type: statistic
+                  entity: sensor.irrigator_zone_2_water_total
+                  name: Zone 2 (24h)
+                  stat_type: change
+                  period:
+                    rolling_window:
+                      duration:
+                        hours: 24
+                - type: tile
+                  entity: sensor.irrigator_zone_2_water_total
+                  name: History
+                  icon: mdi:history
+                  vertical: false
+                  tap_action:
+                    action: more-info
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_3_enabled_sensor
+                state: "on"
+            card:
+              type: vertical-stack
+              cards:
+                - type: statistic
+                  entity: sensor.irrigator_zone_3_water_total
+                  name: Zone 3 (24h)
+                  stat_type: change
+                  period:
+                    rolling_window:
+                      duration:
+                        hours: 24
+                - type: tile
+                  entity: sensor.irrigator_zone_3_water_total
+                  name: History
+                  icon: mdi:history
+                  vertical: false
+                  tap_action:
+                    action: more-info
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_4_enabled_sensor
+                state: "on"
+            card:
+              type: vertical-stack
+              cards:
+                - type: statistic
+                  entity: sensor.irrigator_zone_4_water_total
+                  name: Zone 4 (24h)
+                  stat_type: change
+                  period:
+                    rolling_window:
+                      duration:
+                        hours: 24
+                - type: tile
+                  entity: sensor.irrigator_zone_4_water_total
+                  name: History
+                  icon: mdi:history
+                  vertical: false
+                  tap_action:
+                    action: more-info
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_5_enabled_sensor
+                state: "on"
+            card:
+              type: vertical-stack
+              cards:
+                - type: statistic
+                  entity: sensor.irrigator_zone_5_water_total
+                  name: Zone 5 (24h)
+                  stat_type: change
+                  period:
+                    rolling_window:
+                      duration:
+                        hours: 24
+                - type: tile
+                  entity: sensor.irrigator_zone_5_water_total
+                  name: History
+                  icon: mdi:history
+                  vertical: false
+                  tap_action:
+                    action: more-info
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_6_enabled_sensor
+                state: "on"
+            card:
+              type: vertical-stack
+              cards:
+                - type: statistic
+                  entity: sensor.irrigator_zone_6_water_total
+                  name: Zone 6 (24h)
+                  stat_type: change
+                  period:
+                    rolling_window:
+                      duration:
+                        hours: 24
+                - type: tile
+                  entity: sensor.irrigator_zone_6_water_total
+                  name: History
+                  icon: mdi:history
+                  vertical: false
+                  tap_action:
+                    action: more-info
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_7_enabled_sensor
+                state: "on"
+            card:
+              type: vertical-stack
+              cards:
+                - type: statistic
+                  entity: sensor.irrigator_zone_7_water_total
+                  name: Zone 7 (24h)
+                  stat_type: change
+                  period:
+                    rolling_window:
+                      duration:
+                        hours: 24
+                - type: tile
+                  entity: sensor.irrigator_zone_7_water_total
+                  name: History
+                  icon: mdi:history
+                  vertical: false
+                  tap_action:
+                    action: more-info
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_8_enabled_sensor
+                state: "on"
+            card:
+              type: vertical-stack
+              cards:
+                - type: statistic
+                  entity: sensor.irrigator_zone_8_water_total
+                  name: Zone 8 (24h)
+                  stat_type: change
+                  period:
+                    rolling_window:
+                      duration:
+                        hours: 24
+                - type: tile
+                  entity: sensor.irrigator_zone_8_water_total
+                  name: History
+                  icon: mdi:history
+                  vertical: false
+                  tap_action:
+                    action: more-info
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_9_enabled_sensor
+                state: "on"
+            card:
+              type: vertical-stack
+              cards:
+                - type: statistic
+                  entity: sensor.irrigator_zone_9_water_total
+                  name: Zone 9 (24h)
+                  stat_type: change
+                  period:
+                    rolling_window:
+                      duration:
+                        hours: 24
+                - type: tile
+                  entity: sensor.irrigator_zone_9_water_total
+                  name: History
+                  icon: mdi:history
+                  vertical: false
+                  tap_action:
+                    action: more-info
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_10_enabled_sensor
+                state: "on"
+            card:
+              type: vertical-stack
+              cards:
+                - type: statistic
+                  entity: sensor.irrigator_zone_10_water_total
+                  name: Zone 10 (24h)
+                  stat_type: change
+                  period:
+                    rolling_window:
+                      duration:
+                        hours: 24
+                - type: tile
+                  entity: sensor.irrigator_zone_10_water_total
+                  name: History
+                  icon: mdi:history
+                  vertical: false
+                  tap_action:
+                    action: more-info
+          - type: conditional
+            conditions:
+              - condition: state
+                entity: binary_sensor.irrigator_zone_11_enabled_sensor
+                state: "on"
+            card:
+              type: vertical-stack
+              cards:
+                - type: statistic
+                  entity: sensor.irrigator_zone_11_water_total
+                  name: Zone 11 (24h)
+                  stat_type: change
+                  period:
+                    rolling_window:
+                      duration:
+                        hours: 24
+                - type: tile
+                  entity: sensor.irrigator_zone_11_water_total
+                  name: History
+                  icon: mdi:history
+                  vertical: false
+                  tap_action:
+                    action: more-info
+          # "Other" is unconditional - not tied to any single zone's enabled flag (see
+          # FlowLifetimeCounters' class comment: it's flow measured while every valve is closed).
+          - type: vertical-stack
+            cards:
+              - type: statistic
+                entity: sensor.irrigator_other_water_total
+                name: Other (24h)
+                stat_type: change
+                period:
+                  rolling_window:
+                    duration:
+                      hours: 24
+              - type: tile
+                entity: sensor.irrigator_other_water_total
+                name: History
+                icon: mdi:history
+                vertical: false
+                tap_action:
+                  action: more-info
       - type: grid
         cards:
           - type: heading

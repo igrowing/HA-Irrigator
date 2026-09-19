@@ -19,6 +19,7 @@ firmware architecture, and how to build, flash, and test it. For end-user setup 
 | SSD1309 OLED (128x64)     | I2C, addr 0x3C          |                                                      |
 | 24VAC current sense       | GPIO 32 (ADC)           | Valve current — no fixed mA range; see **True-RMS current sampling** under **MQTT**, below |
 | 230VAC current sense      | GPIO 33 (ADC)           | Pump current — no fixed mA range; see **True-RMS current sampling** under **MQTT**, below |
+| Flow meter (Modbus RTU/RS-485) | TX=GPIO2, RX=GPIO36 | To a Waveshare TTL-to-RS485 (C) isolated converter (automatic DE/RE, no extra GPIO) — see [hardware/readme.md](../hardware/readme.md)'s **Water flow sensing** section for wiring, and **Water flow sensing (TUF-2000M)** under **MQTT**, below |
 
 All of the above lives exclusively in `include/board_config.h` — it's the **only** file in the
 project allowed to hardcode a GPIO number, I2C address, or similar board-specific constant. If
@@ -155,7 +156,7 @@ device's actual prefix in every example below.
 
 |  Command topic | Command msg | Response topic | Response msg | Comment |
 |--|--|--|--|--|
-| `/cmd/state` | "" | `/state` | `{"datetime":"2026-07-12T06:00:00",`<br>`"zone":3,"name":"Back Lawn",`<br>`"on":true,"pump":true,`<br>`"reason":"manual","scheduled":true,"remaining_min":12}` | On every start/stop of a valve or pump, and on demand via `cmd/state` (reason is one of manual/schedule/mqtt/abort; zone:0 means pump-only; scheduled reflects whether the schedule engine is currently active/paused; remaining_min is minutes left in the current run, 0 when off). Also fires the instant the valve closes even while the pump is still in its graceful-shutdown tail (`on:false,pump:true`), so `remaining_min`/`on` track the requested duration, not the pump's extra runtime. |
+| `/cmd/state` | "" | `/state` | `{"datetime":"2026-07-12T06:00:00",`<br>`"zone":3,"name":"Back Lawn",`<br>`"on":true,"pump":true,`<br>`"reason":"manual","scheduled":true,"remaining_min":12,"volume":0.00}` | On every start/stop of a valve or pump, and on demand via `cmd/state` (reason is one of manual/schedule/mqtt/abort; zone:0 means pump-only; scheduled reflects whether the schedule engine is currently active/paused; remaining_min is minutes left in the current run, 0 when off; volume is the just-completed run's total liters, but only in the specific message where `on` transitions to `false` for that run — 0 in every other message, see `FlowRunVolumeTracker` under **Water flow sensing (TUF-2000M)** below). Also fires the instant the valve closes even while the pump is still in its graceful-shutdown tail (`on:false,pump:true`), so `remaining_min`/`on` track the requested duration, not the pump's extra runtime. |
 | `/cmd/queue` | "" | `/queue` | list of waiting waterings from the queue | On every push and pull from watering queue or by `cmd/queue` request. |
 | `/cmd/run` | `{"zone":3,"duration":15}` |  |  | **No special response** Response will be either adding to the queue or alert. Starts zone 3 for 15 min (or queues it if something's already running). `zone:0` = pump only. A **disabled** zone (`zone_names.<n>.enabled: false` in `settings.json`) is rejected outright with an `/alert` — `{"message":"Zone 3 (Back Lawn) is disabled. Enable it in settings first."}` — it's never silently ignored, and it never reaches the watering queue at all (see `enqueueOrStart()` in `src/main.ino`). |
 | `/cmd/stop` | empty, or `all`  |  |  | **No special response** Response will be either adding to the queue or alert. Stops the current run — closes the valve immediately, but a zone run's pump still gets its normal graceful-shutdown tail rather than cutting immediately (a pump-only run has no such tail). Plain/empty payload also pops and starts the next queued item, if any; `all` also empties the queue. |
@@ -166,6 +167,8 @@ device's actual prefix in every example below.
 |  |  | `/online` |  boolean (LWT on ungraceful disconnect, or explicitly before a deliberate restart). | **Retained message**. Matches Home Assistant's default MQTT `availability_topic` convention. |
 | `/cmd/status` | "" | `/status`  | JSON: `datetime`, `firmware_version`, `boot_reason`, `ip`, `uptime_s`, `rssi_db`, `wifi_quality` (verbal, `miserable`/`poor`/`fair`/`good`/`excellent`), `free_heap_bytes`, `free_storage_bytes`, `mqtt_buffer_bytes`, `cpu_temp_c`, `coredump_available` (read together with `boot_reason` — see [coredump.md](coredump.md)), `publish_failures`, `publish_retried`, `publish_offline`, `mqtt_forced_reconnects` (cumulative since boot — see **Wi-Fi/MQTT connection resilience** below). No `outputs`/current section — which zone/pump is on is `/state`'s job (fired on every start/stop, and on `cmd/state`), and current readings only have a meaningful number outside `cmd/calibrate`'s response as a comparison against a calibrated base; see **True-RMS current sampling** below. | ~15s after boot and on request.  |
 |  |  | `/alert` | see **Error reporting** below | Fire-and-forget notices: current out of expected range, watering queue full, OTA result, and any command/topic error. Not retained, not queued for delivery guarantees. Every alert carries a `datetime` field — JSON alerts get it spliced in alongside their other keys, plain-text alerts are wrapped as `{"datetime":"...","message":"..."}`. |
+|  |  | `/flow` | JSON: `flow_rate_lpm`, `total_liters`, `zone` (whichever zone/pump is currently running, 0 = idle). | Raw TUF-2000M flow-meter telemetry — see **Water flow sensing (TUF-2000M)** below for the publish-cadence rule (not every Modbus poll goes out). Not retained. |
+|  |  | `/flow_totals` | JSON: one `zone_<n>` field (liters) per **enabled** zone, plus `other`. | Lifetime (since-boot) water consumption per zone, plus "other" (flow while every valve is closed). Roughly once a minute — see **Water flow sensing (TUF-2000M)** below. Not retained. |
 | `/cmd/restart` | "" |  |  | **No special response** Publishes `false` to `online`, then restarts. |
 | `/cmd/ota` | FW `.bin` URL | `/ota_started` then `/ota_completed` | `"true"`, then `"2026-07-12T06:00:00"` |  `/ota_started` fires the instant the command is accepted (before the HTTP GET), separately from success/failure - `cmd/#` is only delivered at QoS 0, so a caller can't tell "broker accepted my publish" from "device actually received it" without a distinct receipt signal (see [ota.md](ota.md)'s retry logic, built on exactly this). Downloads and flashes the URL, restarts on success. Blocking by design — see [agents.md](../agents.md) for why. See [ota.md](ota.md) for the higher-level tooling built on top of this. |
 | `/cmd/calibrate` | "" | `/calibrate` (one message per sensor) | JSON: `sensor` (`"valve"`/`"pump"`), `base_level`, `sample_count`, `burst_samples_mv` (the most recent burst's raw ADC readings, for spotting saturation). | Requires an active watering run (valve open — see **True-RMS current sampling** below); rejected with `/alert` otherwise. |
@@ -557,6 +560,78 @@ replaces, it doesn't drive the status LED's alert pattern. The HA package (see
 `homeassistant/packages/irrigator_automations.yaml`'s "Irrigator - forward current-fault alerts to
 WhatsApp + logbook" automation) forwards every fault alert (identified by the `fault` key) to
 `notify.greenapi` and the logbook.
+
+### Water flow sensing (TUF-2000M)
+
+An ultrasonic clamp-on flow meter (TUF-2000M) on Modbus RTU/RS-485 — see
+[hardware/readme.md](../hardware/readme.md)'s **Water flow sensing** section for the wiring/converter
+and the failsafe reasoning (the meter's own onboard relay, not this firmware, is what actually closes
+a shut-off valve; polling here is for HA visibility/logging only). `src/drivers/Tuf2000mFlowMeter.*`
+is the driver, built on the [eModbus](https://github.com/eModbus/eModbus) library rather than a
+blocking one — its `ModbusClientRTU` runs its own FreeRTOS worker task internally and delivers
+results via callback, so unlike **True-RMS current sampling** above, no extra task needed to be
+created for this feature.
+
+**Register map** (function code 03, holding registers — per the register map documented by
+[github.com/tczerwonka/tuf2000-modbus-reader](https://github.com/tczerwonka/tuf2000-modbus-reader),
+cross-checked during bench bring-up): register 1 (2 words) is flow rate in m³/h, register 9 (2 words)
+is the positive totalizer in m³ — both REAL4/IEEE-754 floats, word-swapped before being reinterpreted
+as a float (`irrigator::domain::decodeSwappedFloat()`, `src/domain/Tuf2000mProtocol.*` — pulled out of
+the driver itself so the decode and the poll-sequencing state machine are unit-testable under
+`pio test -e native` without any Modbus hardware or mocking) — and register 92 (1 word) is signal
+quality. All three are polled together every `FLOW_METER_POLL_INTERVAL_MS` as three separate Modbus
+requests per poll cycle (never overlapped with the next poll's — see the driver's class comment for
+why: the reference project above found "the modbus stuff just didn't give back consistent data for
+two sequential queries").
+
+**MQTT publish cadence** is independent of the Modbus poll cadence above — every poll's result is a
+candidate for `/flow`, but not every one is published (`updateFlowPublishCadence()` in `main.ino`,
+backed by `irrigator::domain::FlowPublishGate`):
+- While a zone or pump is active: once a minute.
+- While idle: threshold-triggered rather than timer-driven — once accumulated idle-time volume has
+  grown past 1 liter since the last idle publish, capped to never fire more than once a minute even
+  if that threshold keeps getting crossed faster. A real leak surfaces promptly; a quiet pipe
+  generates no idle MQTT traffic at all.
+
+**A failed poll** (Modbus error/timeout on any of the three registers — `Reading::valid == false`)
+publishes `/alert` with `{"flow_meter":"failed","reason":"modbus_error_or_timeout"}`, gated to once
+per calendar day the same way the current-sensor faults are (`consumeDailyAlertGate()` in
+`main.ino`). Deliberately not a `{"fault":...}` payload — there's no zone/level/base to report for a
+communication failure, so it doesn't match (and isn't forwarded to WhatsApp by)
+`irrigator_automations.yaml`'s fault-forwarding automation; it's the same category as
+`reportWeatherFailure()`'s `{"geolocation"/"weather":"failed",...}` alerts. This alerts on the link
+itself going quiet, which is a different, lower-level thing than the anomaly detection (flow rate
+out of an expected band while watering) planned as a later stage — not implemented yet.
+
+**Per-run and lifetime volume** are tracked by `irrigator::domain::FlowConsumptionTracker.h/.cpp`'s
+two pure classes (pulled out of `main.ino` for the same `pio test -e native` reason as
+`Tuf2000mPollTracker`/`FlowPublishGate`):
+- `FlowRunVolumeTracker` captures the totalizer reading at the moment a run starts
+  (`startIrrigation()`) and computes+clears it exactly once — the completed run's own liters — at
+  the moment that run's watering actually ends (`reportValveClosed()` for a zone+pump run,
+  `reportStop()` for a pump-only one). This is `/state`'s `volume` field: `0` while a zone/pump is
+  running or fully idle, the real number only in the one `/state` message where `on` transitions to
+  `false` for that run.
+- `FlowLifetimeCounters` maintains a never-reset (RAM-only) liters counter per zone plus one for
+  "other" (flow while every valve is closed — a hose bib spliced into the line, a leak — not a
+  second whole-house meter; a pump-only run or the post-valve-close pump-graceful-shutdown tail
+  falls into neither bucket and is discarded, see the class comment), fed by the totalizer delta on
+  every valid poll and attributed by `irrigation.snapshot(nowMs)` at that moment. Published on
+  `/flow_totals` (one field per **enabled** zone plus `other`) roughly once a minute — feeds the HA
+  "Water Consumption" dashboard group's `total_increasing` sensors, whose long-term statistics
+  tolerate this counter resetting to 0 on a device reboot without miscounting it as negative
+  consumption.
+
+`settings.json`'s `FlowMeter` group (`Settings::flowMeterEnabled`/`expectedFlowRateLpm`) holds the
+anomaly check's on/off switch and its expected-flow-rate threshold (0 = not configured, no check) —
+see [usage_homeassistant.md](usage_homeassistant.md)'s **Water Flow Sensing** section for how it's
+edited. **The anomaly check itself (comparing live flow rate against this threshold while watering
+and publishing `flow_high`/`flow_low` faults) is not implemented in firmware yet** — the settings
+surface above is built ahead of it deliberately, so wiring the check up later is a `main.ino`-only
+change with no further settings/HA/doc rework. The end-user docs already describe that alert as if
+it exists (matching the settings/threshold that already do) — keep that in mind if you're
+implementing it: it needs to actually match what's already documented there, not the other way
+around.
 
 ## Weather-based irrigation auto-adjustment
 

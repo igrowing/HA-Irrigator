@@ -673,3 +673,34 @@ SETTINGS
 separate confirmation step. The change is saved immediately and survives a restart. These four
 rows are also editable from Home Assistant, in the same "Current-Sensor Calibration" card as the
 **Calibrate CS** button — see [usage_homeassistant.md](usage_homeassistant.md).
+
+## Water Flow Sensing
+
+A TUF-2000M ultrasonic clamp-on flow meter, wired to the device over Modbus RTU/RS-485 — see
+[hardware/readme.md](../hardware/readme.md)'s **Water flow sensing** section for the physical
+wiring and converter. Nothing here needs cutting into a pipe: the meter clamps around the outside
+of it. The meter's own onboard relay, not this device, is what actually closes a shut-off valve if
+you've wired one up as a hardware failsafe — this feature is for visibility and warnings, not
+safety-critical shutoff.
+
+There's nothing to press on the device itself for this feature — like current-fault alerting (just
+above), it runs entirely in the background over MQTT, with no rotary-menu screen or on-device
+display of its own. Live flow rate, lifetime consumption per zone, and each completed run's own
+water use are all visible from Home Assistant instead — see
+[usage_homeassistant.md](usage_homeassistant.md)'s **Water Flow Sensing** section for exactly
+where, and its **Settings** section for the two things you can configure (whether the anomaly check
+below runs, and the flow rate it checks against) — both edited from HA, not the device's own menu.
+
+**What the alert means**: while a zone is watering, the device compares the live flow rate against
+the expected rate you've configured and warns you if it's noticeably higher or lower than normal:
+
+- **Flow high** — a stuck-open valve elsewhere on the line, a burst pipe, or a valve letting through
+  more than it should.
+- **Flow low** — a clogged emitter/nozzle, a partially closed valve, or a valve that didn't fully
+  open.
+
+Same behavior as the current-sensor faults above: each publishes an `/alert` the moment it trips,
+gated to once per zone per day, and — if you've paired the device with Home Assistant — gets
+forwarded to WhatsApp and the logbook automatically. The check only runs once you've set an
+**Expected Flow Rate** above `0` in Home Assistant; leave it at `0` (the default) if you don't want
+this check at all.

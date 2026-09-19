@@ -21,6 +21,8 @@
 #include "domain/CalendarMath.h"
 #include "domain/ConfigStore.h"
 #include "domain/DstRules.h"
+#include "domain/FlowConsumptionTracker.h"
+#include "domain/FlowPublishGate.h"
 #include "domain/IrrigationStateMachine.h"
 #include "domain/RainSkip.h"
 #include "domain/Schedule.h"
@@ -36,6 +38,7 @@
 #include "drivers/LedIndicator.h"
 #include "drivers/Logger.h"
 #include "drivers/RelayBank.h"
+#include "drivers/Tuf2000mFlowMeter.h"
 #include "network/CaptivePortalService.h"
 #include "network/MqttService.h"
 #include "network/OtaService.h"
@@ -70,6 +73,11 @@ irrigator::drivers::FileStore fileStore;
 irrigator::drivers::RelayBank relayBank;
 irrigator::drivers::CurrentSensor valveCurrentSensor(VALVE_CURRENT_ADC_PIN);
 irrigator::drivers::CurrentSensor pumpCurrentSensor(PUMP_CURRENT_ADC_PIN);
+// TUF-2000M flow meter over Modbus RTU/RS-485 - see src/drivers/Tuf2000mFlowMeter.h and
+// board_config.h's FLOW_METER_* constants (pins, baud, register map). Serial2 is remapped onto
+// FLOW_METER_RX_PIN/FLOW_METER_TX_PIN by the driver's begin() - its default pins (16/17) are
+// already claimed by zones (see GPIO_ZONE_PINS).
+irrigator::drivers::Tuf2000mFlowMeter flowMeter;
 irrigator::drivers::LedIndicator led(STATUS_LED_PIN);
 irrigator::drivers::Clock clockService;
 irrigator::drivers::FactoryResetButton factoryResetButton;
@@ -252,6 +260,40 @@ char lastValveOvercurrentAlertDate[irrigator::board::ZONE_COUNT][11] = {};
 char lastValveUndercurrentAlertDate[irrigator::board::ZONE_COUNT][11] = {};
 char lastPumpOvercurrentAlertDate[11] = {};
 char lastPumpUndercurrentAlertDate[11] = {};
+
+// Once-a-day dedup for flow-meter poll failures (see updateFlowSampling() below) - same
+// consumeDailyAlertGate() idiom as the current-sensor faults above. Single buffer, not per-zone:
+// unlike the current sensor, there's only one flow meter/one Modbus bus for the whole device, so a
+// failure isn't attributable to whichever zone happens to be running.
+char lastFlowMeterFailureAlertDate[11] = {};
+
+// Flow meter (TUF-2000M) MQTT publish cadence - see irrigator::domain::FlowPublishGate for the
+// once-a-minute-while-active / threshold-while-idle rule this drives (pulled out into domain/ so
+// it's unit-testable under `pio test -e native`). Main-loop-only (only ever touched while draining
+// flowMeter's own responseReady()/takeReading() mailbox), no cross-task synchronization needed -
+// unlike flowMeter itself, which handles that internally.
+irrigator::domain::FlowPublishGate flowPublishGate;
+
+// Latest totalizer reading drained from the flow meter (cubic meters, as the driver reports it) -
+// the shared baseline both Stage 4 features below diff against. Updated once per valid poll in
+// updateFlowSampling(), before either of them runs.
+float lastKnownTotalizerM3 = 0.0f;
+bool haveLastKnownTotalizerM3 = false;
+
+// Never-reset-while-running per-zone/"other" lifetime liters counters (see
+// irrigator::domain::FlowLifetimeCounters) and the current run's own volume-so-far (see
+// irrigator::domain::FlowRunVolumeTracker) - both pulled into domain/ so their attribution/
+// capture-and-clear logic is unit-testable under `pio test -e native`. main.ino's job is just
+// feeding them totalizer readings and irrigation-state snapshots at the right moments.
+irrigator::domain::FlowLifetimeCounters flowLifetimeCounters;
+irrigator::domain::FlowRunVolumeTracker flowRunVolumeTracker;
+
+// /flow_totals publish cadence - simple once-a-minute timer (unlike /flow's threshold+cap gate,
+// there's no urgency case to react to here: this is long-term consumption bookkeeping, not leak
+// detection), so no dedicated domain/ class the way FlowPublishGate needed one.
+uint32_t lastFlowTotalsPublishMs = 0;
+bool flowTotalsPublishedOnce = false;
+constexpr uint32_t kFlowTotalsPublishIntervalMs = 60000;
 
 // Structured outcome of one handleCalibrateCommand() run, for callers that need more than the
 // MQTT side-effects (currently just the Settings-menu "Calibrate CS" flow — see UiIntentType::
@@ -540,13 +582,20 @@ void reportStop(RunReason reason) {
     if (!reportedActive) {
         return;
     }
+    // For a zone+pump run this is 0 - reportValveClosed() below already reported the real number
+    // when the valve closed, and takeVolumeLitersOnStop() only ever reports non-zero once per run.
+    // For a pump-only run (no separate valve-closed event), this is the run's only stop event, so
+    // it's where the volume actually gets reported.
+    const float volumeLiters =
+        flowRunVolumeTracker.takeVolumeLitersOnStop(lastKnownTotalizerM3, haveLastKnownTotalizerM3);
     mqtt.publishState(activeRequestForReporting.zone,
                       zoneName(activeRequestForReporting.zone),
                       false,
                       false,
                       reason,
                       settings.scheduleActive,
-                      0);
+                      0,
+                      volumeLiters);
     reportedActive = false;
 }
 
@@ -559,13 +608,19 @@ void reportValveClosed() {
     if (!reportedActive) {
         return;
     }
+    // The valve closing is the moment this zone's watering is actually done, even though the pump
+    // may still be running its graceful-shutdown tail - so this is where a zone+pump run's real
+    // volume gets reported (see FlowRunVolumeTracker's class comment).
+    const float volumeLiters =
+        flowRunVolumeTracker.takeVolumeLitersOnStop(lastKnownTotalizerM3, haveLastKnownTotalizerM3);
     mqtt.publishState(activeRequestForReporting.zone,
                       zoneName(activeRequestForReporting.zone),
                       false,
                       true,
                       activeRequestForReporting.reason,
                       settings.scheduleActive,
-                      0);
+                      0,
+                      volumeLiters);
 }
 
 bool startIrrigation(const WateringRequest& request, uint32_t nowMs) {
@@ -583,13 +638,18 @@ bool startIrrigation(const WateringRequest& request, uint32_t nowMs) {
     }
     activeRequestForReporting = request;
     reportedActive = true;
+    // Baseline the new run's volume tracking against whichever totalizer reading is currently
+    // known - see FlowRunVolumeTracker's class comment for why this needs to happen exactly once,
+    // right at the start of each run.
+    flowRunVolumeTracker.beginRun(lastKnownTotalizerM3, haveLastKnownTotalizerM3);
     mqtt.publishState(request.zone,
                       zoneName(request.zone),
                       request.zone != 0,
                       true,
                       request.reason,
                       settings.scheduleActive,
-                      request.durationMin);
+                      request.durationMin,
+                      0.0f);
     return true;
 }
 
@@ -1163,13 +1223,17 @@ void publishCurrentState() {
     const bool valveOn = snapshot.state == irrigator::domain::IrrigationState::Watering;
     const RunReason reason = reportedActive ? activeRequestForReporting.reason : RunReason::Manual;
     const uint16_t remainingMin = static_cast<uint16_t>(snapshot.remainingMs / 60000UL);
+    // On-demand, not a stop event - never carries a completed run's volume (see
+    // FlowRunVolumeTracker's class comment: that's a one-shot field on the specific /state message
+    // where "on" transitions to false, not a persisted "current volume" to poll here).
     mqtt.publishState(snapshot.activeZone,
                       zoneName(snapshot.activeZone),
                       valveOn,
                       snapshot.pumpOn,
                       reason,
                       settings.scheduleActive,
-                      remainingMin);
+                      remainingMin,
+                      0.0f);
 }
 
 bool persistScheduleAndReport() {
@@ -2592,6 +2656,115 @@ void drainCurrentBurstResults() {
     }
 }
 
+// Stage 4's lifetime-consumption bookkeeping: folds the delta since the last poll's totalizer
+// reading into whichever bucket irrigation.snapshot(nowMs) indicates (see
+// irrigator::domain::FlowLifetimeCounters' class comment for the exact zone/"other"/discarded
+// rule), then publishes all buckets to /flow_totals - throttled to kFlowTotalsPublishIntervalMs,
+// not on every poll.
+void updateFlowLifetimeTotals(uint32_t nowMs, const irrigator::drivers::Tuf2000mFlowMeter::Reading& reading) {
+    if (haveLastKnownTotalizerM3) {
+        const float deltaM3 = reading.totalizerM3 - lastKnownTotalizerM3;
+        if (deltaM3 > 0.0f) {
+            const auto snapshot = irrigation.snapshot(nowMs);
+            const uint8_t activeZone =
+                snapshot.state == irrigator::domain::IrrigationState::Watering ? snapshot.activeZone : 0;
+            flowLifetimeCounters.addDelta(activeZone, snapshot.pumpOn, deltaM3 * 1000.0f);
+        }
+    }
+    lastKnownTotalizerM3 = reading.totalizerM3;
+    haveLastKnownTotalizerM3 = true;
+
+    if (flowTotalsPublishedOnce && nowMs - lastFlowTotalsPublishMs < kFlowTotalsPublishIntervalMs) {
+        return;
+    }
+    flowTotalsPublishedOnce = true;
+    lastFlowTotalsPublishMs = nowMs;
+
+    JsonDocument doc;
+    for (uint8_t zone = 1; zone <= irrigator::board::ZONE_COUNT; ++zone) {
+        if (!isZoneEnabled(zone)) {
+            continue;
+        }
+        char key[8];
+        snprintf(key, sizeof(key), "zone_%u", static_cast<unsigned>(zone));
+        doc[key] = flowLifetimeCounters.zoneLiters(zone);
+    }
+    doc["other"] = flowLifetimeCounters.otherLiters();
+    String payload;
+    serializeJson(doc, payload);
+    mqtt.publishFlowTotals(payload);
+}
+
+// Stage 2 of the flow-meter integration (see docs/technical.md's "Water flow sensing" section):
+// gates the /flow publish separately from the Modbus poll cadence above (FLOW_METER_POLL_INTERVAL_MS
+// inside the driver) - polling stays cheap and frequent regardless of whether a given poll's result
+// actually goes out over MQTT. The actual cadence rule (once/minute while active, threshold-while-
+// idle) lives in flowPublishGate (irrigator::domain::FlowPublishGate) - see its class comment.
+void updateFlowPublishCadence(uint32_t nowMs, const irrigator::drivers::Tuf2000mFlowMeter::Reading& reading) {
+    const auto snapshot = irrigation.snapshot(nowMs);
+    const bool active = snapshot.state == irrigator::domain::IrrigationState::Watering || snapshot.pumpOn;
+    const uint8_t activeZone =
+        snapshot.state == irrigator::domain::IrrigationState::Watering ? snapshot.activeZone : 0;
+
+    const float totalLiters = reading.totalizerM3 * 1000.0f;
+    if (!flowPublishGate.shouldPublish(nowMs, active, totalLiters)) {
+        return;
+    }
+
+    char payload[96];
+    snprintf(payload,
+            sizeof(payload),
+            R"({"flow_rate_lpm":%.3f,"total_liters":%.3f,"zone":%u})",
+            static_cast<double>(reading.flowRateM3h * 1000.0f / 60.0f),
+            static_cast<double>(totalLiters),
+            static_cast<unsigned>(activeZone));
+    mqtt.publishFlow(payload);
+}
+
+// Stage 1 of the flow-meter integration: drives flowMeter's own internal poll throttle every
+// loop() tick and logs whatever lands. Stage 2 layers the MQTT /flow publish (cadence-gated
+// separately, see updateFlowPublishCadence() above) on top of the same drained reading.
+void updateFlowSampling(uint32_t nowMs) {
+    flowMeter.readAsync(nowMs);
+    if (!flowMeter.responseReady()) {
+        return;
+    }
+    irrigator::drivers::Tuf2000mFlowMeter::Reading reading;
+    if (!flowMeter.takeReading(reading)) {
+        return;
+    }
+    if (!reading.valid) {
+        irrigator::drivers::Log.warn("Flow meter poll failed (Modbus error/timeout)");
+        // Same once-a-day-per-fault idiom as the current-sensor faults (consumeDailyAlertGate) -
+        // a wedged transceiver or a disconnected RS-485 cable would otherwise either go completely
+        // unreported over MQTT, or spam /alert on every poll for as long as it stays down. Uses
+        // {"flow_meter":"failed",...} rather than a {"fault":...} payload deliberately: this is a
+        // communication failure (no zone/level/base to report), the same category as
+        // reportWeatherFailure()'s {"geolocation"/"weather":"failed",...} alerts above, not a
+        // current-style out-of-range reading - and it's why this one isn't picked up by
+        // irrigator_automations.yaml's fault-forwarding automation (that one keys specifically on
+        // a `fault` field). Skipped entirely without a synced clock - no reliable "today" to dedup
+        // against, same trade-off reportWeatherFailure() makes.
+        struct tm timeinfo;
+        if (clockService.now(timeinfo)) {
+            char today[11];
+            snprintf(today, sizeof(today), "%04d-%02d-%02d",
+                    timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
+            if (consumeDailyAlertGate(
+                    lastFlowMeterFailureAlertDate, sizeof(lastFlowMeterFailureAlertDate), today)) {
+                mqtt.publishAlert(R"({"flow_meter":"failed","reason":"modbus_error_or_timeout"})");
+            }
+        }
+        return;
+    }
+    irrigator::drivers::Log.printf("[flow] rate=%.3f m3/h total=%.3f m3 signal=%u\n",
+                                   static_cast<double>(reading.flowRateM3h),
+                                   static_cast<double>(reading.totalizerM3),
+                                   static_cast<unsigned>(reading.signalQuality));
+    updateFlowLifetimeTotals(nowMs, reading);
+    updateFlowPublishCadence(nowMs, reading);
+}
+
 void updateOutputsFromDomain() {
     const auto snapshot = irrigation.snapshot(millis());
     relayBank.setPump(snapshot.pumpOn);
@@ -2642,6 +2815,21 @@ void setup() {
     relayBank.begin();
     valveCurrentSensor.begin();
     pumpCurrentSensor.begin();
+
+    {
+        irrigator::drivers::Tuf2000mFlowMeter::Config flowMeterConfig;
+        flowMeterConfig.rxPin = irrigator::board::FLOW_METER_RX_PIN;
+        flowMeterConfig.txPin = irrigator::board::FLOW_METER_TX_PIN;
+        flowMeterConfig.baudRate = irrigator::board::FLOW_METER_BAUD_RATE;
+        flowMeterConfig.slaveId = irrigator::board::FLOW_METER_MODBUS_SLAVE_ID;
+        flowMeterConfig.flowRateRegister = irrigator::board::FLOW_METER_REG_FLOW_RATE;
+        flowMeterConfig.totalizerRegister = irrigator::board::FLOW_METER_REG_TOTALIZER;
+        flowMeterConfig.signalQualityRegister = irrigator::board::FLOW_METER_REG_SIGNAL_QUALITY;
+        flowMeterConfig.pollIntervalMs = irrigator::board::FLOW_METER_POLL_INTERVAL_MS;
+        // No Wi-Fi/captive-portal dependency, so - like the current sensors above - this begins
+        // unconditionally rather than waiting for enterOperationalMode().
+        flowMeter.begin(Serial2, flowMeterConfig);
+    }
     // Depth 3 comfortably covers normal loop() jitter between drains; currentSamplingTask drops a
     // burst outright (see its comment) rather than blocking if this ever fills up.
     currentBurstResultQueue = xQueueCreate(3, sizeof(CurrentBurstResult));
@@ -2734,6 +2922,7 @@ void loop() {
             }
             updateCurrentSampling(nowMs);
             drainCurrentBurstResults();
+            updateFlowSampling(nowMs);
             updateOutputsFromDomain();
             sampleWifiRssiIfDue(nowMs);
             // sampleNoiseFloorIfDue(nowMs);  // DISABLED 2026-08-09 (noise-floor/SNR feature)

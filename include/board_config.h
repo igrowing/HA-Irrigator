@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.1.14"
+#define APP_VERSION "1.2.0"
 #endif
 
 namespace irrigator::board {
@@ -75,6 +75,36 @@ static constexpr float CURRENT_PUMP_UNDERCURRENT_MULTIPLIER = 0.5f;
 // running/queued, with headroom to spare. WateringRequest is a few bytes, so the extra slots
 // cost tens of bytes total — a non-issue against the ESP32's RAM budget.
 static constexpr uint8_t WATERING_QUEUE_DEPTH = 15;
+
+// --- TUF-2000M ultrasonic flow meter (Modbus RTU/RS-485) ---
+// See hardware/readme.md's "Water flow sensing" section for the wiring/converter this talks to
+// (Waveshare TTL-to-RS485 (C), auto direction switching - no DE/RE GPIO needed) and
+// src/drivers/Tuf2000mFlowMeter.h for the driver built on top of these. RX/TX are the only two
+// strapping-safe GPIOs left free on this board once zones/pump/LED/rotary/ADC/I2C are all
+// accounted for (see the pin groups above).
+static constexpr uint8_t FLOW_METER_RX_PIN = 36;
+static constexpr uint8_t FLOW_METER_TX_PIN = 2;
+static constexpr uint32_t FLOW_METER_BAUD_RATE = 9600;
+static constexpr uint8_t FLOW_METER_MODBUS_SLAVE_ID = 1;
+// Throttles Tuf2000mFlowMeter::readAsync() - independent of any later MQTT publish cadence (that's
+// a Stage 2+ concern layered on top; every poll here still needs to happen regardless of whether
+// its result gets published). Short enough for a bench sanity-check ("two back-to-back reads while
+// flow is genuinely unchanged agree" - see the driver's class comment) without hammering the bus.
+static constexpr uint32_t FLOW_METER_POLL_INTERVAL_MS = 2000;
+// Holding-register map (function code 03), per the register map documented by
+// github.com/tczerwonka/tuf2000-modbus-reader - cross-check against the specific unit during
+// bring-up since TUF-2000M firmware batches can vary. Flow rate/totalizer are REAL4 (IEEE-754
+// float) values spanning 2 words each, word-swapped before reinterpreting as a float (see
+// Tuf2000mFlowMeter::decodeSwappedFloat()); signal quality is a single word (high byte: autogain
+// step, low byte: the actual 0-100 quality number).
+static constexpr uint16_t FLOW_METER_REG_FLOW_RATE = 1;
+static constexpr uint16_t FLOW_METER_REG_TOTALIZER = 9;
+static constexpr uint16_t FLOW_METER_REG_SIGNAL_QUALITY = 92;
+// Ceiling for one whole poll cycle (3 sequential register reads - see the driver): eModbus's own
+// per-request timeout is 2000ms, so this covers all three timing out in a row plus margin. If
+// Tuf2000mFlowMeter::readAsync() finds a poll still in flight past this, it force-clears and lets
+// the next throttle window retry rather than wedging every future poll on a stuck transceiver/bug.
+static constexpr uint32_t FLOW_METER_STUCK_REQUEST_TIMEOUT_MS = 8000;
 
 static constexpr uint8_t MANUAL_DURATION_MIN_MINUTES = 1;
 static constexpr uint8_t MANUAL_DURATION_MAX_MINUTES = 120;

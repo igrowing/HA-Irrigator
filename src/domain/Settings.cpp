@@ -83,6 +83,12 @@ bool validateSettings(const Settings& settings) {
     if (settings.rainSkipAmountMm < 0) {
         return false;
     }
+    // 500 L/min is already generous headroom above anything this residential-scale device's
+    // current-sensor board is sized for (11 zones, one 12A pump) - well past a real system's
+    // expected flow rate, same "generous but bounded" spirit as upperLimitPercent's 500 above.
+    if (settings.expectedFlowRateLpm < 0 || settings.expectedFlowRateLpm > 500) {
+        return false;
+    }
     return true;
 }
 
@@ -102,6 +108,7 @@ bool parseSettings(const char* json, size_t length, Settings& out) {
     JsonVariantConst watering = doc["Watering"];
     JsonVariantConst location = doc["Location"];
     JsonVariantConst currentSensor = doc["Current_sensor"];
+    JsonVariantConst flowMeter = doc["FlowMeter"];
     JsonVariantConst zones = doc["Zones"];
     if (zones.isNull()) {
         zones = doc["zone_names"];
@@ -125,6 +132,11 @@ bool parseSettings(const char* json, size_t length, Settings& out) {
     parsed.alertPumpOc = currentSensor["alert_pump_oc"] | true;
     parsed.alertValveUc = currentSensor["alert_valve_uc"] | true;
     parsed.alertValveOc = currentSensor["alert_valve_oc"] | true;
+
+    // FlowMeter group is also new - no flat-key fallback needed, same as the four alert toggles
+    // above. Default true/0 (see Settings.h's field comments).
+    parsed.flowMeterEnabled = flowMeter["flow_meter_enabled"] | true;
+    parsed.expectedFlowRateLpm = flowMeter["expected_flow_rate_lpm"] | 0;
 
     parsed.autoAdjustmentEnabled =
         watering["auto_adjustment_enabled"] | (doc["auto_adjustment_enabled"] | true);
@@ -199,6 +211,7 @@ bool mergeSettings(const Settings& existing,
     // `existing`'s value, no rejection).
     JsonVariantConst watering = doc["Watering"];
     JsonVariantConst currentSensor = doc["Current_sensor"];
+    JsonVariantConst flowMeter = doc["FlowMeter"];
 
     JsonVariantConst wateringPercentage = watering["watering_percentage"];
     if (hasValue(wateringPercentage)) {
@@ -281,6 +294,27 @@ bool mergeSettings(const Settings& existing,
             out.alertValveOc = alertValveOc.as<bool>();
         } else {
             appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Current_sensor.alert_valve_oc");
+        }
+    }
+
+    // FlowMeter's two fields are plain, individually-merged fields - user-editable (not
+    // device-owned), same as the four alert toggles above, so no post-merge override is needed in
+    // main.ino.
+    JsonVariantConst flowMeterEnabled = flowMeter["flow_meter_enabled"];
+    if (hasValue(flowMeterEnabled)) {
+        if (flowMeterEnabled.is<bool>()) {
+            out.flowMeterEnabled = flowMeterEnabled.as<bool>();
+        } else {
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "FlowMeter.flow_meter_enabled");
+        }
+    }
+    JsonVariantConst expectedFlowRateLpm = flowMeter["expected_flow_rate_lpm"];
+    if (hasValue(expectedFlowRateLpm)) {
+        if (expectedFlowRateLpm.is<long>() && expectedFlowRateLpm.as<long>() >= 0 &&
+            expectedFlowRateLpm.as<long>() <= 500) {
+            out.expectedFlowRateLpm = static_cast<int16_t>(expectedFlowRateLpm.as<long>());
+        } else {
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "FlowMeter.expected_flow_rate_lpm");
         }
     }
 
@@ -449,6 +483,10 @@ size_t serializeSettings(const Settings& settings, char* buffer, size_t bufferSi
     currentSensor["alert_pump_oc"] = settings.alertPumpOc;
     currentSensor["alert_valve_uc"] = settings.alertValveUc;
     currentSensor["alert_valve_oc"] = settings.alertValveOc;
+
+    JsonObject flowMeter = doc["FlowMeter"].to<JsonObject>();
+    flowMeter["flow_meter_enabled"] = settings.flowMeterEnabled;
+    flowMeter["expected_flow_rate_lpm"] = settings.expectedFlowRateLpm;
 
     JsonObject zones = doc["Zones"].to<JsonObject>();
     for (uint8_t i = 0; i < board::ZONE_COUNT; ++i) {
