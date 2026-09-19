@@ -101,33 +101,78 @@ void test_watering_percentage_edge_cases() {
     TEST_ASSERT_EQUAL_UINT16(UINT16_MAX, irrigator::domain::applyWateringPercentage(60000, 300));
 }
 
+// These cases pin the arithmetic, not the factory calibration: each passes its coefficients
+// explicitly (10 %/degC, 1.6 %/mm - the values in force when they were written) so they keep
+// testing the formula rather than silently re-baselining every time the defaults are re-tuned.
+// test_auto_adjustment_percentage_uses_factory_default_coefficients below is the one case that
+// deliberately does track board_config.h.
 void test_auto_adjustment_percentage_base_case_is_100() {
     TEST_ASSERT_EQUAL_INT16(
-        100, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 0.0f, 20.0f, 40, 200));
+        100, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 0.0f, 20.0f, 10.0f, 1.6f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_temp_above_base_increases_it() {
-    // (25-20)*2 = +10 -> 110%
+    // 100 + (25-20)*10 = 150%
     TEST_ASSERT_EQUAL_INT16(
-        150, irrigator::domain::computeAutoCorrectedPercentage(25.0f, 0.0f, 20.0f, 40, 200));
+        150, irrigator::domain::computeAutoCorrectedPercentage(25.0f, 0.0f, 20.0f, 10.0f, 1.6f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_rain_reduces_it() {
-    // 100 - 4mm*5 = 80%
+    // 100 - 4mm*1.6 = 93.6 -> 94%
     TEST_ASSERT_EQUAL_INT16(
-        94, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 4.0f, 20.0f, 40, 200));
+        94, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 4.0f, 20.0f, 10.0f, 1.6f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_clamps_to_upper_limit() {
-    // (80-20)*2 = +120 -> 220%, over the 200% limit -> clamped to 200.
+    // 100 + (80-20)*10 = 700%, over the 200% limit -> clamped to 200.
     TEST_ASSERT_EQUAL_INT16(
-        200, irrigator::domain::computeAutoCorrectedPercentage(80.0f, 0.0f, 20.0f, 40, 200));
+        200, irrigator::domain::computeAutoCorrectedPercentage(80.0f, 0.0f, 20.0f, 10.0f, 1.6f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_below_lower_limit_sets_zero() {
-    // 100 - 15mm*5 = 25%, below the 40% lower limit -> 0 (skip), not clamped to 40.
+    // 100 + (13-20)*10 - 30mm*1.6 = -18%, below the 40% lower limit -> 0 (skip), not clamped to 40.
     TEST_ASSERT_EQUAL_INT16(
-        0, irrigator::domain::computeAutoCorrectedPercentage(13.0f, 30.0f, 20.0f, 40, 200));
+        0, irrigator::domain::computeAutoCorrectedPercentage(13.0f, 30.0f, 20.0f, 10.0f, 1.6f, 40, 200));
+}
+
+// Guards the pairing that af3497b broke: the formula's temperature input is the trailing average
+// of daily MAXIMA, so baseTempC has to be a daily-max reading of a normal day too. Feeding a
+// plausible 24h-mean base (20C) against a daily-max input is what produced a standing ~+52pp
+// overshoot for two months. This case tracks board_config.h on purpose - if someone re-tunes the
+// defaults, this is the test that should make them re-check the calibration story in the docs.
+void test_auto_adjustment_percentage_uses_factory_default_coefficients() {
+    // Both anchors are Open-Meteo ERA5 *archive* values for Biella - the source the constants are
+    // calibrated on. The forecast endpoint's own past_days series for the same window reads
+    // 24.34C / 16.7mm and would give 52% here, which is exactly the kind of source mix-up this
+    // test exists to make loud.
+    //
+    // Window 2026-09-14..18: avg daily max 25.32C, 10.5mm rain over the 5 days.
+    // 100 + (25.32-25.5)*18 - 10.5*1.6 = 79.96 -> 80%. The original 20C/10 per degC pairing on the
+    // model series gave 117%.
+    TEST_ASSERT_EQUAL_INT16(
+        80,
+        irrigator::domain::computeAutoCorrectedPercentage(
+            25.32f, 10.5f, irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
+            irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE,
+            irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM, 40, 200));
+    // Peak summer still has to reach the 200% cap - that saturation is deliberate (it is the water
+    // budget, not a modelling artifact), and a recalibration that quietly lost it would under-water
+    // July. Window 2026-06-27..07-01: avg daily max 33.62C, 7.3mm (raw 234%).
+    TEST_ASSERT_EQUAL_INT16(
+        200,
+        irrigator::domain::computeAutoCorrectedPercentage(
+            33.62f, 7.3f, irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
+            irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE,
+            irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM, 40, 200));
+    // An ordinary July week (31.5C, 3mm) must sit at the cap too, not just an extreme one - the
+    // first re-fit candidate (slope 16) landed at 191% here and would have quietly under-watered
+    // the typical summer day while still passing the peak-day check above.
+    TEST_ASSERT_EQUAL_INT16(
+        200,
+        irrigator::domain::computeAutoCorrectedPercentage(
+            31.5f, 3.0f, irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
+            irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE,
+            irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM, 40, 200));
 }
 
 void test_should_skip_for_rain_probability_inclusive_amount_exclusive() {
@@ -144,19 +189,19 @@ void test_should_skip_for_rain_uses_configured_thresholds() {
 }
 
 // The skip/clamp comparisons are both strict (`<` lower, `>` upper), so a percentage landing
-// exactly on a limit is a legal value, not a boundary that trips the special case. At the default
-// 10%/degree from a 20C base these land on exact float values: 14C -> 40, 30C -> 200.
+// exactly on a limit is a legal value, not a boundary that trips the special case. At 10%/degree
+// from a 20C base these land on exact float values: 14C -> 40, 30C -> 200.
 void test_auto_adjustment_percentage_exactly_on_lower_limit_is_kept_not_zeroed() {
     TEST_ASSERT_EQUAL_INT16(
-        40, irrigator::domain::computeAutoCorrectedPercentage(14.0f, 0.0f, 20.0f, 40, 200));
+        40, irrigator::domain::computeAutoCorrectedPercentage(14.0f, 0.0f, 20.0f, 10.0f, 1.6f, 40, 200));
     // A hair below is the skip case, confirming 40 above really was the boundary and not a clamp.
     TEST_ASSERT_EQUAL_INT16(
-        0, irrigator::domain::computeAutoCorrectedPercentage(13.9f, 0.0f, 20.0f, 40, 200));
+        0, irrigator::domain::computeAutoCorrectedPercentage(13.9f, 0.0f, 20.0f, 10.0f, 1.6f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_exactly_on_upper_limit_is_not_clamped_down() {
     TEST_ASSERT_EQUAL_INT16(
-        200, irrigator::domain::computeAutoCorrectedPercentage(30.0f, 0.0f, 20.0f, 40, 200));
+        200, irrigator::domain::computeAutoCorrectedPercentage(30.0f, 0.0f, 20.0f, 10.0f, 1.6f, 40, 200));
 }
 
 // A lower limit of 0 disables the skip branch entirely (nothing can be < 0 once the negative floor
@@ -164,7 +209,7 @@ void test_auto_adjustment_percentage_exactly_on_upper_limit_is_not_clamped_down(
 // same output, but it's the path a user who sets lower_limit=0 actually takes.
 void test_auto_adjustment_percentage_zero_lower_limit_floors_at_zero() {
     TEST_ASSERT_EQUAL_INT16(
-        0, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 1000.0f, 20.0f, 0, 200));
+        0, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 1000.0f, 20.0f, 10.0f, 1.6f, 0, 200));
 }
 
 void test_open_meteo_now_index_is_days_back_times_24_plus_hour() {
@@ -222,6 +267,57 @@ void test_summarize_past_rainfall_rejects_short_array() {
     daily.add(1.0f);  // only 1 day; 5 requested
     float rainPast = 0.0f;
     TEST_ASSERT_FALSE(irrigator::domain::summarizePastRainfall(daily, 5, rainPast));
+}
+
+// A day the archive doesn't have yet comes back as JSON null, and ArduinoJson's as<float>() turns
+// null into 0. For rain that reads as "nothing fell" (raises the percentage); for temperature it
+// reads as a freezing day (drops the average ~5C per missing day). Both are silently wrong answers
+// that look perfectly plausible downstream, so the window must be refused outright.
+void test_summarize_past_average_daily_max_temperature_rejects_null_in_window() {
+    JsonDocument doc;
+    JsonArray daily = doc["t"].to<JsonArray>();
+    daily.add(25.0f);
+    daily.add(26.0f);
+    daily.add(nullptr);  // the archive's "not available yet"
+    daily.add(24.0f);
+    daily.add(25.0f);
+    float avgMaxTemp = -999.0f;
+    TEST_ASSERT_FALSE(
+        irrigator::domain::summarizePastAverageDailyMaxTemperature(daily, 5, avgMaxTemp));
+    TEST_ASSERT_EQUAL_FLOAT(-999.0f, avgMaxTemp);  // untouched on failure, as documented
+}
+
+void test_summarize_past_rainfall_rejects_null_in_window() {
+    JsonDocument doc;
+    JsonArray daily = doc["d"].to<JsonArray>();
+    daily.add(1.0f);
+    daily.add(nullptr);
+    daily.add(2.0f);
+    daily.add(0.0f);
+    daily.add(3.0f);
+    float rainPast = -999.0f;
+    TEST_ASSERT_FALSE(irrigator::domain::summarizePastRainfall(daily, 5, rainPast));
+    TEST_ASSERT_EQUAL_FLOAT(-999.0f, rainPast);
+}
+
+// Only nulls *inside* the requested window matter: a forecast-tail null past pastWeatherDays (the
+// old forecast endpoint's array carries two extra days) must not sink an otherwise complete window.
+void test_summarize_past_ignores_null_beyond_the_window() {
+    JsonDocument doc;
+    JsonArray temps = doc["t"].to<JsonArray>();
+    JsonArray rain = doc["d"].to<JsonArray>();
+    for (int i = 0; i < 5; ++i) {
+        temps.add(20.0f);
+        rain.add(1.0f);
+    }
+    temps.add(nullptr);
+    rain.add(nullptr);
+    float avg = 0.0f;
+    float sum = 0.0f;
+    TEST_ASSERT_TRUE(irrigator::domain::summarizePastAverageDailyMaxTemperature(temps, 5, avg));
+    TEST_ASSERT_TRUE(irrigator::domain::summarizePastRainfall(rain, 5, sum));
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 20.0f, avg);
+    TEST_ASSERT_FLOAT_WITHIN(0.01f, 5.0f, sum);
 }
 
 void test_summarize_forecast_rain_window_computes_max_and_sum() {
@@ -3126,6 +3222,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_auto_adjustment_percentage_rain_reduces_it);
     RUN_TEST(test_auto_adjustment_percentage_clamps_to_upper_limit);
     RUN_TEST(test_auto_adjustment_percentage_below_lower_limit_sets_zero);
+    RUN_TEST(test_auto_adjustment_percentage_uses_factory_default_coefficients);
     RUN_TEST(test_auto_adjustment_percentage_exactly_on_lower_limit_is_kept_not_zeroed);
     RUN_TEST(test_auto_adjustment_percentage_exactly_on_upper_limit_is_not_clamped_down);
     RUN_TEST(test_auto_adjustment_percentage_zero_lower_limit_floors_at_zero);
@@ -3138,6 +3235,9 @@ int main(int argc, char** argv) {
     RUN_TEST(test_summarize_past_average_daily_max_temperature_rejects_short_array);
     RUN_TEST(test_summarize_past_rainfall_sums_first_n_days);
     RUN_TEST(test_summarize_past_rainfall_rejects_short_array);
+    RUN_TEST(test_summarize_past_average_daily_max_temperature_rejects_null_in_window);
+    RUN_TEST(test_summarize_past_rainfall_rejects_null_in_window);
+    RUN_TEST(test_summarize_past_ignores_null_beyond_the_window);
     RUN_TEST(test_summarize_forecast_rain_window_computes_max_and_sum);
     RUN_TEST(test_summarize_forecast_rain_window_rejects_short_array);
     RUN_TEST(test_summarize_forecast_rain_window_accepts_window_ending_exactly_at_array_end);

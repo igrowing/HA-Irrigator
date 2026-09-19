@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.1.14"
+#define APP_VERSION "1.1.15"
 #endif
 
 namespace irrigator::board {
@@ -105,14 +105,27 @@ static constexpr size_t SCHEDULE_JSON_MAX_BYTES = 24576;
 // --- Weather-based irrigation auto-adjustment ---
 static constexpr int16_t AUTOADJUSTMENT_DEFAULT_UPPER_LIMIT_PERCENT = 200;
 static constexpr int16_t AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT = 40;
-// schedule.json's per-zone duration_min is already the base runtime at this reference
-// temperature. TEMP_MODIFIER is tuned so the existing default lower/upper limits (40%/200%,
-// above) land at meaningful real-world points: raw percentage hits the 200% cap exactly at 30°C
-// and crosses below the 40% skip threshold at 14°C (both holding rainfall at 0mm) — see
-// docs/usage_irrigator.md's Step 2 table. RAIN_MODIFIER is still an untuned placeholder — needs
-// real-world calibration against this specific climate/zones (see docs/technical.md).
-static constexpr float AUTOADJUSTMENT_BASE_TEMP_C = 20.0f;
-static constexpr float AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE = 10.0f;
+// schedule.json's per-zone duration_min is already the base runtime at BASE_TEMP. Note what
+// BASE_TEMP means: the *average daily maximum* over the trailing window that a "normal" day
+// reads — NOT a 24h mean. The formula's input switched from an hourly mean to daily max in
+// af3497b while BASE_TEMP stayed at 20, which silently added a near-constant bias: over Apr-Sep
+// 2026 at this site the season-mean gap Tmax - Tmean is 5.2°C, i.e. +52 percentage points at the
+// old 10 %/°C. Recalibrated 2026-09-19 to pivot the line rather than shift it (raising the base
+// alone would have dropped peak summer out of the 200% cap that is deliberately relied on), then
+// re-fitted the same day when the history source moved to the Open-Meteo ERA5 archive: raw
+// percentage now hits the 200% cap at 31.1°C and crosses below the 40% skip threshold at
+// 22.2°C, both holding rainfall at 0mm — see docs/usage_irrigator.md's Step 2 table.
+// These constants are calibrated against *archive* temperatures/rainfall specifically: the
+// forecast endpoint's own past_days series runs ~1°C cooler and reports ~6mm more rain over the
+// same five days, which is worth ~25 percentage points — do not feed this formula from a
+// different source without re-fitting (see docs/technical.md's "Calibration").
+// RAIN_MODIFIER is entangled with the temperature terms (it was partly compensating the old
+// bias) and stays a candidate for re-tuning — see docs/technical.md.
+// All three are runtime-overridable per-device (Settings::baseTempC / tempModifierPctPerDegree /
+// rainModifierPctPerMm, settings.json's Watering group) — these are only the factory defaults,
+// so tuning them no longer needs a firmware flash.
+static constexpr float AUTOADJUSTMENT_BASE_TEMP_C = 25.5f;
+static constexpr float AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE = 18.0f;
 static constexpr float AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM = 1.6f;
 
 // Rain-skip (Step 1) is the only *forecast*-based check — probability is inclusive (>=), amount
@@ -159,6 +172,11 @@ static constexpr unsigned long TLS_HANDSHAKE_TIMEOUT_S = 10;
 // offset config.json stores).
 static constexpr const char* GEO_IP_API_URL = "http://ip-api.com/json/?fields=status,lat,lon,city,offset";
 static constexpr const char* OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v1/forecast";
+// ERA5 reanalysis - the source of the correction formula's *historical* inputs (avg daily max
+// temperature, rainfall). Unlike the forecast endpoint's past_days series (the weather model's own
+// output for those hours, never revised), ERA5 assimilates real observations after the fact. The
+// forecast endpoint above is still used for the forward-looking rain-skip window.
+static constexpr const char* OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive";
 static constexpr const char* WEATHERAPI_FORECAST_URL = "https://api.weatherapi.com/v1/forecast.json";
 static constexpr const char* WEATHERAPI_HISTORY_URL = "https://api.weatherapi.com/v1/history.json";
 

@@ -19,9 +19,17 @@ namespace irrigator::domain {
 //                   - rainPastDaysMm * rainModifierPctPerMm
 // then: below lowerLimitPercent -> 0 (skip the cycle entirely); above upperLimitPercent -> clamped
 // to upperLimitPercent. Matches DurationAdjuster.cpp's rounding convention (nearest integer).
+//
+// baseTempC is the avg-daily-max reading of a "normal" day, so it only means anything alongside
+// the daily-max input above - see board_config.h's AUTOADJUSTMENT_BASE_TEMP_C for why that pairing
+// is load-bearing. All three coefficients are passed in (from Settings, defaulting to the
+// board_config.h constants) rather than read from board_config.h here, so a site can be
+// recalibrated without a firmware flash.
 int16_t computeAutoCorrectedPercentage(float avgPastTempC,
                                        float rainPastDaysMm,
                                        float baseTempC,
+                                       float tempModifierPctPerDegree,
+                                       float rainModifierPctPerMm,
                                        int16_t lowerLimitPercent,
                                        int16_t upperLimitPercent);
 

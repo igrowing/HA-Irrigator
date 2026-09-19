@@ -2148,6 +2148,7 @@ struct WeatherAutoAdjustParams {
     char weatherApiKey[48];
     int16_t rainSkipProbabilityPercent;
     int16_t rainSkipAmountMm;
+    float baseTempC;
     float tempModifierPctPerDegree;
     float rainModifierPctPerMm;
     int16_t lowerLimitPercent;
@@ -2200,7 +2201,9 @@ void weatherAutoAdjustTask(void* pvParameters) {
             result.newPercentage =
                 irrigator::domain::computeAutoCorrectedPercentage(forecast.avgPastTempC,
                                                                    forecast.rainPastDaysMm,
-                                                                   irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
+                                                                   params->baseTempC,
+                                                                   params->tempModifierPctPerDegree,
+                                                                   params->rainModifierPctPerMm,
                                                                    params->lowerLimitPercent,
                                                                    params->upperLimitPercent);
         }
@@ -2321,8 +2324,9 @@ bool startWeatherFetch(const char* today, int64_t nowEpoch) {
     snprintf(params->weatherApiKey, sizeof(params->weatherApiKey), "%s", settings.weatherApiKey);
     params->rainSkipProbabilityPercent = settings.rainSkipProbabilityPercent;
     params->rainSkipAmountMm = settings.rainSkipAmountMm;
-    params->tempModifierPctPerDegree = irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE;
-    params->rainModifierPctPerMm = irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM;
+    params->baseTempC = settings.baseTempC;
+    params->tempModifierPctPerDegree = settings.tempModifierPctPerDegree;
+    params->rainModifierPctPerMm = settings.rainModifierPctPerMm;
     params->lowerLimitPercent = settings.lowerLimitPercent;
     params->upperLimitPercent = settings.upperLimitPercent;
 

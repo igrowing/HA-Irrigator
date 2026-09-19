@@ -580,23 +580,54 @@ direction explicitly: `avgPastTempC`/`rainPastDaysMm` (historical) vs.
    unmodified until this resolves; there's no way to enter a location manually (see **Known
    limitations**). `offset` is what sets `config.json`'s `timezone` — see "Clock sync and daylight
    saving".
-2. **Weather**, primary — [Open-Meteo](https://open-meteo.com) (`/v1/forecast`, no API key): one
-   request covers both directions at once — `hourly=temperature_2m,precipitation_probability,
-   precipitation` and `daily=precipitation_sum` with `past_days=5&forecast_days=2&timezone=UTC`. An
-   ArduinoJson `DeserializationOption::Filter` keeps only those four arrays — the raw payload also
-   carries `hourly_units`, `daily_units`, `elevation`, `generationtime_ms`, etc., which would
-   otherwise inflate the parsed `JsonDocument` for no benefit. Passing `timezone=UTC` makes the
-   hourly arrays start at 00:00 UTC of `today - 5 days`, one entry per hour — so "now"'s index into
-   that array is `domain::openMeteoNowIndex()`'s `5*24 + current_UTC_hour`, plain arithmetic, no
-   timestamp parsing needed. `domain::summarizePastAverageTemperature()` then averages the 120
-   hours *before* that index (the historical MA); `domain::summarizeForecastRainWindow()` maxes/
-   sums the 12 hours *from* that index onward (the forecast window) — same array, same "now" index,
-   opposite directions.
+2. **Weather**, primary — [Open-Meteo](https://open-meteo.com) (no API key), as **two sequential
+   HTTPS requests**, one per direction, to two different endpoints:
+   - **Forward (rain-skip, Step 1)** — `/v1/forecast?hourly=precipitation_probability,precipitation
+     &past_days=5&forecast_days=2&timezone=UTC`. An ArduinoJson `DeserializationOption::Filter` keeps
+     only those two hourly arrays (the raw payload also carries `hourly_units`, `elevation`,
+     `generationtime_ms`, etc., which would otherwise inflate the parsed `JsonDocument`). Passing
+     `timezone=UTC` makes the arrays start at 00:00 UTC of `today - 5 days`, one entry per hour, so
+     "now"'s index is `domain::openMeteoNowIndex()`'s `5*24 + current_UTC_hour` — plain arithmetic, no
+     timestamp parsing. `domain::summarizeForecastRainWindow()` maxes/sums the 12 entries from there.
+     `past_days=5` is kept only so that index arithmetic stays valid; the past hours it returns are
+     not used.
+   - **Historical (formula inputs, Step 2)** — the **ERA5 archive**,
+     `archive-api.open-meteo.com/v1/archive?start_date=<today-5>&end_date=<yesterday>
+     &daily=precipitation_sum,temperature_2m_max&timezone=UTC`. Date-bounded because that endpoint has
+     no `past_days` and rejects any `end_date` after today, so yesterday is the newest day it accepts;
+     asking for exactly 5 days means the first 5 array entries *are* the window.
+     `domain::summarizePastAverageDailyMaxTemperature()` averages `temperature_2m_max` and
+     `domain::summarizePastRainfall()` sums `precipitation_sum`. Both **reject a null inside the
+     window** (the archive's "not available yet"): ArduinoJson reads null as 0, which would be a
+     silent "0mm fell" (raising the percentage) or a freezing day (lowering it ~5°C per missing day).
+     Daily *max*, not a 24h mean — see **Calculation** below for why that distinction is load-bearing.
+
+   **Why the history comes from the archive and not the forecast endpoint's `past_days`.** For past
+   dates `/v1/forecast` serves the weather *model's own output* for those hours, stitched from recent
+   runs and never revised against what actually happened. ERA5 is also a model, but one that
+   assimilates real observations (stations, radar, satellite) after the fact — coarser (~25 km grid,
+   so it smooths localized convective storms) but anchored to reality. They are not close: for the
+   window 2026-09-14…18 the forecast endpoint's series read **24.34°C / 16.7mm**, ERA5 read
+   **25.32°C / 10.5mm** — about 25 percentage points of watering at the calibrated coefficients.
+   Every constant in `board_config.h` is fitted to the archive series, so the two must not be mixed.
+   The two requests are separate calls (`fetchOpenMeteoForecastWindow` then
+   `fetchOpenMeteoArchivePast`) so each one's `WiFiClientSecure` (~40–60KB of mbedTLS state) is
+   destroyed before the next TLS handshake starts. **Either failing fails the whole Open-Meteo
+   attempt**, which falls through to WeatherAPI below — deliberately not "use the forecast series as
+   a stand-in", for the mixing reason above.
 3. **Weather, fallback** — [WeatherAPI.com](https://www.weatherapi.com) (`forecast.json` for the
    forward rain-skip window, + 5×`history.json` — one call per past day, since that endpoint only
    ever returns a single day — for the historical temperature/rainfall), used only when
    Open-Meteo's request fails outright (bad HTTP status or JSON parse error). Each `history.json`
-   response's `day.avgtemp_c`/`day.totalprecip_mm` are averaged/summed across the 5 calls.
+   response's `day.maxtemp_c`/`day.totalprecip_mm` are averaged/summed across the 5 calls —
+   `maxtemp_c`, not `avgtemp_c`, so the fallback feeds the formula the same daily-peak quantity
+   Open-Meteo's `temperature_2m_max` does. **It is a third source with its own bias, and is not
+   calibrated:** for 2026-09-14…18 it reported 23.64°C / 10.5mm against ERA5's 25.32°C / 10.5mm,
+   which is ~30 percentage points lower at the current coefficients (~50% vs 80%). Acceptable for a
+   fallback that runs only when Open-Meteo is down, but a day watered from it should be read as
+   approximate. WeatherAPI.com exposes no evapotranspiration field, so a
+   future ET₀-based formula would have to derive it here (Hargreaves-Samani from
+   `maxtemp_c`/`mintemp_c` + latitude + day-of-year) rather than read it.
    Requires `settings.json`'s `weatherapi_key`; `fetchForecastWeatherApi()` returns failure
    immediately if that's empty rather than attempting a call that can't succeed.
 
@@ -623,14 +654,23 @@ Either path stops retrying once a forecast is successfully applied for that cale
 
 ### Calculation
 
-`schedule.json`'s per-zone `duration_min` is already the base runtime at a 20°C reference temperature (`AUTOADJUSTMENT_BASE_TEMP_C`), so there's no separate mm-of-water/flow-rate conversion — the whole calculation collapses to one percentage, applied through the exact same `watering_percentage` → `ScheduleEngine::tick()` path the manual **Adjust** setting already uses.
+`schedule.json`'s per-zone `duration_min` is already the base runtime at the `AUTOADJUSTMENT_BASE_TEMP_C` reference temperature (25.5°C), so there's no separate mm-of-water/flow-rate conversion — the whole calculation collapses to one percentage, applied through the exact same `watering_percentage` → `ScheduleEngine::tick()` path the manual **Adjust** setting already uses.
 Both inputs below are **historical** (trailing `AUTOADJUSTMENT_PAST_WEATHER_DAYS`, 5 days) — never the forecast:
 
 The main formula is:
 ```
-Percentage = 100 + (avgPastTemp5Days - 20) * temp_modifier_pct_per_degree
+Percentage = 100 + (avgPastDailyMax5Days - base_temp_c) * temp_modifier_pct_per_degree
                   - rainPast5Days * rain_modifier_pct_per_mm
 ```
+
+**What the temperature input is matters more than it looks.** `avgPastDailyMax5Days` is the mean of
+the five daily **maxima**, not a 24-hour mean, so `base_temp_c` has to be a daily-max reading too —
+the average daily peak of a day that should water at exactly 100%. The two only mean anything as a
+pair. Between commits `c3af5c9` and this one they were mismatched: `c3af5c9` calibrated
+`base_temp_c = 20` against an hourly-mean input, `af3497b` switched the input to `temperature_2m_max`
+and left the base at 20. At this site the season-mean gap between daily max and 24h mean is 5.2°C,
+so the formula read every day as ~5°C hotter than it was and added a near-constant **+52 percentage
+points**. The recalibration below fixes the pairing.
 
 Let's review an example:
 
@@ -657,25 +697,84 @@ Next-12h hourly window (06:00→17:00 UTC today, nowIndex=126), feeds Step 1: ev
 **Step 2 — Correction formula**
 
 ```
-percentage = 100 + (avgPastTempC − 20.0) × 10.0 − rainPastDaysMm × 1.6
+percentage = 100 + (avgPastTempC − 25.5) × 18.0 − rainPastDaysMm × 1.6
 avgPastTempC = (27.7+29.5+30.3+26.5+21.3)/5 = 27.06 °C
 rainPastDaysMm = 0+0+14.2+19.4+35.3 = 68.9 mm
 
-percentage = 100 + (27.06 − 20.0)×10 − 68.9×1.6
-           = 100 + 70.6 − 75.79
-           = 94.81  →  rounds to 95%
+percentage = 100 + (27.06 − 25.5)×18 − 68.9×1.6
+           = 100 + 28.08 − 110.24
+           = 17.84  →  below lower_limit=40, so the cycle is skipped: 0%
 ```
 
-95 is between your configured lower_limit=40 and upper_limit=200, so it's neither skipped nor clamped — final result: wateringPercentage = 95%.
+(The table above was captured under the old forecast-endpoint history; today the same five days
+would come from the archive and differ by a few tenths of a degree and a few mm — the arithmetic is
+what this example is for.)
+
+Under the pre-recalibration constants (base 20°C, 10 %/°C) the same day produced 95%. 68.9mm of
+rain in five days emptying the cycle is the intended behaviour; what the old constants were doing
+was letting a +52pp temperature bias cancel most of that rain credit.
 
 then clamped: below `lower_limit` → **0%** (skip the cycle entirely, not clamped up to the limit);
-above `upper_limit` → capped at `upper_limit`. `temp_modifier_pct_per_degree` (`board_config.h`'s
-`AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE`, 10.0) is tuned so the factory default
-lower/upper limits (40%/200%) land at meaningful real-world temperatures — the 200% cap at exactly
-30°C, the 40% floor at 14°C (both holding rainfall at 0mm; see docs/usage_irrigator.md's Step 2
-table for the full grid). `rain_modifier_pct_per_mm` (1.6) is still an **untuned placeholder** —
-needs site-specific calibration against this climate/these zones; see `src/domain/AutoAdjustment.cpp`
-and its unit tests for the exact behavior at each threshold.
+above `upper_limit` → capped at `upper_limit`.
+
+### Calibration and how it was chosen
+
+The three coefficients default to the `board_config.h` constants and are readable from
+`settings.json`'s `Watering` group (`base_temp_c`, `temp_modifier_pct_per_degree`,
+`rain_modifier_pct_per_mm`). They are deliberately **not** exposed in the device menu or Home
+Assistant: they are calibration constants for a site, not controls.
+
+The current defaults (25.5°C / 18.0 / 1.6) were fitted against Open-Meteo **ERA5 archive** history
+for this site (Biella, 45.563N 8.058E) over April–September 2026, against two anchors the owner
+supplied plus one sanity point:
+
+| anchor | inputs (ERA5) | target | result |
+|---|---|---|---|
+| 2026-09-19 (a shoulder-season day judged over-watered) | avg daily max 25.32°C, 10.5mm | ~80% | 80% |
+| peak July (2026-06-27–07-01) | avg daily max 33.62°C, 7.3mm | ≥ 200%, i.e. still capped | 234% raw → 200% |
+| ordinary July week | avg daily max 31.5°C, 3.0mm | 200% (in the cap, not just at the extreme) | 203% raw → 200% |
+
+**Two calibrations, and why the second one exists.** The first fit (24.0°C / 16.0 / 1.6) was made
+against the forecast endpoint's series, where 2026-09-19 read 24.34°C / 16.7mm. When the history
+moved to the ERA5 archive (see Data sources), the same day read 25.32°C / 10.5mm — hotter *and*
+drier — and the first fit returned **104%**, i.e. the original overshoot back again. So the base moved
+24.0 → 25.5 to restore the ~80% anchor, and the slope 16 → 18 to keep an *ordinary* July week in the
+cap (16 with the new base left it at 191%: passing the peak-day anchor while quietly under-watering
+the typical summer day). Rain stayed at 1.6. Over the Apr–Sep watering days (Wed/Sat) the refit uses
+~10% less water than the first fit, with 14 of 47 days at the 200% cap.
+
+**The third row is the one that constrains the slope.** `upper_limit` is not a safety rail here,
+it is a deliberate water *budget*: peak-summer demand genuinely exceeds it, and saturating there is
+the intended behaviour. That rules out simply re-centring the base and leaving the slope at 10 —
+that combination hits the first anchor but drops summer below the cap, quietly cutting its water.
+Steepening the slope pivots the line instead of shifting it, so all anchors hold: the raw
+percentage reaches the 200% cap at 31.1°C and crosses below the 40% skip floor at 22.2°C (both at
+0mm rain; see `docs/usage_irrigator.md`'s Step 2 table for the full grid).
+
+**A single calibration day is thin.** The ~80% anchor is one owner judgment ("that day looked
+over-watered"), and the model behind it is uncertain to the tune of ~25 points depending on which
+source is asked — which is exactly what the source switch above demonstrated. Treat these as a
+working calibration, not a validated one, and expect to adjust `base_temp_c` as more days accumulate.
+
+`rain_modifier_pct_per_mm` is unchanged at 1.6, but it is **entangled** with the temperature terms
+and should not be read as independently validated: while the base temperature was biased high, the
+rain term was partly acting as a bias trim (it was raised 1.1 → 1.6 in `a598b5b` for exactly that
+reason). Expect it to need re-tuning now that the bias is gone. There is also a structural caveat —
+`%/mm` is a property of the *schedule*, not of the climate: it is only dimensionally correct if every
+zone's 100% dose is the same depth in mm (true here, where the tree zones run long on low-rate drip
+while the lawn zones run short on high-rate sprays), and rescaling every `duration_min` would require
+rescaling this coefficient inversely.
+
+**Known limitations of the linear form** (documented so the next round of tuning doesn't re-litigate
+them): temperature is only a proxy for evaporative demand, and it carries no seasonal information.
+At this site, five-day windows averaging 29–31°C daily max have a real ET₀ of 5.9 mm/day in May but
+4.1 mm/day in September — a 30% swing in actual water need that no choice of `base_temp_c` and
+`temp_modifier_pct_per_degree` can represent, because the formula sees both windows as the same
+temperature. Open-Meteo returns `et0_fao_evapotranspiration` in the *same daily block already
+requested*, so replacing the temperature term with `Kc × ET₀` is cheap in bytes; it is not done here
+because calibrating it needs more owner-supplied anchors than the one shoulder-season day available
+so far. See `src/domain/AutoAdjustment.cpp` and its unit tests for the exact behavior at each
+threshold.
 
 Separately — and using the *forecast*, not the history above — if the next 12 hours show rain
 probability **at or over** `rain_skip_probability_percent` (default 70) **and** rain amount **over**
