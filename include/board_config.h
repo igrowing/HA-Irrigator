@@ -112,18 +112,18 @@ static constexpr int16_t AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT = 40;
 // 2026 at this site the season-mean gap Tmax - Tmean is 5.2°C, i.e. +52 percentage points at the
 // old 10 %/°C. Recalibrated 2026-09-19 to pivot the line rather than shift it (raising the base
 // alone would have dropped peak summer out of the 200% cap that is deliberately relied on), then
-// re-fitted the same day when the history source moved to the Open-Meteo ERA5 archive: raw
-// percentage now hits the 200% cap at 31.1°C and crosses below the 40% skip threshold at
-// 22.2°C, both holding rainfall at 0mm — see docs/usage_irrigator.md's Step 2 table.
+// re-fitted the same day when the history source moved to the Open-Meteo ERA5 archive, then
+// re-fitted again (2026-09-21) so cool spells keep watering at the 40% floor instead of skipping:
+// raw percentage now hits the 200% cap at 31.0°C and crosses below the 40% skip threshold at
+// 18.2°C, both holding rainfall at 0mm — see docs/usage_irrigator.md's Step 2 table.
 // These constants are calibrated against *archive* temperatures/rainfall specifically: the
 // forecast endpoint's own past_days series runs ~1°C cooler and reports ~6mm more rain over the
 // same five days, which is worth ~25 percentage points — do not feed this formula from a
 // different source without re-fitting (see docs/technical.md's "Calibration").
 // RAIN_MODIFIER is entangled with the temperature terms (it was partly compensating the old
 // bias) and stays a candidate for re-tuning — see docs/technical.md.
-// All three are runtime-overridable per-device (Settings::baseTempC / tempModifierPctPerDegree /
-// rainModifierPctPerMm, settings.json's Watering group) — these are only the factory defaults,
-// so tuning them no longer needs a firmware flash.
+// All three are compile-time only: a per-device override via settings.json's Watering group is
+// currently disabled (commented out in Settings.cpp), so tuning them needs a firmware flash.
 static constexpr float AUTOADJUSTMENT_BASE_TEMP_C = 23.0f;
 static constexpr float AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE = 12.5f;
 static constexpr float AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM = 3.1f;

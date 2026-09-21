@@ -517,9 +517,9 @@ tolerant of rain in the forecast.
 
 If Step 1 didn't skip the day, the device recalculates **Adjust** (the watering percentage)
 automatically, based on the **last 5 days**' actual weather — never the forecast:
-- the **average of the past 5 days' daily *maximum* temperatures** — hotter than 25.5°C increases
+- the **average of the past 5 days' daily *maximum* temperatures** — hotter than 23°C increases
   the percentage, cooler decreases it. Note this is the average daily *peak*, not an all-day average:
-  a day that runs 16°C overnight and 28°C at noon counts as 28°C here, so 25.5°C is a mild day,
+  a day that runs 16°C overnight and 28°C at noon counts as 28°C here, so 23°C is a mild day,
   not a warm one;
 - the **total rainfall over the past 5 days** — more recent rain decreases the percentage.
 
@@ -532,29 +532,31 @@ would fall below **Lower limit**, that day's watering is skipped entirely (0%) i
 raised back up to the limit; if it would go above **Upper limit**, it's capped there instead.
 
 The table below shows the result for a zone whose scheduled duration is **20 minutes**, using the
-factory-default settings (**Lower limit** 40%, **Upper limit** 200%, base temperature 25.5°C,
-temperature sensitivity 18% per °C, rain sensitivity 1.6% per mm):
+factory-default settings (**Lower limit** 40%, **Upper limit** 200%, base temperature 23°C,
+temperature sensitivity 12.5% per °C, rain sensitivity 3.1% per mm):
 
 | Avg daily max temp (past 5 days) | Past 5 days rain: 0mm | 5mm | 10mm | 20mm | 30mm |
 |---|---|---|---|---|---|
 | 18°C | 0min (skip) | 0min (skip) | 0min (skip) | 0min (skip) | 0min (skip) |
-| 20°C | 0min (skip) | 0min (skip) | 0min (skip) | 0min (skip) | 0min (skip) |
-| 22°C | 0min (skip) | 0min (skip) | 0min (skip) | 0min (skip) | 0min (skip) |
-| 24°C | 15min (73%) | 13min (65%) | 11min (57%) | 8min (41%) | 0min (skip) |
-| 26°C | 22min (109%) | 20min (101%) | 19min (93%) | 15min (77%) | 12min (61%) |
-| 28°C | 29min (145%) | 27min (137%) | 26min (129%) | 23min (113%) | 19min (97%) |
-| 30°C | 36min (181%) | 35min (173%) | 33min (165%) | 30min (149%) | 27min (133%) |
-| 32°C | 40min (200%) | 40min (200%) | 40min (200%) | 37min (185%) | 34min (169%) |
-| 34°C | 40min (200%) | 40min (200%) | 40min (200%) | 40min (200%) | 40min (200%) |
+| 20°C | 13min (63%) | 9min (47%) | 0min (skip) | 0min (skip) | 0min (skip) |
+| 22°C | 18min (88%) | 14min (72%) | 11min (57%) | 0min (skip) | 0min (skip) |
+| 24°C | 23min (113%) | 19min (97%) | 16min (82%) | 10min (51%) | 0min (skip) |
+| 26°C | 28min (138%) | 24min (122%) | 21min (107%) | 15min (76%) | 9min (45%) |
+| 28°C | 33min (163%) | 29min (147%) | 26min (132%) | 20min (101%) | 14min (70%) |
+| 30°C | 38min (188%) | 34min (172%) | 31min (157%) | 25min (126%) | 19min (95%) |
+| 32°C | 40min (200%) | 39min (197%) | 36min (182%) | 30min (151%) | 24min (120%) |
+| 34°C | 40min (200%) | 40min (200%) | 40min (200%) | 35min (176%) | 29min (145%) |
 
 
 A couple of things worth knowing about these numbers:
-- With the factory-default 18%/°C sensitivity, the 200% **Upper limit** is reached at **31.1°C**
+- With the factory-default 12.5%/°C sensitivity, the 200% **Upper limit** is reached at **31.0°C**
   average daily max (holding rain at 0mm) — a normal summer week here, so the cap is expected to
   be in force through most of July and August. That is deliberate: in peak summer the garden's
   real demand exceeds what **Upper limit** allows, and the limit is acting as a water *budget*.
-- The 40% **Lower limit** is crossed at **22.2°C** average daily max with no rain. Only a result
-  strictly below the limit skips the day, so a cell landing exactly on 40% still waters.
+- The 40% **Lower limit** is crossed at **18.2°C** average daily max with no rain, so cool weather
+  keeps watering at 40% and above until it gets that cold. Each mm of rain in the past 5 days moves
+  that cutoff up by about 0.25°C (3.1 / 12.5). Only a result strictly below the limit skips the
+  day, so a cell landing exactly on 40% still waters.
 - Cool, wet spring and autumn stretches skip readily. That is the intended shape: the sensitivity
   is steep so that summer stays at the cap while the shoulder seasons back off sharply.
 - These three coefficients (base temperature, %/°C, %/mm) are calibration constants, not everyday

@@ -164,7 +164,8 @@ device's actual prefix in every example below.
 | `/cmd/watering_percentage` | integer | `/watering_percentage` | integer | Sets the schedule-wide watering multiplier (0–300%; `0` from the auto-adjustment pipeline means "skip today's cycle entirely", not "water at 0%" — see **Weather-based irrigation auto-adjustment** below). **Retained message** — see **Wi-Fi/MQTT connection resilience** below for why. |
 | `/cmd/skip_rain_until` | `"2026-07-12T06:00:00"` |  `/skip_rain_until` | `"2026-07-12T06:00:00"` | Suppresses **scheduled** runs until this UTC timestamp (manual/MQTT runs are never affected — this only gates the schedule engine). |
 |  |  | `/online` |  boolean (LWT on ungraceful disconnect, or explicitly before a deliberate restart). | **Retained message**. Matches Home Assistant's default MQTT `availability_topic` convention. |
-| `/cmd/status` | "" | `/status`  | JSON: `datetime`, `firmware_version`, `boot_reason`, `ip`, `uptime_s`, `rssi_db`, `wifi_quality` (verbal, `miserable`/`poor`/`fair`/`good`/`excellent`), `free_heap_bytes`, `free_storage_bytes`, `mqtt_buffer_bytes`, `cpu_temp_c`, `coredump_available` (read together with `boot_reason` — see [coredump.md](coredump.md)), `publish_failures`, `publish_retried`, `publish_offline`, `mqtt_forced_reconnects` (cumulative since boot — see **Wi-Fi/MQTT connection resilience** below). No `outputs`/current section — which zone/pump is on is `/state`'s job (fired on every start/stop, and on `cmd/state`), and current readings only have a meaningful number outside `cmd/calibrate`'s response as a comparison against a calibrated base; see **True-RMS current sampling** below. | ~15s after boot and on request.  |
+| `/cmd/status` | "" | `/status`  | JSON: `datetime`, `firmware_version`, `boot_reason`, `ip`, `uptime_s`, `rssi_db`, `wifi_quality` (verbal, `miserable`/`poor`/`fair`/`good`/`excellent`), `free_heap_bytes`, `free_storage_bytes`, `mqtt_buffer_bytes`, `cpu_temp_c`, `coredump_available` (read together with `boot_reason` — see [coredump.md](coredump.md)), `publish_failures`, `publish_retried`, `publish_offline`, `mqtt_forced_reconnects` (cumulative since boot — see **Wi-Fi/MQTT connection resilience** below), and the weather auto-adjustment block: `auto_adjustment_enabled`, `location_known`, `city` (only once known), `weather_adjust_status` (`disabled`/`no_location`/`no_clock`/`done_today`/`waiting_for_window`/`no_schedule_waiting_recheck`/`fetch_in_progress`/`waiting_retry` — why the daily cycle has or hasn't run), `watering_percentage` (what the schedule is running at right now; `0` = today's cycle is skipped) and `last_weather_update` (omitted until this session's first successful fetch). No `outputs`/current section — which zone/pump is on is `/state`'s job (fired on every start/stop, and on `cmd/state`), and current readings only have a meaningful number outside `cmd/calibrate`'s response as a comparison against a calibrated base; see **True-RMS current sampling** below. | ~15s after boot and on request.  |
+| `/cmd/weather` | "" | `/status`, `/watering_percentage`, `/skip_rain_until`, `/alert` | Manual test trigger for the whole weather auto-adjustment pipeline: runs the fetch + rain-skip check + percentage recalculation right now, bypassing the schedule-today / lead-time / retry-pacing gates. When the fetch finishes it always reports back with a `/status` (success or failure), and on success always republishes `/watering_percentage` — even when the value is unchanged, unlike the automatic daily cycle, which only publishes on change — or publishes `/skip_rain_until` if the forecast triggered a rain skip. On failure it also sends the `{"weather":"failed",...}` `/alert` regardless of the once-a-day cap. Rejected with an `/alert` if a fetch is already running, location isn't known yet or the clock isn't synced. | Test-only; the daily cycle needs no command. |
 |  |  | `/alert` | see **Error reporting** below | Fire-and-forget notices: current out of expected range, watering queue full, OTA result, and any command/topic error. Not retained, not queued for delivery guarantees. Every alert carries a `datetime` field — JSON alerts get it spliced in alongside their other keys, plain-text alerts are wrapped as `{"datetime":"...","message":"..."}`. |
 | `/cmd/restart` | "" |  |  | **No special response** Publishes `false` to `online`, then restarts. |
 | `/cmd/ota` | FW `.bin` URL | `/ota_started` then `/ota_completed` | `"true"`, then `"2026-07-12T06:00:00"` |  `/ota_started` fires the instant the command is accepted (before the HTTP GET), separately from success/failure - `cmd/#` is only delivered at QoS 0, so a caller can't tell "broker accepted my publish" from "device actually received it" without a distinct receipt signal (see [ota.md](ota.md)'s retry logic, built on exactly this). Downloads and flashes the URL, restarts on success. Blocking by design — see [agents.md](../agents.md) for why. See [ota.md](ota.md) for the higher-level tooling built on top of this. |
@@ -654,7 +655,7 @@ Either path stops retrying once a forecast is successfully applied for that cale
 
 ### Calculation
 
-`schedule.json`'s per-zone `duration_min` is already the base runtime at the `AUTOADJUSTMENT_BASE_TEMP_C` reference temperature (25.5°C), so there's no separate mm-of-water/flow-rate conversion — the whole calculation collapses to one percentage, applied through the exact same `watering_percentage` → `ScheduleEngine::tick()` path the manual **Adjust** setting already uses.
+`schedule.json`'s per-zone `duration_min` is already the base runtime at the `AUTOADJUSTMENT_BASE_TEMP_C` reference temperature (23.0°C), so there's no separate mm-of-water/flow-rate conversion — the whole calculation collapses to one percentage, applied through the exact same `watering_percentage` → `ScheduleEngine::tick()` path the manual **Adjust** setting already uses.
 Both inputs below are **historical** (trailing `AUTOADJUSTMENT_PAST_WEATHER_DAYS`, 5 days) — never the forecast:
 
 The main formula is:
@@ -697,13 +698,13 @@ Next-12h hourly window (06:00→17:00 UTC today, nowIndex=126), feeds Step 1: ev
 **Step 2 — Correction formula**
 
 ```
-percentage = 100 + (avgPastTempC − 25.5) × 18.0 − rainPastDaysMm × 1.6
+percentage = 100 + (avgPastTempC − 23.0) × 12.5 − rainPastDaysMm × 3.1
 avgPastTempC = (27.7+29.5+30.3+26.5+21.3)/5 = 27.06 °C
 rainPastDaysMm = 0+0+14.2+19.4+35.3 = 68.9 mm
 
-percentage = 100 + (27.06 − 25.5)×18 − 68.9×1.6
-           = 100 + 28.08 − 110.24
-           = 17.84  →  below lower_limit=40, so the cycle is skipped: 0%
+percentage = 100 + (27.06 − 23)×12.5 − 68.9×3.1
+           = 100 + 50.75 − 213.59
+           = −62.84  →  below lower_limit=40, so the cycle is skipped: 0%
 ```
 
 (The table above was captured under the old forecast-endpoint history; today the same five days
@@ -719,20 +720,24 @@ above `upper_limit` → capped at `upper_limit`.
 
 ### Calibration and how it was chosen
 
-The three coefficients default to the `board_config.h` constants and are readable from
-`settings.json`'s `Watering` group (`base_temp_c`, `temp_modifier_pct_per_degree`,
-`rain_modifier_pct_per_mm`). They are deliberately **not** exposed in the device menu or Home
-Assistant: they are calibration constants for a site, not controls.
+The three coefficients are the `board_config.h` constants (`AUTOADJUSTMENT_BASE_TEMP_C`,
+`AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE`, `AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM`),
+read directly by `computeAutoCorrectedPercentage()`. A per-device override through `settings.json`'s
+`Watering` group (`base_temp_c`, `temp_modifier_pct_per_degree`, `rain_modifier_pct_per_mm`) was
+prototyped and is currently disabled (commented out in `Settings.cpp`), so changing them means
+editing `board_config.h` and flashing. They are deliberately **not** exposed in the device menu or
+Home Assistant: they are calibration constants for a site, not controls.
 
-The current defaults (25.5°C / 18.0 / 1.6) were fitted against Open-Meteo **ERA5 archive** history
+The current defaults (23.0°C / 12.5 / 3.1) were fitted against Open-Meteo **ERA5 archive** history
 for this site (Biella, 45.563N 8.058E) over April–September 2026, against two anchors the owner
 supplied plus one sanity point:
 
 | anchor | inputs (ERA5) | target | result |
 |---|---|---|---|
-| 2026-09-19 (a shoulder-season day judged over-watered) | avg daily max 25.32°C, 10.5mm | ~80% | 80% |
-| peak July (2026-06-27–07-01) | avg daily max 33.62°C, 7.3mm | ≥ 200%, i.e. still capped | 234% raw → 200% |
-| ordinary July week | avg daily max 31.5°C, 3.0mm | 200% (in the cap, not just at the extreme) | 203% raw → 200% |
+| 2026-09-19 (a shoulder-season day judged over-watered) | avg daily max 25.32°C, 10.5mm | ~96% | 96% (was ~80% under the second fit) |
+| peak July (2026-06-27–07-01) | avg daily max 33.62°C, 7.3mm | ≥ 200%, i.e. still capped | 210% raw → 200% |
+| ordinary July week | avg daily max 31.5°C, 2.0mm | 200% (in the cap, not just at the extreme) | 200.05% raw → 200% |
+| cool spell, no rain | avg daily max 18.2°C, 0mm | still waters at the 40% floor | 40% (18.1°C → skip) |
 
 **Two calibrations, and why the second one exists.** The first fit (24.0°C / 16.0 / 1.6) was made
 against the forecast endpoint's series, where 2026-09-19 read 24.34°C / 16.7mm. When the history
@@ -743,12 +748,21 @@ cap (16 with the new base left it at 191%: passing the peak-day anchor while qui
 the typical summer day). Rain stayed at 1.6. Over the Apr–Sep watering days (Wed/Sat) the refit uses
 ~10% less water than the first fit, with 14 of 47 days at the 200% cap.
 
+**Third calibration (2026-09-21): 23.0°C / 12.5 / 3.1.** The second fit skipped watering below
+22.2°C, which is too warm for a cool spell that still needs the 40% floor. The line was re-pivoted
+so the floor sits at 18.2°C and the cap at 31.0°C (both at 0mm): base 25.5 → 23.0, slope 18 → 12.5.
+Flattening the slope alone would have moved the shoulder-season anchor from 80% to ~112%, so the
+rain term was raised 1.6 → 3.1 (rain now takes ~0.25°C off the cutoff per mm instead of ~0.09°C).
+The price is a thin summer margin: the ordinary-July anchor now clears the cap by only 0.05 points
+at 2mm (196.95% at 3mm), so a further nudge to slope or rain will start under-watering ordinary
+July weeks.
+
 **The third row is the one that constrains the slope.** `upper_limit` is not a safety rail here,
 it is a deliberate water *budget*: peak-summer demand genuinely exceeds it, and saturating there is
 the intended behaviour. That rules out simply re-centring the base and leaving the slope at 10 —
 that combination hits the first anchor but drops summer below the cap, quietly cutting its water.
 Steepening the slope pivots the line instead of shifting it, so all anchors hold: the raw
-percentage reaches the 200% cap at 31.1°C and crosses below the 40% skip floor at 22.2°C (both at
+percentage reaches the 200% cap at 31.0°C and crosses below the 40% skip floor at 18.2°C (both at
 0mm rain; see `docs/usage_irrigator.md`'s Step 2 table for the full grid).
 
 **A single calibration day is thin.** The ~80% anchor is one owner judgment ("that day looked
@@ -756,7 +770,7 @@ over-watered"), and the model behind it is uncertain to the tune of ~25 points d
 source is asked — which is exactly what the source switch above demonstrated. Treat these as a
 working calibration, not a validated one, and expect to adjust `base_temp_c` as more days accumulate.
 
-`rain_modifier_pct_per_mm` is unchanged at 1.6, but it is **entangled** with the temperature terms
+`rain_modifier_pct_per_mm` is 3.1 (raised from 1.6 in the third calibration), and it is **entangled** with the temperature terms
 and should not be read as independently validated: while the base temperature was biased high, the
 rain term was partly acting as a bias trim (it was raised 1.1 → 1.6 in `a598b5b` for exactly that
 reason). Expect it to need re-tuning now that the bias is gone. There is also a structural caveat —
