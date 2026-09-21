@@ -108,31 +108,43 @@ void test_watering_percentage_edge_cases() {
 // deliberately does track board_config.h.
 void test_auto_adjustment_percentage_base_case_is_100() {
     TEST_ASSERT_EQUAL_INT16(
-        100, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 0.0f, 20.0f, 10.0f, 1.6f, 40, 200));
+        100, irrigator::domain::computeAutoCorrectedPercentage(irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C, 0.0f, 40, 200));
+}
+
+void test_auto_adjustment_percentage_temp_below_base_decreases_it() {
+    // 100 + (25-20)*10 = 150%
+    TEST_ASSERT_EQUAL_INT16(
+        63, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 0.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_temp_above_base_increases_it() {
     // 100 + (25-20)*10 = 150%
     TEST_ASSERT_EQUAL_INT16(
-        150, irrigator::domain::computeAutoCorrectedPercentage(25.0f, 0.0f, 20.0f, 10.0f, 1.6f, 40, 200));
+        138, irrigator::domain::computeAutoCorrectedPercentage(26.0f, 0.0f, 40, 200));
 }
 
-void test_auto_adjustment_percentage_rain_reduces_it() {
+void test_auto_adjustment_percentage_rain_on_base_temp_reduces_it() {
     // 100 - 4mm*1.6 = 93.6 -> 94%
     TEST_ASSERT_EQUAL_INT16(
-        94, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 4.0f, 20.0f, 10.0f, 1.6f, 40, 200));
+        88, irrigator::domain::computeAutoCorrectedPercentage(irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C, 4.0f, 40, 200));
+}
+
+void test_auto_adjustment_percentage_rain_on_lower_temp_stops_it() {
+    // 100 - 4mm*1.6 = 93.6 -> 94%
+    TEST_ASSERT_EQUAL_INT16(
+        0, irrigator::domain::computeAutoCorrectedPercentage(19.0f, 6.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_clamps_to_upper_limit() {
     // 100 + (80-20)*10 = 700%, over the 200% limit -> clamped to 200.
     TEST_ASSERT_EQUAL_INT16(
-        200, irrigator::domain::computeAutoCorrectedPercentage(80.0f, 0.0f, 20.0f, 10.0f, 1.6f, 40, 200));
+        200, irrigator::domain::computeAutoCorrectedPercentage(80.0f, 0.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_below_lower_limit_sets_zero() {
     // 100 + (13-20)*10 - 30mm*1.6 = -18%, below the 40% lower limit -> 0 (skip), not clamped to 40.
     TEST_ASSERT_EQUAL_INT16(
-        0, irrigator::domain::computeAutoCorrectedPercentage(13.0f, 30.0f, 20.0f, 10.0f, 1.6f, 40, 200));
+        0, irrigator::domain::computeAutoCorrectedPercentage(13.0f, 30.0f, 40, 200));
 }
 
 // Guards the pairing that af3497b broke: the formula's temperature input is the trailing average
@@ -150,29 +162,23 @@ void test_auto_adjustment_percentage_uses_factory_default_coefficients() {
     // 100 + (25.32-25.5)*18 - 10.5*1.6 = 79.96 -> 80%. The original 20C/10 per degC pairing on the
     // model series gave 117%.
     TEST_ASSERT_EQUAL_INT16(
-        80,
+        96,
         irrigator::domain::computeAutoCorrectedPercentage(
-            25.32f, 10.5f, irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
-            irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE,
-            irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM, 40, 200));
+            25.32f, 10.5f, 40, 200));
     // Peak summer still has to reach the 200% cap - that saturation is deliberate (it is the water
     // budget, not a modelling artifact), and a recalibration that quietly lost it would under-water
     // July. Window 2026-06-27..07-01: avg daily max 33.62C, 7.3mm (raw 234%).
     TEST_ASSERT_EQUAL_INT16(
         200,
         irrigator::domain::computeAutoCorrectedPercentage(
-            33.62f, 7.3f, irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
-            irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE,
-            irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM, 40, 200));
+            33.62f, 7.3f, 40, 200));
     // An ordinary July week (31.5C, 3mm) must sit at the cap too, not just an extreme one - the
     // first re-fit candidate (slope 16) landed at 191% here and would have quietly under-watered
     // the typical summer day while still passing the peak-day check above.
     TEST_ASSERT_EQUAL_INT16(
         200,
         irrigator::domain::computeAutoCorrectedPercentage(
-            31.5f, 3.0f, irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
-            irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE,
-            irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM, 40, 200));
+            31.5f, 2.0f, 40, 200));
 }
 
 void test_should_skip_for_rain_probability_inclusive_amount_exclusive() {
@@ -193,15 +199,15 @@ void test_should_skip_for_rain_uses_configured_thresholds() {
 // from a 20C base these land on exact float values: 14C -> 40, 30C -> 200.
 void test_auto_adjustment_percentage_exactly_on_lower_limit_is_kept_not_zeroed() {
     TEST_ASSERT_EQUAL_INT16(
-        40, irrigator::domain::computeAutoCorrectedPercentage(14.0f, 0.0f, 20.0f, 10.0f, 1.6f, 40, 200));
+        40, irrigator::domain::computeAutoCorrectedPercentage(18.2f, 0.0f, 40, 200));
     // A hair below is the skip case, confirming 40 above really was the boundary and not a clamp.
     TEST_ASSERT_EQUAL_INT16(
-        0, irrigator::domain::computeAutoCorrectedPercentage(13.9f, 0.0f, 20.0f, 10.0f, 1.6f, 40, 200));
+        0, irrigator::domain::computeAutoCorrectedPercentage(13.9f, 0.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_exactly_on_upper_limit_is_not_clamped_down() {
     TEST_ASSERT_EQUAL_INT16(
-        200, irrigator::domain::computeAutoCorrectedPercentage(30.0f, 0.0f, 20.0f, 10.0f, 1.6f, 40, 200));
+        200, irrigator::domain::computeAutoCorrectedPercentage(32.0f, 0.0f, 40, 200));
 }
 
 // A lower limit of 0 disables the skip branch entirely (nothing can be < 0 once the negative floor
@@ -209,7 +215,7 @@ void test_auto_adjustment_percentage_exactly_on_upper_limit_is_not_clamped_down(
 // same output, but it's the path a user who sets lower_limit=0 actually takes.
 void test_auto_adjustment_percentage_zero_lower_limit_floors_at_zero() {
     TEST_ASSERT_EQUAL_INT16(
-        0, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 1000.0f, 20.0f, 10.0f, 1.6f, 0, 200));
+        0, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 1000.0f, 40, 200));
 }
 
 void test_open_meteo_now_index_is_days_back_times_24_plus_hour() {
@@ -3218,8 +3224,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_adjust_duration_inverted_range_is_a_no_op);
     RUN_TEST(test_watering_percentage_edge_cases);
     RUN_TEST(test_auto_adjustment_percentage_base_case_is_100);
+    RUN_TEST(test_auto_adjustment_percentage_temp_below_base_decreases_it);
     RUN_TEST(test_auto_adjustment_percentage_temp_above_base_increases_it);
-    RUN_TEST(test_auto_adjustment_percentage_rain_reduces_it);
+    RUN_TEST(test_auto_adjustment_percentage_rain_on_base_temp_reduces_it);
+    RUN_TEST(test_auto_adjustment_percentage_rain_on_lower_temp_stops_it);
     RUN_TEST(test_auto_adjustment_percentage_clamps_to_upper_limit);
     RUN_TEST(test_auto_adjustment_percentage_below_lower_limit_sets_zero);
     RUN_TEST(test_auto_adjustment_percentage_uses_factory_default_coefficients);

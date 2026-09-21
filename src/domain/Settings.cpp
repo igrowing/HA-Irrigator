@@ -83,18 +83,6 @@ bool validateSettings(const Settings& settings) {
     if (settings.rainSkipAmountMm < 0) {
         return false;
     }
-    // Bounds are sanity rails, not calibration guidance: a negative modifier would invert the
-    // formula's sense (hotter -> less water), and a base temperature outside this range can't be a
-    // real trailing average of daily maxima anywhere on Earth.
-    if (settings.baseTempC < -50.0f || settings.baseTempC > 60.0f) {
-        return false;
-    }
-    if (settings.tempModifierPctPerDegree < 0.0f || settings.tempModifierPctPerDegree > 100.0f) {
-        return false;
-    }
-    if (settings.rainModifierPctPerMm < 0.0f || settings.rainModifierPctPerMm > 100.0f) {
-        return false;
-    }
     return true;
 }
 
@@ -153,13 +141,6 @@ bool parseSettings(const char* json, size_t length, Settings& out) {
         (doc["rain_skip_probability_percent"] | board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_PROBABILITY_PERCENT);
     parsed.rainSkipAmountMm = watering["rain_skip_amount_mm"] |
                               (doc["rain_skip_amount_mm"] | board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_AMOUNT_MM);
-    parsed.baseTempC = watering["base_temp_c"] | (doc["base_temp_c"] | board::AUTOADJUSTMENT_BASE_TEMP_C);
-    parsed.tempModifierPctPerDegree =
-        watering["temp_modifier_pct_per_degree"] |
-        (doc["temp_modifier_pct_per_degree"] | board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE);
-    parsed.rainModifierPctPerMm =
-        watering["rain_modifier_pct_per_mm"] |
-        (doc["rain_modifier_pct_per_mm"] | board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM);
     snprintf(parsed.weatherApiKey, sizeof(parsed.weatherApiKey), "%s",
              watering["weatherapi_key"] | (doc["weatherapi_key"] | ""));
 
@@ -369,34 +350,34 @@ bool mergeSettings(const Settings& existing,
         }
     }
 
-    // The three correction-formula coefficients. is<float>() accepts JSON integers too, so
-    // "temp_modifier_pct_per_degree": 16 is as valid as 16.0 - HA's input_number templates emit
-    // whichever the step size happens to produce. Bounds mirror validateSettings()'s.
-    struct FloatField {
-        const char* key;
-        const char* rejectLabel;
-        float minValue;
-        float maxValue;
-        float* target;
-    };
-    const FloatField floatFields[] = {
-        {"base_temp_c", "Watering.base_temp_c", -50.0f, 60.0f, &out.baseTempC},
-        {"temp_modifier_pct_per_degree", "Watering.temp_modifier_pct_per_degree", 0.0f, 100.0f,
-         &out.tempModifierPctPerDegree},
-        {"rain_modifier_pct_per_mm", "Watering.rain_modifier_pct_per_mm", 0.0f, 100.0f,
-         &out.rainModifierPctPerMm},
-    };
-    for (const FloatField& field : floatFields) {
-        JsonVariantConst value = watering[field.key];
-        if (!hasValue(value)) {
-            continue;
-        }
-        if (value.is<float>() && value.as<float>() >= field.minValue && value.as<float>() <= field.maxValue) {
-            *field.target = value.as<float>();
-        } else {
-            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, field.rejectLabel);
-        }
-    }
+    // // The three correction-formula coefficients. is<float>() accepts JSON integers too, so
+    // // "temp_modifier_pct_per_degree": 16 is as valid as 16.0 - HA's input_number templates emit
+    // // whichever the step size happens to produce. Bounds mirror validateSettings()'s.
+    // struct FloatField {
+    //     const char* key;
+    //     const char* rejectLabel;
+    //     float minValue;
+    //     float maxValue;
+    //     float* target;
+    // };
+    // const FloatField floatFields[] = {
+    //     {"base_temp_c", "Watering.base_temp_c", -50.0f, 60.0f, &out.baseTempC},
+    //     {"temp_modifier_pct_per_degree", "Watering.temp_modifier_pct_per_degree", 0.0f, 100.0f,
+    //      &out.tempModifierPctPerDegree},
+    //     {"rain_modifier_pct_per_mm", "Watering.rain_modifier_pct_per_mm", 0.0f, 100.0f,
+    //      &out.rainModifierPctPerMm},
+    // };
+    // for (const FloatField& field : floatFields) {
+    //     JsonVariantConst value = watering[field.key];
+    //     if (!hasValue(value)) {
+    //         continue;
+    //     }
+    //     if (value.is<float>() && value.as<float>() >= field.minValue && value.as<float>() <= field.maxValue) {
+    //         *field.target = value.as<float>();
+    //     } else {
+    //         appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, field.rejectLabel);
+    //     }
+    // }
 
     JsonVariantConst weatherApiKey = watering["weatherapi_key"];
     if (hasValue(weatherApiKey)) {
@@ -482,9 +463,6 @@ size_t serializeSettings(const Settings& settings, char* buffer, size_t bufferSi
     watering["lower_limit"] = settings.lowerLimitPercent;
     watering["rain_skip_probability_percent"] = settings.rainSkipProbabilityPercent;
     watering["rain_skip_amount_mm"] = settings.rainSkipAmountMm;
-    watering["base_temp_c"] = settings.baseTempC;
-    watering["temp_modifier_pct_per_degree"] = settings.tempModifierPctPerDegree;
-    watering["rain_modifier_pct_per_mm"] = settings.rainModifierPctPerMm;
     watering["weatherapi_key"] = settings.weatherApiKey;
 
     JsonObject location = doc["Location"].to<JsonObject>();

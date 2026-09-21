@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.1.15"
+#define APP_VERSION "1.1.16"
 #endif
 
 namespace irrigator::board {
@@ -124,9 +124,9 @@ static constexpr int16_t AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT = 40;
 // All three are runtime-overridable per-device (Settings::baseTempC / tempModifierPctPerDegree /
 // rainModifierPctPerMm, settings.json's Watering group) — these are only the factory defaults,
 // so tuning them no longer needs a firmware flash.
-static constexpr float AUTOADJUSTMENT_BASE_TEMP_C = 25.5f;
-static constexpr float AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE = 18.0f;
-static constexpr float AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM = 1.6f;
+static constexpr float AUTOADJUSTMENT_BASE_TEMP_C = 23.0f;
+static constexpr float AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE = 12.5f;
+static constexpr float AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM = 3.1f;
 
 // Rain-skip (Step 1) is the only *forecast*-based check — probability is inclusive (>=), amount
 // is not (>), matching shouldSkipForRain()'s exact comparison. Both thresholds are user-configurable

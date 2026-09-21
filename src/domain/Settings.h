@@ -56,15 +56,6 @@ struct Settings {
     // reboot.
     int16_t upperLimitPercent = board::AUTOADJUSTMENT_DEFAULT_UPPER_LIMIT_PERCENT;
     int16_t lowerLimitPercent = board::AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT;
-    // The correction formula's three coefficients (domain::computeAutoCorrectedPercentage).
-    // Compile-time constants between af3497b and this change, which made every calibration
-    // experiment cost a firmware flash - the reason a known-wrong base temperature survived two
-    // months of tuning. Floats, so unlike the rain-skip thresholds below they are settings.json/HA
-    // -editable only, not rotary-editable: the on-device UI has no float editor and adding one for
-    // fields that are set once per site isn't worth the flash.
-    float baseTempC = board::AUTOADJUSTMENT_BASE_TEMP_C;
-    float tempModifierPctPerDegree = board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE;
-    float rainModifierPctPerMm = board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM;
     // Step 1's rain-skip trigger thresholds (see domain::shouldSkipForRain) — whole percent/mm,
     // matching the rotary UI's existing integer-only editing convention (no field in this project
     // is rotary-edited as a float today).
