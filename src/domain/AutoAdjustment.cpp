@@ -4,10 +4,9 @@ namespace irrigator::domain {
 
 int16_t computeAutoCorrectedPercentage(float avgPastTempC,
                                        float rainPastDaysMm,
-                                       float baseTempC,
                                        int16_t lowerLimitPercent,
                                        int16_t upperLimitPercent) {
-    float percentage = 100.0f + (avgPastTempC - baseTempC) * irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE -
+    float percentage = 100.0f + (avgPastTempC - irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C) * irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE -
                         rainPastDaysMm * irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM;
 
     if (percentage < static_cast<float>(lowerLimitPercent)) {

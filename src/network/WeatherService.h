@@ -48,10 +48,13 @@ public:
     // false.
     GeoLocationResult fetchGeoLocation();
 
-    // Open-Meteo: primary provider, no API key needed. Fetches both the trailing
-    // AUTOADJUSTMENT_PAST_WEATHER_DAYS (temperature average + rainfall total) and the forward
-    // AUTOADJUSTMENT_FORECAST_WINDOW_HOURS (rain-skip check) in one request. nowEpochUtc anchors
-    // both windows (see the .cpp for the index arithmetic this relies on).
+    // Open-Meteo: primary provider, no API key needed. Two sequential HTTPS requests, deliberately
+    // not one: the forward AUTOADJUSTMENT_FORECAST_WINDOW_HOURS (rain-skip check) comes from the
+    // forecast endpoint, the trailing AUTOADJUSTMENT_PAST_WEATHER_DAYS (temperature average +
+    // rainfall total) from the ERA5 archive endpoint, which reflects real observations rather than
+    // the forecast model's own recollection of them. Either failing fails the whole call, so the
+    // caller falls through to the WeatherAPI fallback instead of mixing sources the formula's
+    // constants weren't calibrated on. nowEpochUtc anchors both windows (see the .cpp).
     WeatherFetchResult fetchForecastOpenMeteo(float latitude, float longitude, int64_t nowEpochUtc);
 
     // WeatherAPI.com: fallback used only when Open-Meteo fails (Phase 4). Returns success=false
@@ -60,6 +63,14 @@ public:
                                                float longitude,
                                                int64_t nowEpochUtc,
                                                const char* apiKey);
+
+private:
+    // The two halves fetchForecastOpenMeteo() composes. Kept as separate calls (not one function)
+    // so each one's WiFiClientSecure - ~40-60KB of mbedTLS state - is destroyed before the next
+    // TLS handshake starts; two live sessions at once is what the heap can't afford.
+    WeatherFetchResult fetchOpenMeteoForecastWindow(float latitude, float longitude, int64_t nowEpochUtc);
+    // Fills result.avgPastTempC / rainPastDaysMm on success; on failure sets result.errorReason.
+    bool fetchOpenMeteoArchivePast(float latitude, float longitude, int64_t nowEpochUtc, WeatherFetchResult& result);
 };
 
 }  // namespace irrigator::network

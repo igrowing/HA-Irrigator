@@ -17,14 +17,15 @@ size_t openMeteoNowIndex(int64_t nowEpochUtc, size_t pastDays);
 // actually drives watering need. Open-Meteo's daily arrays start at (today - pastDays), so the
 // first pastWeatherDays entries are exactly the past window with today excluded, mirroring
 // summarizePastRainfall. Returns false (output untouched) if the array is shorter than
-// pastWeatherDays.
+// pastWeatherDays, or if any entry inside the window is null (a missing reading is not 0°C).
 bool summarizePastAverageDailyMaxTemperature(JsonArrayConst dailyMaxTemperatureC,
                                              size_t pastWeatherDays,
                                              float& outAvgMaxTempC);
 
 // Sums dailyRainSumMm over its first pastWeatherDays entries — total precipitation over the same
 // historical window the temperature average above covers (Step 2's rain-subtraction term).
-// Returns false if the array is shorter than pastWeatherDays.
+// Returns false if the array is shorter than pastWeatherDays or any entry inside the window is null
+// (a missing reading is not 0mm - it would silently raise the percentage).
 bool summarizePastRainfall(JsonArrayConst dailyRainSumMm,
                            size_t pastWeatherDays,
                            float& outRainPastDaysMm);

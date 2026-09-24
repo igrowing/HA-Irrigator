@@ -384,6 +384,35 @@ bool mergeSettings(const Settings& existing,
         }
     }
 
+    // // The three correction-formula coefficients. is<float>() accepts JSON integers too, so
+    // // "temp_modifier_pct_per_degree": 16 is as valid as 16.0 - HA's input_number templates emit
+    // // whichever the step size happens to produce. Bounds mirror validateSettings()'s.
+    // struct FloatField {
+    //     const char* key;
+    //     const char* rejectLabel;
+    //     float minValue;
+    //     float maxValue;
+    //     float* target;
+    // };
+    // const FloatField floatFields[] = {
+    //     {"base_temp_c", "Watering.base_temp_c", -50.0f, 60.0f, &out.baseTempC},
+    //     {"temp_modifier_pct_per_degree", "Watering.temp_modifier_pct_per_degree", 0.0f, 100.0f,
+    //      &out.tempModifierPctPerDegree},
+    //     {"rain_modifier_pct_per_mm", "Watering.rain_modifier_pct_per_mm", 0.0f, 100.0f,
+    //      &out.rainModifierPctPerMm},
+    // };
+    // for (const FloatField& field : floatFields) {
+    //     JsonVariantConst value = watering[field.key];
+    //     if (!hasValue(value)) {
+    //         continue;
+    //     }
+    //     if (value.is<float>() && value.as<float>() >= field.minValue && value.as<float>() <= field.maxValue) {
+    //         *field.target = value.as<float>();
+    //     } else {
+    //         appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, field.rejectLabel);
+    //     }
+    // }
+
     JsonVariantConst weatherApiKey = watering["weatherapi_key"];
     if (hasValue(weatherApiKey)) {
         if (weatherApiKey.is<const char*>() &&

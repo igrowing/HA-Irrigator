@@ -561,6 +561,9 @@ String buildStatusJson(uint32_t nowMs) {
         doc["city"] = settings.city;
     }
     doc["weather_adjust_status"] = weatherAutoAdjustStatus();
+    // The percentage the schedule is running at right now (0 = today's cycle is skipped) — puts the
+    // outcome of the weather cycle in the same payload cmd/weather reports back, next to the status.
+    doc["watering_percentage"] = settings.wateringPercentage;
     // Omitted until this session's first successful weather fetch, same as noise_floor_db above.
     if (lastWeatherUpdateEpoch != 0) {
         char lastWeatherIso[24];
@@ -2212,8 +2215,6 @@ struct WeatherAutoAdjustParams {
     char weatherApiKey[48];
     int16_t rainSkipProbabilityPercent;
     int16_t rainSkipAmountMm;
-    float tempModifierPctPerDegree;
-    float rainModifierPctPerMm;
     int16_t lowerLimitPercent;
     int16_t upperLimitPercent;
 };
@@ -2264,7 +2265,6 @@ void weatherAutoAdjustTask(void* pvParameters) {
             result.newPercentage =
                 irrigator::domain::computeAutoCorrectedPercentage(forecast.avgPastTempC,
                                                                    forecast.rainPastDaysMm,
-                                                                   irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
                                                                    params->lowerLimitPercent,
                                                                    params->upperLimitPercent);
         }
@@ -2296,6 +2296,11 @@ void consumeWeatherAutoAdjustResult(uint32_t nowMs) {
             applyRainSkipDecision(result.nowEpoch);
         } else if (result.newPercentage != settings.wateringPercentage) {
             settings.wateringPercentage = result.newPercentage;
+            mqtt.publishWateringPercentage(settings.wateringPercentage);
+        } else if (weatherManualTriggerRequested) {
+            // Unchanged result: the automatic cycle stays quiet (nothing new to tell HA), but an
+            // explicit cmd/weather should always report what it computed, or "no message" is
+            // indistinguishable from "the fetch didn't produce a percentage".
             mqtt.publishWateringPercentage(settings.wateringPercentage);
         }
 
@@ -2385,8 +2390,6 @@ bool startWeatherFetch(const char* today, int64_t nowEpoch) {
     snprintf(params->weatherApiKey, sizeof(params->weatherApiKey), "%s", settings.weatherApiKey);
     params->rainSkipProbabilityPercent = settings.rainSkipProbabilityPercent;
     params->rainSkipAmountMm = settings.rainSkipAmountMm;
-    params->tempModifierPctPerDegree = irrigator::board::AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE;
-    params->rainModifierPctPerMm = irrigator::board::AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM;
     params->lowerLimitPercent = settings.lowerLimitPercent;
     params->upperLimitPercent = settings.upperLimitPercent;
 

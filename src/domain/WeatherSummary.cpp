@@ -63,6 +63,12 @@ bool summarizePastAverageDailyMaxTemperature(JsonArrayConst dailyMaxTemperatureC
         if (i >= pastWeatherDays) {
             break;
         }
+        // The archive reports a not-yet-available day as null, and as<float>() turns null into 0 -
+        // which for a temperature is a real (and freezing) reading, dragging the average down by
+        // ~5°C per missing day. Refuse the whole window instead of guessing.
+        if (v.isNull()) {
+            return false;
+        }
         sum += v.as<float>();
         ++i;
     }
@@ -81,6 +87,11 @@ bool summarizePastRainfall(JsonArrayConst dailyRainSumMm,
     for (JsonVariantConst v : dailyRainSumMm) {
         if (i >= pastWeatherDays) {
             break;
+        }
+        // See summarizePastAverageDailyMaxTemperature: a null here would read as "0mm fell", which
+        // silently *raises* the watering percentage, so a gap has to fail the fetch, not pass.
+        if (v.isNull()) {
+            return false;
         }
         sum += v.as<float>();
         ++i;

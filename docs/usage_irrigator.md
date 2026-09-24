@@ -517,41 +517,52 @@ tolerant of rain in the forecast.
 
 If Step 1 didn't skip the day, the device recalculates **Adjust** (the watering percentage)
 automatically, based on the **last 5 days**' actual weather — never the forecast:
-- the **average temperature over the past 5 days** — hotter than 20°C increases the percentage,
-  colder decreases it;
-- the **total rainfall actually measured over the past 5 days** — more recent rain decreases the
-  percentage.
+- the **average of the past 5 days' daily *maximum* temperatures** — hotter than 23°C increases
+  the percentage, cooler decreases it. Note this is the average daily *peak*, not an all-day average:
+  a day that runs 16°C overnight and 28°C at noon counts as 28°C here, so 23°C is a mild day,
+  not a warm one;
+- the **total rainfall over the past 5 days** — more recent rain decreases the percentage.
+
+Both come from Open-Meteo's ERA5 reanalysis archive, which is fitted to real observations after the
+fact (weather stations, radar, satellite) rather than being a forecast model's own guess about what
+already happened. It covers complete days up to yesterday, so today's weather never enters.
 
 The result is then kept between **Lower limit** and **Upper limit** (see Settings, above): if it
 would fall below **Lower limit**, that day's watering is skipped entirely (0%) instead of being
 raised back up to the limit; if it would go above **Upper limit**, it's capped there instead.
 
 The table below shows the result for a zone whose scheduled duration is **20 minutes**, using the
-factory-default settings (**Lower limit** 40%, **Upper limit** 200%, temperature sensitivity 10%
-per °C):
+factory-default settings (**Lower limit** 40%, **Upper limit** 200%, base temperature 23°C,
+temperature sensitivity 12.5% per °C, rain sensitivity 3.1% per mm):
 
-| Avg temperature (past 5 days) | Past 5 days rain: 0mm | 2mm | 4mm | 6mm | 8mm |
+| Avg daily max temp (past 5 days) | Past 5 days rain: 0mm | 5mm | 10mm | 20mm | 30mm |
 |---|---|---|---|---|---|
-| 10°C | 0min (skip) | 0min (skip) | 0min (skip) | 0min (skip) | 0min (skip) |
-| 14°C | 8min (40%) | 0min (skip) | 0min (skip) | 0min (skip) | 0min (skip) |
-| 16°C | 12min (60%) | 10min (50%) | 8min (40%) | 0min (skip) | 0min (skip) |
-| 18°C | 16min (80%) | 14min (70%) | 12min (60%) | 10min (50%) | 8min (40%) |
-| 20°C (base) | 20min (100%) | 18min (90%) | 16min (80%) | 14min (70%) | 12min (60%) |
-| 22°C | 24min (120%) | 22min (110%) | 20min (100%) | 18min (90%) | 16min (80%) |
-| 24°C | 28min (140%) | 26min (130%) | 24min (120%) | 22min (110%) | 20min (100%) |
-| 26°C | 32min (160%) | 30min (150%) | 28min (140%) | 26min (130%) | 24min (120%) |
-| 28°C | 36min (180%) | 34min (170%) | 32min (160%) | 30min (150%) | 28min (140%) |
-| 30°C | 40min (200%) | 38min (190%) | 36min (180%) | 34min (170%) | 32min (160%) |
-| 32°C | 40min (capped) | 38min (190%) | 36min (180%) | 34min (170%) | 32min (160%) |
+| 18°C | 0min (skip) | 0min (skip) | 0min (skip) | 0min (skip) | 0min (skip) |
+| 20°C | 13min (63%) | 9min (47%) | 0min (skip) | 0min (skip) | 0min (skip) |
+| 22°C | 18min (88%) | 14min (72%) | 11min (57%) | 0min (skip) | 0min (skip) |
+| 24°C | 23min (113%) | 19min (97%) | 16min (82%) | 10min (51%) | 0min (skip) |
+| 26°C | 28min (138%) | 24min (122%) | 21min (107%) | 15min (76%) | 9min (45%) |
+| 28°C | 33min (163%) | 29min (147%) | 26min (132%) | 20min (101%) | 14min (70%) |
+| 30°C | 38min (188%) | 34min (172%) | 31min (157%) | 25min (126%) | 19min (95%) |
+| 32°C | 40min (200%) | 39min (197%) | 36min (182%) | 30min (151%) | 24min (120%) |
+| 34°C | 40min (200%) | 40min (200%) | 40min (200%) | 35min (176%) | 29min (145%) |
 
 
 A couple of things worth knowing about these numbers:
-- With the factory-default 10%/°C sensitivity, the 200% **Upper limit** is reached at exactly
-  **30°C** (holding rain at 0mm) — a realistic hot-weather scenario, unlike the much steeper
-  temperature that would've been needed at a gentler sensitivity.
-- The 14°C/0mm and 16°C/4mm and 18°C/8mm cells all land exactly on the 40% **Lower limit**
-  boundary and are *not* skipped — only a result strictly below the limit skips the day.
-  Anything colder or rainier than those crosses into skip territory.
+- With the factory-default 12.5%/°C sensitivity, the 200% **Upper limit** is reached at **31.0°C**
+  average daily max (holding rain at 0mm) — a normal summer week here, so the cap is expected to
+  be in force through most of July and August. That is deliberate: in peak summer the garden's
+  real demand exceeds what **Upper limit** allows, and the limit is acting as a water *budget*.
+- The 40% **Lower limit** is crossed at **18.2°C** average daily max with no rain, so cool weather
+  keeps watering at 40% and above until it gets that cold. Each mm of rain in the past 5 days moves
+  that cutoff up by about 0.25°C (3.1 / 12.5). Only a result strictly below the limit skips the
+  day, so a cell landing exactly on 40% still waters.
+- Cool, wet spring and autumn stretches skip readily. That is the intended shape: the sensitivity
+  is steep so that summer stays at the cap while the shoulder seasons back off sharply.
+- These three coefficients (base temperature, %/°C, %/mm) are calibration constants, not everyday
+  controls: they are not exposed in the device menu or in Home Assistant. The defaults were
+  calibrated for a sub-alpine northern-Italian garden; a drier or hotter climate will want
+  different ones.
 
 
 ## Current-sensor calibration explained

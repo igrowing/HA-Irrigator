@@ -66,16 +66,20 @@ GeoLocationResult WeatherService::fetchGeoLocation() {
     return result;
 }
 
-WeatherFetchResult WeatherService::fetchForecastOpenMeteo(float latitude,
-                                                          float longitude,
-                                                          int64_t nowEpochUtc) {
+WeatherFetchResult WeatherService::fetchOpenMeteoForecastWindow(float latitude,
+                                                                float longitude,
+                                                                int64_t nowEpochUtc) {
     WeatherFetchResult result;
 
+    // Hourly only: this call exists solely for the forward rain-skip window. The formula's
+    // historical inputs come from the ERA5 archive (fetchOpenMeteoArchivePast), not from this
+    // endpoint's past_days daily series. past_days stays 5 purely because the hourly-array "now"
+    // index arithmetic (domain::openMeteoNowIndex) is built around it.
     char url[256];
     snprintf(url,
             sizeof(url),
             "%s?latitude=%.4f&longitude=%.4f&hourly=precipitation_probability,precipitation"
-            "&daily=precipitation_sum,temperature_2m_max&past_days=%u&forecast_days=2&timezone=UTC",
+            "&past_days=%u&forecast_days=2&timezone=UTC",
             board::OPEN_METEO_BASE_URL,
             latitude,
             longitude,
@@ -127,8 +131,6 @@ WeatherFetchResult WeatherService::fetchForecastOpenMeteo(float latitude,
     JsonDocument filter;
     filter["hourly"]["precipitation_probability"] = true;
     filter["hourly"]["precipitation"] = true;
-    filter["daily"]["precipitation_sum"] = true;
-    filter["daily"]["temperature_2m_max"] = true;
 
     // getString() (not getStream()) so HTTPClient de-chunks the body: these providers reply with
     // Transfer-Encoding: chunked (no Content-Length, hence getSize()==-1), and getStream() hands
@@ -155,13 +157,10 @@ WeatherFetchResult WeatherService::fetchForecastOpenMeteo(float latitude,
 
     JsonArrayConst probArr = doc["hourly"]["precipitation_probability"].as<JsonArrayConst>();
     JsonArrayConst precipArr = doc["hourly"]["precipitation"].as<JsonArrayConst>();
-    JsonArrayConst dailyArr = doc["daily"]["precipitation_sum"].as<JsonArrayConst>();
-    JsonArrayConst dailyMaxTempArr = doc["daily"]["temperature_2m_max"].as<JsonArrayConst>();
 
-    // timezone=UTC above makes the hourly arrays (one entry per hour) and the daily arrays (one
-    // entry per day) both start at 00:00 UTC of (today - past_days). nowIndex indexes the hourly
-    // arrays for the forward-looking rain window below; the daily temperature/rainfall summaries
-    // instead take the first past_days entries (today excluded) — see domain::summarizePast* helpers.
+    // timezone=UTC above makes the hourly arrays (one entry per hour) start at 00:00 UTC of
+    // (today - past_days), so nowIndex indexes straight into them for the forward-looking rain
+    // window below.
     const size_t nowIndex =
         ::irrigator::domain::openMeteoNowIndex(nowEpochUtc, board::AUTOADJUSTMENT_PAST_WEATHER_DAYS);
 
@@ -170,44 +169,11 @@ WeatherFetchResult WeatherService::fetchForecastOpenMeteo(float latitude,
     // response can otherwise look identical to a genuinely short one. Checked here (not up at the
     // `error` branch above) because overflow can happen after the last hard error check succeeds.
     const bool docOverflowed = doc.overflowed();
-    // Daytime peak (daily temperature_2m_max) averaged over the past window, not the flat 24h mean:
-    // the mean folds in cool nights and reads well below the daytime high that drives watering need.
-    // A healthy response always yields past_days+2 daily entries, so a short array here almost
-    // always means a truncated transfer (weak Wi-Fi), not a bad query. httpCode is HTTP_CODE_OK by
-    // this point; totalElapsedMs is still reported — a near-zero value across a GET *and* a full
-    // body parse would mean the whole exchange short-circuited, which no genuine round trip can do.
-    if (!::irrigator::domain::summarizePastAverageDailyMaxTemperature(
-            dailyMaxTempArr, board::AUTOADJUSTMENT_PAST_WEATHER_DAYS, result.avgPastTempC)) {
-        ::irrigator::drivers::Log.printf(
-            "[WARN] Open-Meteo: daily max-temperature array shorter than requested (got %u days, need >= %u, "
-            "free heap %u, content-length %d, overflowed %d, took %u ms)\n",
-            static_cast<unsigned>(dailyMaxTempArr.size()),
-            static_cast<unsigned>(board::AUTOADJUSTMENT_PAST_WEATHER_DAYS), freeHeapBeforeGet,
-            contentLength, static_cast<int>(docOverflowed), totalElapsedMs);
-        snprintf(result.errorReason, sizeof(result.errorReason),
-                "daily max-temperature array shorter than requested (got %u days, need >= %u, free heap %u, "
-                "content-length %d, overflowed %d, took %u ms)",
-                static_cast<unsigned>(dailyMaxTempArr.size()),
-                static_cast<unsigned>(board::AUTOADJUSTMENT_PAST_WEATHER_DAYS), freeHeapBeforeGet,
-                contentLength, static_cast<int>(docOverflowed), totalElapsedMs);
-        return result;
-    }
-    if (!::irrigator::domain::summarizePastRainfall(
-            dailyArr, board::AUTOADJUSTMENT_PAST_WEATHER_DAYS, result.rainPastDaysMm)) {
-        ::irrigator::drivers::Log.printf(
-            "[WARN] Open-Meteo: daily rainfall array shorter than requested (got %u days, need >= %u, "
-            "free heap %u, content-length %d, overflowed %d, took %u ms)\n",
-            static_cast<unsigned>(dailyArr.size()),
-            static_cast<unsigned>(board::AUTOADJUSTMENT_PAST_WEATHER_DAYS), freeHeapBeforeGet, contentLength,
-            static_cast<int>(docOverflowed), totalElapsedMs);
-        snprintf(result.errorReason, sizeof(result.errorReason),
-                "daily rainfall array shorter than requested (got %u days, need >= %u, free heap %u, "
-                "content-length %d, overflowed %d, took %u ms)",
-                static_cast<unsigned>(dailyArr.size()),
-                static_cast<unsigned>(board::AUTOADJUSTMENT_PAST_WEATHER_DAYS), freeHeapBeforeGet, contentLength,
-                static_cast<int>(docOverflowed), totalElapsedMs);
-        return result;
-    }
+    // A healthy response always yields (past_days+2)*24 hourly entries, so a short array here
+    // almost always means a truncated transfer (weak Wi-Fi), not a bad query. httpCode is
+    // HTTP_CODE_OK by this point; totalElapsedMs is still reported — a near-zero value across a
+    // GET *and* a full body parse would mean the whole exchange short-circuited, which no genuine
+    // round trip can do.
     if (!::irrigator::domain::summarizeForecastRainWindow(probArr,
                                                           precipArr,
                                                           nowIndex,
@@ -229,6 +195,131 @@ WeatherFetchResult WeatherService::fetchForecastOpenMeteo(float latitude,
         return result;
     }
 
+    result.success = true;
+    return result;
+}
+
+// Historical half of Step 2: average daily max temperature and total rainfall over the trailing
+// AUTOADJUSTMENT_PAST_WEATHER_DAYS complete UTC days (yesterday back, today excluded), from the
+// ERA5 reanalysis archive. Returns false with result.errorReason set on any failure; on success
+// fills result.avgPastTempC / result.rainPastDaysMm and leaves the forecast fields alone.
+bool WeatherService::fetchOpenMeteoArchivePast(float latitude,
+                                               float longitude,
+                                               int64_t nowEpochUtc,
+                                               WeatherFetchResult& result) {
+    // Date-bounded (start=today-N, end=today-1) rather than past_days: the archive endpoint has no
+    // past_days parameter, and asking for exactly N days makes the array indices trivial - the
+    // first N entries are the whole window, matching what the summarize helpers already expect.
+    // end_date beyond today is rejected outright by the API, so yesterday is also the newest day
+    // it will ever accept without an error.
+    char startIso[24];
+    char endIso[24];
+    ::irrigator::domain::formatIso8601Utc(
+        nowEpochUtc - static_cast<int64_t>(board::AUTOADJUSTMENT_PAST_WEATHER_DAYS) * 86400, startIso, sizeof(startIso));
+    ::irrigator::domain::formatIso8601Utc(nowEpochUtc - 86400, endIso, sizeof(endIso));
+
+    char url[256];
+    snprintf(url,
+            sizeof(url),
+            "%s?latitude=%.4f&longitude=%.4f&start_date=%.10s&end_date=%.10s"
+            "&daily=precipitation_sum,temperature_2m_max&timezone=UTC",
+            board::OPEN_METEO_ARCHIVE_URL,
+            latitude,
+            longitude,
+            startIso,
+            endIso);
+
+    WiFiClientSecure client;
+    client.setInsecure();  // Same trade-off as the forecast fetch above.
+    client.setHandshakeTimeout(board::TLS_HANDSHAKE_TIMEOUT_S);
+    HTTPClient http;
+    http.setConnectTimeout(board::HTTP_CONNECT_TIMEOUT_MS);
+    http.setTimeout(board::HTTP_RESPONSE_TIMEOUT_MS);
+    if (!http.begin(client, url)) {
+        ::irrigator::drivers::Log.error("Open-Meteo archive: could not begin HTTPS request");
+        snprintf(result.errorReason, sizeof(result.errorReason), "archive: could not begin HTTPS request");
+        return false;
+    }
+
+    const uint32_t freeHeapBeforeGet = ESP.getFreeHeap();
+    const uint32_t getStartMs = millis();
+    const int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        ::irrigator::drivers::Log.printf("[WARN] Open-Meteo archive: HTTP GET failed, code %d (took %u ms)\n",
+                                         httpCode, millis() - getStartMs);
+        snprintf(result.errorReason, sizeof(result.errorReason), "archive: HTTP GET failed, code %d (took %u ms)",
+                httpCode, millis() - getStartMs);
+        http.end();
+        return false;
+    }
+
+    JsonDocument filter;
+    filter["daily"]["precipitation_sum"] = true;
+    filter["daily"]["temperature_2m_max"] = true;
+
+    // getString() so a chunked reply is de-chunked - same reason as fetchOpenMeteoForecastWindow.
+    const String payload = http.getString();
+    const uint32_t totalElapsedMs = millis() - getStartMs;
+    http.end();
+
+    JsonDocument doc;
+    const DeserializationError error = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+    if (error) {
+        ::irrigator::drivers::Log.printf(
+            "[WARN] Open-Meteo archive: JSON parse failed: %s (http=%d, free heap %u, took %u ms)\n",
+            error.c_str(), httpCode, freeHeapBeforeGet, totalElapsedMs);
+        snprintf(result.errorReason, sizeof(result.errorReason),
+                "archive: JSON parse failed: %s (http=%d, free heap %u, took %u ms)", error.c_str(), httpCode,
+                freeHeapBeforeGet, totalElapsedMs);
+        return false;
+    }
+
+    JsonArrayConst dailyRain = doc["daily"]["precipitation_sum"].as<JsonArrayConst>();
+    JsonArrayConst dailyMaxTemp = doc["daily"]["temperature_2m_max"].as<JsonArrayConst>();
+    float avgPastTempC = 0.0f;
+    float rainPastDaysMm = 0.0f;
+    // Both helpers reject a short array *and* any null inside the window - the archive reports a
+    // day it doesn't have yet as null, which must fail the fetch rather than read as 0mm / 0°C.
+    if (!::irrigator::domain::summarizePastAverageDailyMaxTemperature(
+            dailyMaxTemp, board::AUTOADJUSTMENT_PAST_WEATHER_DAYS, avgPastTempC) ||
+        !::irrigator::domain::summarizePastRainfall(dailyRain, board::AUTOADJUSTMENT_PAST_WEATHER_DAYS, rainPastDaysMm)) {
+        ::irrigator::drivers::Log.printf(
+            "[WARN] Open-Meteo archive: incomplete window %.10s..%.10s (temp days %u, rain days %u, need %u, "
+            "overflowed %d, free heap %u, took %u ms)\n",
+            startIso, endIso, static_cast<unsigned>(dailyMaxTemp.size()), static_cast<unsigned>(dailyRain.size()),
+            static_cast<unsigned>(board::AUTOADJUSTMENT_PAST_WEATHER_DAYS), static_cast<int>(doc.overflowed()),
+            freeHeapBeforeGet, totalElapsedMs);
+        snprintf(result.errorReason, sizeof(result.errorReason),
+                "archive: incomplete window %.10s..%.10s (temp days %u, rain days %u, need %u, overflowed %d, "
+                "free heap %u, took %u ms)",
+                startIso, endIso, static_cast<unsigned>(dailyMaxTemp.size()), static_cast<unsigned>(dailyRain.size()),
+                static_cast<unsigned>(board::AUTOADJUSTMENT_PAST_WEATHER_DAYS), static_cast<int>(doc.overflowed()),
+                freeHeapBeforeGet, totalElapsedMs);
+        return false;
+    }
+    result.avgPastTempC = avgPastTempC;
+    result.rainPastDaysMm = rainPastDaysMm;
+    return true;
+}
+
+WeatherFetchResult WeatherService::fetchForecastOpenMeteo(float latitude,
+                                                          float longitude,
+                                                          int64_t nowEpochUtc) {
+    // Forecast first: it carries the rain-skip decision, and there's no point spending a second
+    // TLS handshake on history when it already failed. The two fetches are separate calls so each
+    // one's WiFiClientSecure (~40-60KB of mbedTLS state) is fully released before the next starts.
+    WeatherFetchResult result = fetchOpenMeteoForecastWindow(latitude, longitude, nowEpochUtc);
+    if (!result.success) {
+        return result;
+    }
+    // Any archive failure fails the whole Open-Meteo attempt (-> WeatherAPI fallback), on purpose:
+    // quietly substituting the forecast endpoint's own past_days series would be ~25 percentage
+    // points different from the archive the constants are calibrated on (see board_config.h).
+    result.success = false;
+    if (!fetchOpenMeteoArchivePast(latitude, longitude, nowEpochUtc, result)) {
+        return result;
+    }
+    result.errorReason[0] = '\0';
     result.success = true;
     return result;
 }

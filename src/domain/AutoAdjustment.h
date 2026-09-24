@@ -21,7 +21,6 @@ namespace irrigator::domain {
 // to upperLimitPercent. Matches DurationAdjuster.cpp's rounding convention (nearest integer).
 int16_t computeAutoCorrectedPercentage(float avgPastTempC,
                                        float rainPastDaysMm,
-                                       float baseTempC,
                                        int16_t lowerLimitPercent,
                                        int16_t upperLimitPercent);
 
