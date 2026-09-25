@@ -565,12 +565,6 @@
       - type: grid
         cards:
           - type: heading
-            heading: Water Flow
-          - type: tile
-            entity: sensor.irrigator_flow_total
-      - type: grid
-        cards:
-          - type: heading
             heading: Water Consumption
           # Lifetime (since-boot) liters per zone, one conditional card per enabled zone - same
           # enabled-sensor-gated pattern as the Status & Manual Control section's per-zone cards
@@ -583,6 +577,11 @@
           # options have evolved across releases). If it's not, fall back to
           # `period: {calendar: {period: day}}` instead ("since local midnight" rather than a
           # strict trailing 24h).
+          - type: tile
+            entity: sensor.irrigator_flow_total
+            grid_options:
+              columns: full
+              rows: 1
           - type: conditional
             conditions:
               - condition: state
