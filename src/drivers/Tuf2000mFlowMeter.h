@@ -50,19 +50,29 @@ public:
         uint8_t slaveId = 1;
         // Register map (function code 03) - see board_config.h's FLOW_METER_REG_* constants.
         // flowRateRegister/totalizerRegister each span 2 words (REAL4/IEEE-754 float,
-        // word-swapped - see domain::decodeSwappedFloat()); signalQualityRegister is a single word.
+        // word-swapped - see domain::decodeSwappedFloat()), as does soundSpeedRegister.
+        // signalQualityRegister starts a 3-word block: quality, then upstream and downstream signal
+        // strength in the two registers right after it.
         uint16_t flowRateRegister = 0;
         uint16_t totalizerRegister = 0;
         uint16_t signalQualityRegister = 0;
+        uint16_t soundSpeedRegister = 0;
         uint32_t pollIntervalMs = 2000;
+        // Multiplied into flowRateM3h and totalizerM3 as they are decoded (1.0 = meter's own
+        // values); corrects a meter whose calibration is off.
+        float calibrationMultiplier = 1.0f;
     };
 
     struct Reading {
         float flowRateM3h = 0.0f;
         float totalizerM3 = 0.0f;
+        // Raw quality word: domain::signalQualityValue()/signalAutogainStep() split it.
         uint16_t signalQuality = 0;
+        uint16_t signalStrengthUp = 0;
+        uint16_t signalStrengthDown = 0;
+        float soundSpeedMs = 0.0f;
         uint32_t timestampMs = 0;
-        // false on a Modbus error/timeout on any of the three registers polled this cycle - pushed
+        // false on a Modbus error/timeout on any of the four requests polled this cycle - pushed
         // through the same responseReady()/takeReading() path as a real reading, so callers can
         // tell "polled and it failed" apart from "nothing new yet" rather than errors just
         // vanishing.
@@ -90,7 +100,16 @@ public:
     // never call this from loop() or anything loop() calls.
     bool read(uint32_t timeoutMs, Reading& out);
 
+    // Most recent Modbus error seen on any request (Modbus::Error value, 0 = SUCCESS = none since
+    // boot). Sticky: a later successful poll does NOT clear it, so an intermittent fault stays
+    // diagnosable after the fact. Written on eModbus's worker task, read from loop() - a single
+    // byte, so the volatile is enough.
+    uint8_t lastErrorCode() const { return lastErrorCode_; }
+    // Human-readable text for lastErrorCode() (a static string, never null).
+    const char* lastErrorText() const;
+
 private:
+    void recordError(Modbus::Error error);
     void issueRequest(uint32_t pollSeq,
                        irrigator::domain::Tuf2000mPollTracker::Field field,
                        uint16_t startRegister,
@@ -113,6 +132,8 @@ private:
     // own volatile comment).
     irrigator::domain::Tuf2000mPollTracker pollTracker_;
     Reading scratch_;
+
+    volatile uint8_t lastErrorCode_ = 0;
 
     uint32_t lastPollMs_ = 0;
     bool everPolled_ = false;

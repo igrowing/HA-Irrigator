@@ -79,6 +79,9 @@ public:
     // minute. Feeds the HA "Water Consumption" dashboard group's long-term-statistics sensors.
     // Non-retained, like `/status`.
     void publishFlowTotals(const String& jsonPayload);
+    // Publishes to `<prefix>/meter` in response to `<prefix>/cmd/meter` - flow-meter diagnostics
+    // (signal strength/quality, sound speed, last Modbus error). Non-retained.
+    void publishMeter(const String& jsonPayload);
     void publishSchedule(const String& jsonPayload);
     void publishQueue(const String& jsonPayload);
     // Publishes to `<prefix>/calibrate` in response to `<prefix>/cmd/calibrate` — one call per

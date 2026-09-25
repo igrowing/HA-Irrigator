@@ -59,7 +59,16 @@ void Tuf2000mFlowMeter::readAsync(uint32_t nowMs) {
 
     issueRequest(pollSeq, Tuf2000mPollTracker::kFlowRate, config_.flowRateRegister, 2);
     issueRequest(pollSeq, Tuf2000mPollTracker::kTotalizer, config_.totalizerRegister, 2);
-    issueRequest(pollSeq, Tuf2000mPollTracker::kSignalQuality, config_.signalQualityRegister, 1);
+    issueRequest(pollSeq, Tuf2000mPollTracker::kSignalQuality, config_.signalQualityRegister, 3);
+    issueRequest(pollSeq, Tuf2000mPollTracker::kSoundSpeed, config_.soundSpeedRegister, 2);
+}
+
+const char* Tuf2000mFlowMeter::lastErrorText() const {
+    return static_cast<const char*>(ModbusError(static_cast<Modbus::Error>(lastErrorCode_)));
+}
+
+void Tuf2000mFlowMeter::recordError(Modbus::Error error) {
+    lastErrorCode_ = static_cast<uint8_t>(error);
 }
 
 bool Tuf2000mFlowMeter::responseReady() const {
@@ -96,6 +105,7 @@ void Tuf2000mFlowMeter::issueRequest(uint32_t pollSeq,
         // Couldn't even enqueue the request (e.g. eModbus's own internal request queue full) -
         // treat it exactly like a wire-level failure for this field so the poll still completes,
         // rather than hanging pollTracker_ forever waiting for a callback that will never fire.
+        recordError(rc);
         finishField(token, false);
     }
 }
@@ -110,7 +120,7 @@ void Tuf2000mFlowMeter::handleData(ModbusMessage msg, uint32_t token) {
                 uint16_t reg1 = 0;
                 idx = msg.get(idx, reg0);
                 idx = msg.get(idx, reg1);
-                scratch_.flowRateM3h = decodeSwappedFloat(reg0, reg1);
+                scratch_.flowRateM3h = decodeSwappedFloat(reg0, reg1) * config_.calibrationMultiplier;
                 break;
             }
             case Tuf2000mPollTracker::kTotalizer: {
@@ -118,13 +128,21 @@ void Tuf2000mFlowMeter::handleData(ModbusMessage msg, uint32_t token) {
                 uint16_t reg1 = 0;
                 idx = msg.get(idx, reg0);
                 idx = msg.get(idx, reg1);
-                scratch_.totalizerM3 = decodeSwappedFloat(reg0, reg1);
+                scratch_.totalizerM3 = decodeSwappedFloat(reg0, reg1) * config_.calibrationMultiplier;
                 break;
             }
             case Tuf2000mPollTracker::kSignalQuality: {
+                idx = msg.get(idx, scratch_.signalQuality);
+                idx = msg.get(idx, scratch_.signalStrengthUp);
+                idx = msg.get(idx, scratch_.signalStrengthDown);
+                break;
+            }
+            case Tuf2000mPollTracker::kSoundSpeed: {
                 uint16_t reg0 = 0;
+                uint16_t reg1 = 0;
                 idx = msg.get(idx, reg0);
-                scratch_.signalQuality = reg0;
+                idx = msg.get(idx, reg1);
+                scratch_.soundSpeedMs = decodeSwappedFloat(reg0, reg1);
                 break;
             }
             default:
@@ -135,7 +153,7 @@ void Tuf2000mFlowMeter::handleData(ModbusMessage msg, uint32_t token) {
 }
 
 void Tuf2000mFlowMeter::handleError(Modbus::Error error, uint32_t token) {
-    (void)error;
+    recordError(error);
     finishField(token, false);
 }
 

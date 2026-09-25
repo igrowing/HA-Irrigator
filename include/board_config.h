@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.2.1"
+#define APP_VERSION "1.2.3"
 #endif
 
 namespace irrigator::board {
@@ -96,8 +96,16 @@ static constexpr uint32_t FLOW_METER_POLL_INTERVAL_MS = 2000;
 // bring-up since TUF-2000M firmware batches can vary. Flow rate/totalizer are REAL4 (IEEE-754
 // float) values spanning 2 words each, word-swapped before reinterpreting as a float (see
 // Tuf2000mFlowMeter::decodeSwappedFloat()); signal quality is a single word (high byte: autogain
-// step, low byte: the actual 0-100 quality number).
+// step, low byte: the actual 0-100 quality number). Signal quality is the first of a 3-word block
+// read in one request: registers 93/94 right after it are the upstream/downstream signal strength.
+// Fluid sound speed (m/s) is a REAL4 like flow rate/totalizer.
+// Correction factor for this particular meter's known-bad calibration (cannot be fixed on the
+// meter itself). Applied once, in Tuf2000mFlowMeter, to flow rate and totalizer - so every consumer
+// (/flow, /flow_totals, per-run volume, cmd/meter) sees the corrected values, and nothing downstream
+// may multiply again. Not applied to sound speed or signal values.
+static constexpr float METER_CALIBRATION_MULTIPLIER = 1.4f;
 static constexpr uint16_t FLOW_METER_REG_FLOW_RATE = 1;
+static constexpr uint16_t FLOW_METER_REG_SOUND_SPEED = 7;
 static constexpr uint16_t FLOW_METER_REG_TOTALIZER = 9;
 static constexpr uint16_t FLOW_METER_REG_SIGNAL_QUALITY = 92;
 // Ceiling for one whole poll cycle (3 sequential register reads - see the driver): eModbus's own

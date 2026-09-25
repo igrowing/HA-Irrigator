@@ -173,6 +173,7 @@ device's actual prefix in every example below.
 | `/cmd/restart` | "" |  |  | **No special response** Publishes `false` to `online`, then restarts. |
 | `/cmd/ota` | FW `.bin` URL | `/ota_started` then `/ota_completed` | `"true"`, then `"2026-07-12T06:00:00"` |  `/ota_started` fires the instant the command is accepted (before the HTTP GET), separately from success/failure - `cmd/#` is only delivered at QoS 0, so a caller can't tell "broker accepted my publish" from "device actually received it" without a distinct receipt signal (see [ota.md](ota.md)'s retry logic, built on exactly this). Downloads and flashes the URL, restarts on success. Blocking by design — see [agents.md](../agents.md) for why. See [ota.md](ota.md) for the higher-level tooling built on top of this. |
 | `/cmd/calibrate` | "" | `/calibrate` (one message per sensor) | JSON: `sensor` (`"valve"`/`"pump"`), `base_level`, `sample_count`, `burst_samples_mv` (the most recent burst's raw ADC readings, for spotting saturation). | Requires an active watering run (valve open — see **True-RMS current sampling** below); rejected with `/alert` otherwise. |
+| `/cmd/meter` | "" | `/meter` | JSON: `flow_rate_lpm`, `total_m3`, `signal_strength_up`/`signal_strength_down` (regs 93/94), `quality` (reg 92 low byte, 0–100), `autogain_step` (reg 92 high byte), `sound_speed_ms` (regs 7/8), `reading_age_s`, `last_modbus_error` (numeric `Modbus::Error`, `0` = none since boot) and `last_modbus_error_text`. | Flow-meter diagnostics, answered from the latest valid poll (no extra Modbus transaction). Before any valid poll exists the reading fields are replaced by `"error":"no valid reading yet"`; the two error fields are always present. The error is sticky — a later good poll doesn't clear it. See **Water flow sensing (TUF-2000M)** below. |
 | `/cmd/download/<filename>` | "" | `/download/<filename>` | String | Reads that file from flash and publishes it. |
 | `/cmd/coredump` | "" | `/coredump` | JSON: `coredump` (`"present"`/`"none"`), `size_bytes`, `task`, `panic_reason`, `pc`, `exc_cause`, `fault_addr`, `elf_sha256`, `bt_corrupted`, `backtrace` (array of `"0x...."` strings). | Summary of the crash dump the panic handler stored in flash, without transferring the image. Also published unprompted ~15s after boot when a dump is present, alongside `/status`. Decode the addresses against the exact `firmware.elf` named by `elf_sha256` — see [coredump.md](coredump.md). |
 | `/cmd/download/coredump` | "" | `/download/coredump` (a header, then N chunks, then a trailer) | `{"coredump":"begin","size":…,"chunks":N,"chunk_bytes":3072,"encoding":"base64","summary":{…}}`, then `{"seq":i,"data":"<base64>"}` for i=1..N, then `{"coredump":"end","chunks":N,"size":…,"crc32":"0x…"}` | Not a file on SPIFFS — the raw ELF image out of the `coredump` partition, up to 64KB, so it streams as base64 chunks one per `loop()` iteration rather than in one message. All QoS 0: a dropped chunk shows as a gap in `seq`, a corrupted one fails the trailer's CRC32; either way just re-request it. `scripts/coredump.py` does the whole round-trip and decode. |
@@ -579,9 +580,14 @@ cross-checked during bench bring-up): register 1 (2 words) is flow rate in m³/h
 is the positive totalizer in m³ — both REAL4/IEEE-754 floats, word-swapped before being reinterpreted
 as a float (`irrigator::domain::decodeSwappedFloat()`, `src/domain/Tuf2000mProtocol.*` — pulled out of
 the driver itself so the decode and the poll-sequencing state machine are unit-testable under
-`pio test -e native` without any Modbus hardware or mocking) — and register 92 (1 word) is signal
-quality. All three are polled together every `FLOW_METER_POLL_INTERVAL_MS` as three separate Modbus
-requests per poll cycle (never overlapped with the next poll's — see the driver's class comment for
+`pio test -e native` without any Modbus hardware or mocking) — register 7 (2 words, same REAL4
+encoding) is the fluid sound speed in m/s, and registers 92–94 (3 words, one request) are signal
+quality (low byte quality, high byte autogain step) followed by upstream/downstream signal strength.
+Sound speed and the signal block only feed `cmd/meter`. Flow rate and totalizer are multiplied by
+`METER_CALIBRATION_MULTIPLIER` (`board_config.h`, currently 1.4 — this meter's calibration is off and
+can't be fixed on the unit) inside the driver, so every published/derived figure is already corrected;
+sound speed and signal values are raw. All four requests are polled together every
+`FLOW_METER_POLL_INTERVAL_MS` as separate Modbus requests per poll cycle (never overlapped with the next poll's — see the driver's class comment for
 why: the reference project above found "the modbus stuff just didn't give back consistent data for
 two sequential queries").
 
@@ -594,7 +600,7 @@ backed by `irrigator::domain::FlowPublishGate`):
   if that threshold keeps getting crossed faster. A real leak surfaces promptly; a quiet pipe
   generates no idle MQTT traffic at all.
 
-**A failed poll** (Modbus error/timeout on any of the three registers — `Reading::valid == false`)
+**A failed poll** (Modbus error/timeout on any of the four requests — `Reading::valid == false`)
 publishes `/alert` with `{"flow_meter":"failed","reason":"modbus_error_or_timeout"}`, gated to once
 per calendar day the same way the current-sensor faults are (`consumeDailyAlertGate()` in
 `main.ino`). Deliberately not a `{"fault":...}` payload — there's no zone/level/base to report for a

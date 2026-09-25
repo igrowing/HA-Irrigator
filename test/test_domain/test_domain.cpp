@@ -3318,7 +3318,10 @@ void test_poll_tracker_token_round_trips_field_and_sequence() {
                      Tuf2000mPollTracker::fieldOf(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kTotalizer)));
     TEST_ASSERT_TRUE(Tuf2000mPollTracker::kSignalQuality ==
                      Tuf2000mPollTracker::fieldOf(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality)));
+    TEST_ASSERT_TRUE(Tuf2000mPollTracker::kSoundSpeed ==
+                     Tuf2000mPollTracker::fieldOf(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSoundSpeed)));
     TEST_ASSERT_EQUAL_UINT32(seq, Tuf2000mPollTracker::pollSeqOf(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality)));
+    TEST_ASSERT_EQUAL_UINT32(seq, Tuf2000mPollTracker::pollSeqOf(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSoundSpeed)));
 }
 
 void test_poll_tracker_begin_poll_increments_sequence_and_starts_in_flight() {
@@ -3343,12 +3346,15 @@ void test_poll_tracker_completes_only_after_every_field_reports() {
     const uint32_t flowToken = Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kFlowRate);
     const uint32_t totalToken = Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kTotalizer);
     const uint32_t sigToken = Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality);
+    const uint32_t soundToken = Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSoundSpeed);
 
     TEST_ASSERT_FALSE(tracker.recordField(flowToken, true));
-    TEST_ASSERT_TRUE(tracker.inFlight());  // Still waiting on 2 more fields.
+    TEST_ASSERT_TRUE(tracker.inFlight());  // Still waiting on 3 more fields.
     TEST_ASSERT_FALSE(tracker.recordField(totalToken, true));
     TEST_ASSERT_TRUE(tracker.inFlight());
-    TEST_ASSERT_TRUE(tracker.recordField(sigToken, true));  // The 3rd field completes the poll.
+    TEST_ASSERT_FALSE(tracker.recordField(sigToken, true));
+    TEST_ASSERT_TRUE(tracker.inFlight());
+    TEST_ASSERT_TRUE(tracker.recordField(soundToken, true));  // The 4th field completes the poll.
     TEST_ASSERT_FALSE(tracker.inFlight());
     TEST_ASSERT_FALSE(tracker.failed());
 }
@@ -3360,8 +3366,9 @@ void test_poll_tracker_any_field_error_marks_the_whole_poll_failed() {
     const uint32_t seq = tracker.beginPoll(0);
     tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kFlowRate), true);
     tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kTotalizer), false);
+    tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality), true);
     const bool complete =
-        tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality), true);
+        tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSoundSpeed), true);
 
     TEST_ASSERT_TRUE(complete);
     TEST_ASSERT_TRUE(tracker.failed());  // One failed field poisons the whole poll's reading.
@@ -3381,13 +3388,14 @@ void test_poll_tracker_stale_reply_from_abandoned_poll_is_ignored() {
     // it, and feeding it to recordField() must neither complete the new poll nor corrupt its state.
     TEST_ASSERT_FALSE(tracker.isCurrent(staleToken));
     TEST_ASSERT_FALSE(tracker.recordField(staleToken, false));
-    TEST_ASSERT_TRUE(tracker.inFlight());   // New poll still waiting on all 3 fields.
+    TEST_ASSERT_TRUE(tracker.inFlight());   // New poll still waiting on all 4 fields.
     TEST_ASSERT_FALSE(tracker.failed());    // The stale error must not poison the new poll.
 
-    // The new poll still completes normally on its own 3 fields.
+    // The new poll still completes normally on its own 4 fields.
     tracker.recordField(Tuf2000mPollTracker::makeToken(newSeq, Tuf2000mPollTracker::kFlowRate), true);
     tracker.recordField(Tuf2000mPollTracker::makeToken(newSeq, Tuf2000mPollTracker::kTotalizer), true);
-    TEST_ASSERT_TRUE(tracker.recordField(Tuf2000mPollTracker::makeToken(newSeq, Tuf2000mPollTracker::kSignalQuality), true));
+    tracker.recordField(Tuf2000mPollTracker::makeToken(newSeq, Tuf2000mPollTracker::kSignalQuality), true);
+    TEST_ASSERT_TRUE(tracker.recordField(Tuf2000mPollTracker::makeToken(newSeq, Tuf2000mPollTracker::kSoundSpeed), true));
     TEST_ASSERT_FALSE(tracker.failed());
 }
 
@@ -3414,14 +3422,23 @@ void test_poll_tracker_force_clear_lets_a_new_poll_start_without_finishing_the_o
     TEST_ASSERT_FALSE(tracker.inFlight());
 
     // A fresh poll behaves normally afterwards - forceClear() doesn't wedge the tracker: the first
-    // two fields don't complete it, the third does.
+    // three fields don't complete it, the fourth does.
     const uint32_t seq = tracker.beginPoll(100);
     TEST_ASSERT_TRUE(tracker.inFlight());
     TEST_ASSERT_FALSE(tracker.failed());
     TEST_ASSERT_FALSE(tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kFlowRate), true));
     TEST_ASSERT_FALSE(tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kTotalizer), true));
-    TEST_ASSERT_TRUE(tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality), true));
+    TEST_ASSERT_FALSE(tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality), true));
+    TEST_ASSERT_TRUE(tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSoundSpeed), true));
     TEST_ASSERT_FALSE(tracker.inFlight());
+}
+
+void test_signal_quality_register_splits_into_quality_and_autogain_step() {
+    // Low byte = the actual 0-100 quality, high byte = autogain step.
+    TEST_ASSERT_EQUAL_UINT8(87, irrigator::domain::signalQualityValue(0x0C57));
+    TEST_ASSERT_EQUAL_UINT8(12, irrigator::domain::signalAutogainStep(0x0C57));
+    TEST_ASSERT_EQUAL_UINT8(0, irrigator::domain::signalQualityValue(0xFF00));
+    TEST_ASSERT_EQUAL_UINT8(255, irrigator::domain::signalAutogainStep(0xFF00));
 }
 
 // --- FlowPublishGate -----------------------------------------------------------------------
@@ -3789,6 +3806,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_poll_tracker_stale_reply_from_abandoned_poll_is_ignored);
     RUN_TEST(test_poll_tracker_is_stuck_only_once_timeout_elapsed_while_in_flight);
     RUN_TEST(test_poll_tracker_force_clear_lets_a_new_poll_start_without_finishing_the_old_one);
+    RUN_TEST(test_signal_quality_register_splits_into_quality_and_autogain_step);
     RUN_TEST(test_flow_publish_gate_publishes_immediately_on_the_very_first_reading);
     RUN_TEST(test_flow_publish_gate_active_state_uses_a_flat_once_per_minute_cadence);
     RUN_TEST(test_flow_publish_gate_idle_state_never_publishes_below_threshold_no_matter_how_long);

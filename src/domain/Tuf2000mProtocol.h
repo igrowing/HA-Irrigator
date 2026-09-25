@@ -15,16 +15,24 @@ namespace irrigator::domain {
 // ESP8266 target and this project's ESP32).
 float decodeSwappedFloat(uint16_t reg0, uint16_t reg1);
 
-// Tracks one poll cycle's three outstanding Modbus sub-requests (flow rate / totalizer / signal
-// quality - see board_config.h's FLOW_METER_REG_* constants), issued together and never
+// The signal-quality register packs two numbers: the low byte is the actual 0-100 quality, the high
+// byte is the autogain step (see board_config.h's FLOW_METER_REG_SIGNAL_QUALITY comment).
+inline uint8_t signalQualityValue(uint16_t reg) { return static_cast<uint8_t>(reg & 0xFF); }
+inline uint8_t signalAutogainStep(uint16_t reg) { return static_cast<uint8_t>(reg >> 8); }
+
+// Tracks one poll cycle's four outstanding Modbus sub-requests (flow rate / totalizer / signal
+// block / sound speed - see board_config.h's FLOW_METER_REG_* constants), issued together and never
 // overlapped with the NEXT poll's. Encodes/decodes the eModbus request "token" (poll sequence
 // number + which field) so a reply arriving after this poll has already been abandoned (stuck-
 // request watchdog) is recognized as stale and ignored, instead of corrupting whatever poll comes
 // next.
 class Tuf2000mPollTracker {
 public:
-    enum Field : uint32_t { kFlowRate = 0, kTotalizer = 1, kSignalQuality = 2 };
-    static constexpr uint8_t kFieldCount = 3;
+    // kSignalQuality covers the whole signal block (quality + upstream/downstream strength words).
+    // The token's field slot is 2 bits wide (kFieldMask), so 4 fields is the hard ceiling - a fifth
+    // one needs a wider mask and shifts pollSeq accordingly.
+    enum Field : uint32_t { kFlowRate = 0, kTotalizer = 1, kSignalQuality = 2, kSoundSpeed = 3 };
+    static constexpr uint8_t kFieldCount = 4;
     static constexpr uint32_t kFieldMask = 0x3;
 
     // Starts a new poll: bumps the poll sequence number and resets pending/failed state. Returns

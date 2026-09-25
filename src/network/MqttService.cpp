@@ -350,6 +350,10 @@ void MqttService::publishFlowTotals(const String& jsonPayload) {
     publishRaw("/flow_totals", withDatetime(jsonPayload), false);
 }
 
+void MqttService::publishMeter(const String& jsonPayload) {
+    publishRaw("/meter", withDatetime(jsonPayload), false);
+}
+
 void MqttService::publishSchedule(const String& jsonPayload) {
     publishRaw("/schedule", jsonPayload, false);
 }

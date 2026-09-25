@@ -280,6 +280,12 @@ irrigator::domain::FlowPublishGate flowPublishGate;
 float lastKnownTotalizerM3 = 0.0f;
 bool haveLastKnownTotalizerM3 = false;
 
+// Latest whole valid poll (not just the totalizer), kept for cmd/meter's diagnostics reply so the
+// command answers from cache instead of triggering a Modbus transaction of its own. Same
+// main-loop-only ownership as the baseline above.
+irrigator::drivers::Tuf2000mFlowMeter::Reading lastValidFlowReading;
+bool haveValidFlowReading = false;
+
 // Never-reset-while-running per-zone/"other" lifetime liters counters (see
 // irrigator::domain::FlowLifetimeCounters) and the current run's own volume-so-far (see
 // irrigator::domain::FlowRunVolumeTracker) - both pulled into domain/ so their attribution/
@@ -1923,6 +1929,11 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
         return;
     }
 
+    if (commandName == "meter") {
+        publishMeterDiagnostics(nowMs);
+        return;
+    }
+
     reportMqttError("command", commandName, "unknown command");
 }
 
@@ -2724,6 +2735,33 @@ void updateFlowPublishCadence(uint32_t nowMs, const irrigator::drivers::Tuf2000m
     mqtt.publishFlow(payload);
 }
 
+// cmd/meter: publishes the flow meter's latest poll plus the driver's sticky last-Modbus-error to
+// /meter. Reading fields are only included when a valid poll exists - never zeros standing in for
+// "no data" - and the reply says so explicitly otherwise. The error fields are always present, since
+// they matter most exactly when there is no valid reading.
+void publishMeterDiagnostics(uint32_t nowMs) {
+    JsonDocument doc;
+    if (haveValidFlowReading) {
+        const auto& reading = lastValidFlowReading;
+        doc["flow_rate_lpm"] = reading.flowRateM3h * 1000.0f / 60.0f;
+        doc["total_m3"] = reading.totalizerM3;
+        doc["signal_strength_up"] = reading.signalStrengthUp;
+        doc["signal_strength_down"] = reading.signalStrengthDown;
+        doc["quality"] = irrigator::domain::signalQualityValue(reading.signalQuality);
+        doc["autogain_step"] = irrigator::domain::signalAutogainStep(reading.signalQuality);
+        doc["sound_speed_ms"] = reading.soundSpeedMs;
+        doc["reading_age_s"] = (nowMs - reading.timestampMs) / 1000;
+    } else {
+        doc["error"] = "no valid reading yet";
+    }
+    doc["last_modbus_error"] = flowMeter.lastErrorCode();
+    doc["last_modbus_error_text"] = flowMeter.lastErrorText();
+
+    String payload;
+    serializeJson(doc, payload);
+    mqtt.publishMeter(payload);
+}
+
 // Stage 1 of the flow-meter integration: drives flowMeter's own internal poll throttle every
 // loop() tick and logs whatever lands. Stage 2 layers the MQTT /flow publish (cadence-gated
 // separately, see updateFlowPublishCadence() above) on top of the same drained reading.
@@ -2760,6 +2798,8 @@ void updateFlowSampling(uint32_t nowMs) {
         }
         return;
     }
+    lastValidFlowReading = reading;
+    haveValidFlowReading = true;
     irrigator::drivers::Log.printf("[flow] rate=%.3f m3/h total=%.3f m3 signal=%u\n",
                                    static_cast<double>(reading.flowRateM3h),
                                    static_cast<double>(reading.totalizerM3),
@@ -2828,6 +2868,8 @@ void setup() {
         flowMeterConfig.flowRateRegister = irrigator::board::FLOW_METER_REG_FLOW_RATE;
         flowMeterConfig.totalizerRegister = irrigator::board::FLOW_METER_REG_TOTALIZER;
         flowMeterConfig.signalQualityRegister = irrigator::board::FLOW_METER_REG_SIGNAL_QUALITY;
+        flowMeterConfig.soundSpeedRegister = irrigator::board::FLOW_METER_REG_SOUND_SPEED;
+        flowMeterConfig.calibrationMultiplier = irrigator::board::METER_CALIBRATION_MULTIPLIER;
         flowMeterConfig.pollIntervalMs = irrigator::board::FLOW_METER_POLL_INTERVAL_MS;
         // No Wi-Fi/captive-portal dependency, so - like the current sensors above - this begins
         // unconditionally rather than waiting for enterOperationalMode().

@@ -108,14 +108,49 @@ This means, having `CURRENT_CALIBRATION_MIN_BASE_LEVEL = 30` will fail the calib
 
 An ultrasonic clamp-on flow meter — no pipe-cutting install, reads flow rate and totalized volume over Modbus RTU on RS-485. It also carries its own onboard relay (OCT), configurable locally on the meter to trip on a flow-rate or totalizer threshold — that relay is meant to drive the shut-off valve directly as a hardware failsafe (see below), independent of the ESP32/Wi-Fi being alive.
 
+### Flow meter settings (set on the meter's keypad)
+
+The firmware talks Modbus RTU to slave 1 at 9600 8N1 (see `FLOW_METER_*` in [board_config.h](../include/board_config.h)). The meter must be configured to match, or it stays silent and every request times out (`/cmd/meter` shows `"error": "no valid reading yet"` with `last_modbus_error_text: "Timeout"`).
+
+| Menu | Setting | Required value | Note |
+|--|--|--|--|
+| M11 | Pipe outer diameter | 44 | Measure yours |
+| M12 | Pipe thickness | 9 | Measure yours |
+| M14 | Pipe material | 9 (other)| For plastic green pipes |
+| M15 | Sound speed in pipe material | 2650 | Not needed to change is non-"other" known pipe material is used |
+| M16 | Pipe liner | No Liner | Or select needed liner |
+| M18 | Pipe inner diameter |  | Just see that meter calculated your pipe correctly, having pipe OD and thickness (M11, M12) |
+| M20 | Liquid type | 0 (water) |  |
+| M23 | Transducer type | 19 (TS-2) | Choose your transducer type |
+| M24 | Transducer mounting | V or W | Choose what suits better your pipe. For very small pipes W works better. For 1" and up OD the V is good enough |
+| M25 | Distance between transducers |  | See for easy of adjustment |
+| M63 | Communication protocol | **MODBUS RTU** | Factory default is MODBUS ASCII, which ignores RTU frames completely. Forgetting this was the cause of the first bring-up timeout. |
+| M62 | RS-232/RS-485 setup | 9600 baud, parity none, 8 data bits, 1 stop bit | Factory default. Any other parity makes the meter drop every frame silently. |
+| M46 | Network address (ID) | 1 | Must equal `FLOW_METER_MODBUS_SLAVE_ID`. |
+| M26 | Save settings (Solidify) | run after changing the above | Settings live in RAM until stored. Without this step they revert on the next power cycle (manual, page 4). |
+
+#### Placing and adjustment of transducers
+1. Decide the water direction. Put the "Up" transducer on a side from where the water runs. Put the "Down" transducer on a side where the water runs.
+2. Use provided with the meter silicon-like tighthening cream between the transducer and the pipe to make air-less tight placement.
+3. Using menu M90 move the transducers slightly around the calculated distance from M25 to read on the display Q value between 60 and 90. More is better. After every slight position change let the meter 3-5 seconds to show you the new Q value. When you reached best possible Q, tighten the transducers with provided rings.
+
+#### Diagnosing a silent bus
+Menu M49 on the meter displays the raw bytes it receives on the serial port. If bytes show up every couple of seconds, wiring and converter are fine and the fault is in M63/M62/M46. If M49 stays empty, look at the physical link (A/B, termination, converter). On the converter, the R LED blinks for each request coming from the ESP32 and the T LED blinks for each reply going back to it.
+
+#### Meter adjustment
+Meter might count water flow even on still water. And it may count the flow wrongly.
+
+1. To set 0 liquid flow, use menu M42. Activating it, wait 30 seconds: do not touch the meter and make 100% sure the water is NOT running.
+2. To calibrate the water flow measurement use menu M45. The scale factor is expected/actual.
+
 ### RS-485 GPIOs
 
 Every strapping-safe, output-capable GPIO is already claimed by zones/pump/LED/rotary/ADC/I2C (see [board_config.h](../include/board_config.h)), and GPIO0/1/3 are off-limits (factory-reset button, and `Serial`/flashing). That leaves only GPIO2 and GPIO12 — both ESP32 boot-strapping pins:
 
 | Signal | PIN |
 |--|--|
-| TX → converter TXD | 2 | 
-| RX ← converter RXD | 36 | 
+| ESP32 TX → converter RXD | 2 | 
+| ESP32 RX ← converter TXD | 36 | 
 | DE/RE | — (unused/automatic) | 
 | GND | GND | 
 | VIN | 3V3 |
@@ -126,13 +161,13 @@ Picked over a plain MAX485-style breakout for two reasons:
 - **Galvanic isolation.** This cable run parallels mains wiring through the garage; the module isolates the RS-485 bus side (both power and signal, via an onboard isolated DC-DC plus a digital isolator) from the ESP32's own logic and ground, so an induced spike on the bus has no metallic path to the MCU even if it gets past the onboard TVS clamp first.
 - **Automatic direction switching**, built into the chip — no DE/RE control needed, so the link only spends the 2 GPIOs above instead of 3.
 
-Also has onboard 120Ω termination (enabled by soldering a jumper) and 200W surge / 6kV ESD protection on the bus side. TTL-side pinout: VCC / TXD / RXD / GND (to the ESP32's 3.3V, GPIO2, GPIO36, GND); RS-485 side: A+ / B- / PE.
+Also has onboard 120Ω termination (enabled by soldering a jumper) and 200W surge / 6kV ESD protection on the bus side. TTL-side pinout: VCC / TXD / RXD / GND, wired to the ESP32's 3.3V / GPIO36 / GPIO2 / GND (crossed: the converter's RXD receives what the ESP32 transmits on GPIO2, and its TXD feeds GPIO36); RS-485 side: A+ / B- / PE.
 
 ### Wiring the RS-485 cable
 
 - Shielded twisted pair for A/B.
 - Land the shield on the converter's **PE** terminal, at the ESP32 end only — don't also ground it at the flow meter end (that turns the shield into a ground-loop path), and don't bridge PE to the TTL-side GND (that defeats the isolation).
-- Run a common GND wire alongside A/B out to the flow meter anyway, so both ends' transceivers share a reference within their common-mode range.
+- No common GND wire: the meter's RS-485 port is itself isolated, and its GND terminal is only the transducer ground ("NOT for power and AO and RS485", manual page 8). Two isolated ports need only the A/B pair; this link works that way.
 
 ### Why the 120Ω terminator matters
 
