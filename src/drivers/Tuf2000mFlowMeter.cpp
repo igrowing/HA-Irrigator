@@ -4,11 +4,16 @@
 
 namespace irrigator::drivers {
 
-using irrigator::domain::decodeSwappedFloat;
+using irrigator::domain::decodeFloatLowWordFirst;
+using irrigator::domain::isFiniteFloat;
+using irrigator::domain::replyLengthMatches;
+using irrigator::domain::TotalizerJumpGuard;
+using irrigator::domain::Tuf2000mFailure;
 using irrigator::domain::Tuf2000mPollTracker;
 
 void Tuf2000mFlowMeter::begin(HardwareSerial& serial, const Config& cfg) {
     config_ = cfg;
+    jumpGuard_ = TotalizerJumpGuard(cfg.maxTotalizerJumpM3);
     // Depth 1: only the latest poll's result ever matters to a caller of takeReading() - an
     // unconsumed previous reading is simply overwritten, never queued up.
     resultQueue_ = xQueueCreate(1, sizeof(Reading));
@@ -56,11 +61,20 @@ void Tuf2000mFlowMeter::readAsync(uint32_t nowMs) {
     const uint32_t pollSeq = pollTracker_.beginPoll(nowMs);
     scratch_ = Reading{};
     scratch_.timestampMs = nowMs;
+    pollFailure_ = Tuf2000mFailure::kNone;
 
-    issueRequest(pollSeq, Tuf2000mPollTracker::kFlowRate, config_.flowRateRegister, 2);
-    issueRequest(pollSeq, Tuf2000mPollTracker::kTotalizer, config_.totalizerRegister, 2);
-    issueRequest(pollSeq, Tuf2000mPollTracker::kSignalQuality, config_.signalQualityRegister, 3);
-    issueRequest(pollSeq, Tuf2000mPollTracker::kSoundSpeed, config_.soundSpeedRegister, 2);
+    issueRequest(pollSeq, Tuf2000mPollTracker::kFlowRate, config_.flowRateRegister);
+    issueRequest(pollSeq, Tuf2000mPollTracker::kTotalizer, config_.totalizerRegister);
+    issueRequest(pollSeq, Tuf2000mPollTracker::kSignalQuality, config_.signalQualityRegister);
+    issueRequest(pollSeq, Tuf2000mPollTracker::kSoundSpeed, config_.soundSpeedRegister);
+}
+
+bool Tuf2000mFlowMeter::takeFloat(const ModbusMessage& msg, uint16_t& idx, float& out) {
+    uint16_t reg0 = 0;
+    uint16_t reg1 = 0;
+    idx = msg.get(idx, reg0);
+    idx = msg.get(idx, reg1);
+    return decodeFloatLowWordFirst(reg0, reg1, out);
 }
 
 const char* Tuf2000mFlowMeter::lastErrorText() const {
@@ -96,70 +110,101 @@ bool Tuf2000mFlowMeter::read(uint32_t timeoutMs, Reading& out) {
 
 void Tuf2000mFlowMeter::issueRequest(uint32_t pollSeq,
                                       Tuf2000mPollTracker::Field field,
-                                      uint16_t startRegister,
-                                      uint16_t wordCount) {
+                                      uint16_t startRegister) {
     const uint32_t token = Tuf2000mPollTracker::makeToken(pollSeq, field);
-    const Error rc = client_->addRequest(
-        token, config_.slaveId, READ_HOLD_REGISTER, startRegister, wordCount);
+    const Error rc = client_->addRequest(token, config_.slaveId, READ_HOLD_REGISTER, startRegister,
+                                         Tuf2000mPollTracker::wordCountOf(field));
     if (rc != SUCCESS) {
         // Couldn't even enqueue the request (e.g. eModbus's own internal request queue full) -
         // treat it exactly like a wire-level failure for this field so the poll still completes,
         // rather than hanging pollTracker_ forever waiting for a callback that will never fire.
         recordError(rc);
-        finishField(token, false);
+        failField(token, Tuf2000mFailure::kModbusError);
     }
 }
 
-void Tuf2000mFlowMeter::handleData(ModbusMessage msg, uint32_t token) {
-    if (pollTracker_.isCurrent(token)) {
-        // Response layout: [0]=server ID, [1]=function code, [2]=byte count, [3..]=register data.
-        uint16_t idx = 3;
-        switch (Tuf2000mPollTracker::fieldOf(token)) {
-            case Tuf2000mPollTracker::kFlowRate: {
-                uint16_t reg0 = 0;
-                uint16_t reg1 = 0;
-                idx = msg.get(idx, reg0);
-                idx = msg.get(idx, reg1);
-                scratch_.flowRateM3h = decodeSwappedFloat(reg0, reg1) * config_.calibrationMultiplier;
-                break;
+bool Tuf2000mFlowMeter::parseField(Tuf2000mPollTracker::Field field, const ModbusMessage& msg) {
+    // Response layout: [0]=server ID, [1]=function code, [2]=byte count, [3..]=register data.
+    uint16_t idx = 3;
+    float value = 0.0f;
+    switch (field) {
+        case Tuf2000mPollTracker::kFlowRate:
+        case Tuf2000mPollTracker::kTotalizer: {
+            if (!takeFloat(msg, idx, value)) {
+                return false;
             }
-            case Tuf2000mPollTracker::kTotalizer: {
-                uint16_t reg0 = 0;
-                uint16_t reg1 = 0;
-                idx = msg.get(idx, reg0);
-                idx = msg.get(idx, reg1);
-                scratch_.totalizerM3 = decodeSwappedFloat(reg0, reg1) * config_.calibrationMultiplier;
-                break;
+            // The corrected figure has to be finite as well: a huge but finite raw value can
+            // overflow to infinity once scaled.
+            value *= config_.calibrationMultiplier;
+            if (!isFiniteFloat(value)) {
+                return false;
             }
-            case Tuf2000mPollTracker::kSignalQuality: {
-                idx = msg.get(idx, scratch_.signalQuality);
-                idx = msg.get(idx, scratch_.signalStrengthUp);
-                idx = msg.get(idx, scratch_.signalStrengthDown);
-                break;
-            }
-            case Tuf2000mPollTracker::kSoundSpeed: {
-                uint16_t reg0 = 0;
-                uint16_t reg1 = 0;
-                idx = msg.get(idx, reg0);
-                idx = msg.get(idx, reg1);
-                scratch_.soundSpeedMs = decodeSwappedFloat(reg0, reg1);
-                break;
-            }
-            default:
-                break;
+            (field == Tuf2000mPollTracker::kFlowRate ? scratch_.flowRateM3h : scratch_.totalizerM3) =
+                value;
+            return true;
         }
+        case Tuf2000mPollTracker::kSignalQuality:
+            idx = msg.get(idx, scratch_.signalQuality);
+            idx = msg.get(idx, scratch_.signalStrengthUp);
+            idx = msg.get(idx, scratch_.signalStrengthDown);
+            return true;
+        case Tuf2000mPollTracker::kSoundSpeed:
+            if (!takeFloat(msg, idx, value)) {
+                return false;
+            }
+            scratch_.soundSpeedMs = value;
+            return true;
+    }
+    return false;
+}
+
+void Tuf2000mFlowMeter::handleData(ModbusMessage msg, uint32_t token) {
+    if (!pollTracker_.isCurrent(token)) {
+        return;  // Reply to an already-abandoned poll: nothing to record (see the tracker).
+    }
+    const Tuf2000mPollTracker::Field field = Tuf2000mPollTracker::fieldOf(token);
+    const uint16_t size = msg.size();
+    const uint8_t byteCount = size > 2 ? msg[2] : 0;
+    if (!replyLengthMatches(size, byteCount, Tuf2000mPollTracker::wordCountOf(field))) {
+        failField(token, Tuf2000mFailure::kBadReplyLength);
+        return;
+    }
+    if (!parseField(field, msg)) {
+        failField(token, Tuf2000mFailure::kNonFiniteValue);
+        return;
     }
     finishField(token, true);
 }
 
 void Tuf2000mFlowMeter::handleError(Modbus::Error error, uint32_t token) {
     recordError(error);
+    failField(token, Tuf2000mFailure::kModbusError);
+}
+
+void Tuf2000mFlowMeter::noteFailure(Tuf2000mFailure failure) {
+    if (pollFailure_ == Tuf2000mFailure::kNone) {
+        pollFailure_ = failure;
+        lastFailure_ = static_cast<uint8_t>(failure);
+    }
+}
+
+void Tuf2000mFlowMeter::failField(uint32_t token, Tuf2000mFailure failure) {
+    if (pollTracker_.isCurrent(token)) {
+        noteFailure(failure);
+    }
     finishField(token, false);
 }
 
 void Tuf2000mFlowMeter::finishField(uint32_t token, bool ok) {
     if (pollTracker_.recordField(token, ok)) {
         scratch_.valid = !pollTracker_.failed();
+        // Judged only once the whole poll is in and otherwise clean: the totalizer of a poll that
+        // already failed is not trustworthy enough to move the guard's baseline.
+        if (scratch_.valid && !jumpGuard_.accept(scratch_.totalizerM3)) {
+            scratch_.valid = false;
+            noteFailure(Tuf2000mFailure::kTotalizerJump);
+        }
+        scratch_.failure = pollFailure_;
         if (resultQueue_ != nullptr) {
             xQueueOverwrite(resultQueue_, &scratch_);
         }

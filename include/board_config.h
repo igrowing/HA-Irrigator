@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.2.3"
+#define APP_VERSION "1.2.4"
 #endif
 
 namespace irrigator::board {
@@ -91,28 +91,36 @@ static constexpr uint8_t FLOW_METER_MODBUS_SLAVE_ID = 1;
 // its result gets published). Short enough for a bench sanity-check ("two back-to-back reads while
 // flow is genuinely unchanged agree" - see the driver's class comment) without hammering the bus.
 static constexpr uint32_t FLOW_METER_POLL_INTERVAL_MS = 2000;
-// Holding-register map (function code 03), per the register map documented by
-// github.com/tczerwonka/tuf2000-modbus-reader - cross-check against the specific unit during
-// bring-up since TUF-2000M firmware batches can vary. Flow rate/totalizer are REAL4 (IEEE-754
-// float) values spanning 2 words each, word-swapped before reinterpreting as a float (see
-// Tuf2000mFlowMeter::decodeSwappedFloat()); signal quality is a single word (high byte: autogain
-// step, low byte: the actual 0-100 quality number). Signal quality is the first of a 3-word block
-// read in one request: registers 93/94 right after it are the upstream/downstream signal strength.
-// Fluid sound speed (m/s) is a REAL4 like flow rate/totalizer.
+// Holding-register map (function code 03), per chapter 7 of the TUF-2000M manual in docs/. These
+// are Modbus protocol ADDRESSES = the manual's register number MINUS ONE (the manual's own example
+// reads REG0001 with start address 0x0000; confirmed at bench bring-up). Every 32-bit value arrives
+// low word first - see domain::decodeFloatLowWordFirst().
+//  - flow rate: manual regs 1-2, REAL4 m3/h.
+//  - sound speed: manual regs 7-8, REAL4 m/s.
+//  - totalizer: manual regs 115-116, REAL4, always m3 whatever the meter's M32 unit/M33 multiplier
+//    menus say (the manual's integer + fraction regs 9-12 need those two scaled in by hand; the
+//    two agreed exactly at bench, so only this one is read).
+//  - signal block: manual regs 92-94 (3 words): quality (high byte autogain step, low byte 0-99
+//    quality), then upstream and downstream signal strength (0-4095, M90 shows it as 0-99.9).
 // Correction factor for this particular meter's known-bad calibration (cannot be fixed on the
 // meter itself). Applied once, in Tuf2000mFlowMeter, to flow rate and totalizer - so every consumer
 // (/flow, /flow_totals, per-run volume, cmd/meter) sees the corrected values, and nothing downstream
 // may multiply again. Not applied to sound speed or signal values.
 static constexpr float METER_CALIBRATION_MULTIPLIER = 1.4f;
-static constexpr uint16_t FLOW_METER_REG_FLOW_RATE = 1;
-static constexpr uint16_t FLOW_METER_REG_SOUND_SPEED = 7;
-static constexpr uint16_t FLOW_METER_REG_TOTALIZER = 9;
-static constexpr uint16_t FLOW_METER_REG_SIGNAL_QUALITY = 92;
-// Ceiling for one whole poll cycle (3 sequential register reads - see the driver): eModbus's own
-// per-request timeout is 2000ms, so this covers all three timing out in a row plus margin. If
+// Largest forward move of the (already calibrated) totalizer accepted between two polls. At a poll
+// every few seconds no real irrigation line moves anywhere near this much water, so a bigger jump is
+// garbage that would otherwise be credited to a zone's lifetime total. See
+// domain::TotalizerJumpGuard for what a rejection does and how it recovers.
+static constexpr float FLOW_METER_MAX_TOTALIZER_JUMP_M3 = 10.0f;
+static constexpr uint16_t FLOW_METER_REG_FLOW_RATE = 0;
+static constexpr uint16_t FLOW_METER_REG_SOUND_SPEED = 6;
+static constexpr uint16_t FLOW_METER_REG_TOTALIZER = 114;
+static constexpr uint16_t FLOW_METER_REG_SIGNAL_QUALITY = 91;
+// Ceiling for one whole poll cycle (4 sequential register reads - see the driver): eModbus's own
+// per-request timeout is 2000ms, so this covers all four timing out in a row plus margin. If
 // Tuf2000mFlowMeter::readAsync() finds a poll still in flight past this, it force-clears and lets
 // the next throttle window retry rather than wedging every future poll on a stuck transceiver/bug.
-static constexpr uint32_t FLOW_METER_STUCK_REQUEST_TIMEOUT_MS = 8000;
+static constexpr uint32_t FLOW_METER_STUCK_REQUEST_TIMEOUT_MS = 10000;
 
 static constexpr uint8_t MANUAL_DURATION_MIN_MINUTES = 1;
 static constexpr uint8_t MANUAL_DURATION_MAX_MINUTES = 120;

@@ -4,13 +4,54 @@
 
 namespace irrigator::domain {
 
-float decodeSwappedFloat(uint16_t reg0, uint16_t reg1) {
-    // Same word-swap github.com/tczerwonka/tuf2000-modbus-reader uses: put the SECOND register
-    // first in memory, then reinterpret the 4 bytes as an IEEE-754 float.
-    uint16_t swapped[2] = {reg1, reg0};
+bool isFiniteFloat(float value) {
+    uint32_t bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    return (bits & 0x7F800000u) != 0x7F800000u;
+}
+
+bool decodeFloatLowWordFirst(uint16_t reg0, uint16_t reg1, float& out) {
+    const uint32_t bits = (static_cast<uint32_t>(reg1) << 16) | reg0;
     float value = 0.0f;
-    memcpy(&value, swapped, sizeof(value));
-    return value;
+    memcpy(&value, &bits, sizeof(value));
+    if (!isFiniteFloat(value)) {
+        return false;
+    }
+    out = value;
+    return true;
+}
+
+const char* tuf2000mFailureText(Tuf2000mFailure failure) {
+    switch (failure) {
+        case Tuf2000mFailure::kNone:
+            return "none";
+        case Tuf2000mFailure::kModbusError:
+            return "modbus_error_or_timeout";
+        case Tuf2000mFailure::kBadReplyLength:
+            return "bad_reply_length";
+        case Tuf2000mFailure::kNonFiniteValue:
+            return "non_finite_value";
+        case Tuf2000mFailure::kTotalizerJump:
+            return "totalizer_jump_too_large";
+    }
+    return "unknown";
+}
+
+bool replyLengthMatches(size_t messageSize, uint8_t byteCount, uint16_t wordsRequested) {
+    const size_t dataBytes = static_cast<size_t>(wordsRequested) * 2;
+    return byteCount == dataBytes && messageSize == 3 + dataBytes;
+}
+
+bool TotalizerJumpGuard::accept(float totalizerM3) {
+    if (totalizerM3 < 0.0f) {
+        return false;
+    }
+    if (haveBaseline_ && totalizerM3 - lastAcceptedM3_ > maxJumpM3_) {
+        return false;
+    }
+    lastAcceptedM3_ = totalizerM3;
+    haveBaseline_ = true;
+    return true;
 }
 
 uint32_t Tuf2000mPollTracker::beginPoll(uint32_t nowMs) {

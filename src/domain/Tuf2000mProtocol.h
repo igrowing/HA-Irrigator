@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace irrigator::domain {
@@ -9,11 +10,55 @@ namespace irrigator::domain {
 // Modbus/serial hardware or mocking - the driver itself is just a thin eModbus-facing wrapper
 // around this.
 
-// Swaps the two 16-bit register words and reinterprets the 4 bytes as an IEEE-754 float - exactly
-// how github.com/tczerwonka/tuf2000-modbus-reader decodes this meter's REAL4 registers (confirmed
-// against its source; the byte order only works out on a little-endian host, true of both its
-// ESP8266 target and this project's ESP32).
-float decodeSwappedFloat(uint16_t reg0, uint16_t reg1);
+// The meter sends every 32-bit value low word first: reg0 (the lower-numbered register) is the low
+// 16 bits, reg1 the high 16 bits - the manual's "lower byte first" note, confirmed at bench bring-up
+// (a high-word-first decode turned the fluid sound speed into an exact integer, its low mantissa
+// word replaced by the next register's zero).
+// True unless value is NaN or +/-infinity. Checked on the IEEE-754 bit pattern (all-ones exponent)
+// rather than via std::isfinite, so it stays correct even under -ffast-math.
+bool isFiniteFloat(float value);
+
+// REAL4: reinterprets the assembled 32 bits as an IEEE-754 float. Returns false - leaving out
+// untouched - when the result is NaN or infinity, which no real flow/totalizer/sound-speed reading
+// can be: a garbage frame or a wrong word order would otherwise flow into every total and every
+// published payload as if it were data.
+bool decodeFloatLowWordFirst(uint16_t reg0, uint16_t reg1, float& out);
+
+// Why a poll was rejected (Reading::valid == false). kModbusError covers a wire-level error, a
+// timeout and a failed enqueue; the others are replies that arrived but cannot be trusted.
+enum class Tuf2000mFailure : uint8_t {
+    kNone = 0,
+    kModbusError,
+    kBadReplyLength,
+    kNonFiniteValue,
+    kTotalizerJump
+};
+// Static, never-null text for logs, the cmd/meter reply and the /alert reason.
+const char* tuf2000mFailureText(Tuf2000mFailure failure);
+
+// A function-3 reply is [0]=server ID, [1]=function code, [2]=byte count, then the register data
+// (the CRC is already stripped by eModbus). True only if the byte count is exactly two per word
+// requested AND the message really is that long - a truncated reply otherwise reads back as zeros.
+bool replyLengthMatches(size_t messageSize, uint8_t byteCount, uint16_t wordsRequested);
+
+// Rejects a totalizer reading that cannot be real, judged against the last one it accepted: a
+// positive accumulator is never negative, and no real poll interval moves it forward by more than
+// maxJumpM3 (a garbage-but-finite value would otherwise be credited to a zone's lifetime total). A
+// decrease is accepted - a totalizer reset on the meter is legitimate - and consumers already only
+// count positive deltas. The very first reading has nothing to compare against and is accepted.
+// A rejected reading does not move the baseline, so a later plausible one is judged against the
+// last good value; consequently a genuine jump above maxJumpM3 (e.g. more than that flowed while the
+// bus was down) keeps being rejected until the firmware restarts and re-baselines.
+class TotalizerJumpGuard {
+public:
+    explicit TotalizerJumpGuard(float maxJumpM3) : maxJumpM3_(maxJumpM3) {}
+    bool accept(float totalizerM3);
+
+private:
+    float maxJumpM3_;
+    float lastAcceptedM3_ = 0.0f;
+    bool haveBaseline_ = false;
+};
 
 // The signal-quality register packs two numbers: the low byte is the actual 0-100 quality, the high
 // byte is the autogain step (see board_config.h's FLOW_METER_REG_SIGNAL_QUALITY comment).
@@ -29,21 +74,29 @@ inline uint8_t signalAutogainStep(uint16_t reg) { return static_cast<uint8_t>(re
 class Tuf2000mPollTracker {
 public:
     // kSignalQuality covers the whole signal block (quality + upstream/downstream strength words).
-    // The token's field slot is 2 bits wide (kFieldMask), so 4 fields is the hard ceiling - a fifth
-    // one needs a wider mask and shifts pollSeq accordingly.
+    // The token's field slot is kFieldBits wide, so 4 fields is the hard ceiling - a fifth one needs
+    // a wider slot (bump kFieldBits), which shifts pollSeq accordingly.
     enum Field : uint32_t { kFlowRate = 0, kTotalizer = 1, kSignalQuality = 2, kSoundSpeed = 3 };
     static constexpr uint8_t kFieldCount = 4;
-    static constexpr uint32_t kFieldMask = 0x3;
+    static constexpr uint32_t kFieldBits = 2;
+    static constexpr uint32_t kFieldMask = (1u << kFieldBits) - 1u;
+
+    // How many 16-bit registers each field's request asks for - the single source for both the
+    // request the driver sends and the reply-length check on what comes back. Every REAL4 is 2
+    // words; the signal block is quality + upstream strength + downstream strength.
+    static constexpr uint16_t wordCountOf(Field field) {
+        return field == kSignalQuality ? 3 : 2;
+    }
 
     // Starts a new poll: bumps the poll sequence number and resets pending/failed state. Returns
     // the sequence number the caller should pass to makeToken() for each of this poll's requests.
     uint32_t beginPoll(uint32_t nowMs);
 
     static uint32_t makeToken(uint32_t pollSeq, Field field) {
-        return (pollSeq << 2) | static_cast<uint32_t>(field);
+        return (pollSeq << kFieldBits) | static_cast<uint32_t>(field);
     }
     static Field fieldOf(uint32_t token) { return static_cast<Field>(token & kFieldMask); }
-    static uint32_t pollSeqOf(uint32_t token) { return token >> 2; }
+    static uint32_t pollSeqOf(uint32_t token) { return token >> kFieldBits; }
 
     // True if token was issued under the currently active poll - false for a stale reply from a
     // poll already abandoned by forceClear() (or superseded by a later beginPoll()).

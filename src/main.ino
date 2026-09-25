@@ -2756,6 +2756,9 @@ void publishMeterDiagnostics(uint32_t nowMs) {
     }
     doc["last_modbus_error"] = flowMeter.lastErrorCode();
     doc["last_modbus_error_text"] = flowMeter.lastErrorText();
+    // Sticky like the Modbus error above, but also covers the rejections that are not Modbus
+    // errors at all (bad reply length, NaN/infinity, implausible totalizer jump).
+    doc["last_failure"] = irrigator::domain::tuf2000mFailureText(flowMeter.lastFailure());
 
     String payload;
     serializeJson(doc, payload);
@@ -2775,7 +2778,8 @@ void updateFlowSampling(uint32_t nowMs) {
         return;
     }
     if (!reading.valid) {
-        irrigator::drivers::Log.warn("Flow meter poll failed (Modbus error/timeout)");
+        const char* failureText = irrigator::domain::tuf2000mFailureText(reading.failure);
+        irrigator::drivers::Log.printf("[WARN] Flow meter poll rejected: %s\n", failureText);
         // Same once-a-day-per-fault idiom as the current-sensor faults (consumeDailyAlertGate) -
         // a wedged transceiver or a disconnected RS-485 cable would otherwise either go completely
         // unreported over MQTT, or spam /alert on every poll for as long as it stays down. Uses
@@ -2793,7 +2797,10 @@ void updateFlowSampling(uint32_t nowMs) {
                     timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
             if (consumeDailyAlertGate(
                     lastFlowMeterFailureAlertDate, sizeof(lastFlowMeterFailureAlertDate), today)) {
-                mqtt.publishAlert(R"({"flow_meter":"failed","reason":"modbus_error_or_timeout"})");
+                char alertPayload[96];
+                snprintf(alertPayload, sizeof(alertPayload),
+                         R"({"flow_meter":"failed","reason":"%s"})", failureText);
+                mqtt.publishAlert(alertPayload);
             }
         }
         return;
@@ -2866,10 +2873,10 @@ void setup() {
         flowMeterConfig.baudRate = irrigator::board::FLOW_METER_BAUD_RATE;
         flowMeterConfig.slaveId = irrigator::board::FLOW_METER_MODBUS_SLAVE_ID;
         flowMeterConfig.flowRateRegister = irrigator::board::FLOW_METER_REG_FLOW_RATE;
-        flowMeterConfig.totalizerRegister = irrigator::board::FLOW_METER_REG_TOTALIZER;
-        flowMeterConfig.signalQualityRegister = irrigator::board::FLOW_METER_REG_SIGNAL_QUALITY;
+        flowMeterConfig.totalizerRegister = irrigator::board::FLOW_METER_REG_TOTALIZER;        flowMeterConfig.signalQualityRegister = irrigator::board::FLOW_METER_REG_SIGNAL_QUALITY;
         flowMeterConfig.soundSpeedRegister = irrigator::board::FLOW_METER_REG_SOUND_SPEED;
         flowMeterConfig.calibrationMultiplier = irrigator::board::METER_CALIBRATION_MULTIPLIER;
+        flowMeterConfig.maxTotalizerJumpM3 = irrigator::board::FLOW_METER_MAX_TOTALIZER_JUMP_M3;
         flowMeterConfig.pollIntervalMs = irrigator::board::FLOW_METER_POLL_INTERVAL_MS;
         // No Wi-Fi/captive-portal dependency, so - like the current sensors above - this begins
         // unconditionally rather than waiting for enterOperationalMode().

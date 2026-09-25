@@ -22,7 +22,7 @@ namespace irrigator::drivers {
 // talks to, and board_config.h's FLOW_METER_* constants for the register map itself.
 //
 // This is a thin eModbus-facing wrapper: the actual poll-sequencing/staleness state machine and
-// the register decode live in irrigator::domain::Tuf2000mPollTracker/decodeSwappedFloat
+// the register decode live in irrigator::domain::Tuf2000mPollTracker/decodeFloatLowWordFirst
 // (src/domain/Tuf2000mProtocol.*) - pulled out specifically so that logic is unit-testable under
 // `pio test -e native` without any Modbus/serial hardware or mocking. This class's own job is just
 // gluing that pure logic to eModbus's actual request/callback API.
@@ -48,9 +48,9 @@ public:
         uint8_t txPin = 0;
         uint32_t baudRate = 9600;
         uint8_t slaveId = 1;
-        // Register map (function code 03) - see board_config.h's FLOW_METER_REG_* constants.
-        // flowRateRegister/totalizerRegister each span 2 words (REAL4/IEEE-754 float,
-        // word-swapped - see domain::decodeSwappedFloat()), as does soundSpeedRegister.
+        // Register map (function code 03, protocol addresses) - see board_config.h's
+        // FLOW_METER_REG_* constants. flowRateRegister/totalizerRegister/soundSpeedRegister each
+        // span 2 words (REAL4, low word first - see domain::decodeFloatLowWordFirst()).
         // signalQualityRegister starts a 3-word block: quality, then upstream and downstream signal
         // strength in the two registers right after it.
         uint16_t flowRateRegister = 0;
@@ -61,6 +61,9 @@ public:
         // Multiplied into flowRateM3h and totalizerM3 as they are decoded (1.0 = meter's own
         // values); corrects a meter whose calibration is off.
         float calibrationMultiplier = 1.0f;
+        // Largest forward move of totalizerM3 (calibrated) accepted between two polls - see
+        // domain::TotalizerJumpGuard. A poll exceeding it is rejected like a Modbus failure.
+        float maxTotalizerJumpM3 = 10.0f;
     };
 
     struct Reading {
@@ -72,11 +75,13 @@ public:
         uint16_t signalStrengthDown = 0;
         float soundSpeedMs = 0.0f;
         uint32_t timestampMs = 0;
-        // false on a Modbus error/timeout on any of the four requests polled this cycle - pushed
-        // through the same responseReady()/takeReading() path as a real reading, so callers can
-        // tell "polled and it failed" apart from "nothing new yet" rather than errors just
-        // vanishing.
+        // false when any of the four requests polled this cycle failed or returned something that
+        // cannot be trusted (Modbus error/timeout, wrong reply length, NaN/infinity, an implausible
+        // totalizer jump) - pushed through the same responseReady()/takeReading() path as a real
+        // reading, so callers can tell "polled and it failed" apart from "nothing new yet" rather
+        // than errors just vanishing. `failure` says which, and is kNone exactly when valid.
         bool valid = false;
+        irrigator::domain::Tuf2000mFailure failure = irrigator::domain::Tuf2000mFailure::kNone;
     };
 
     // Configures the UART on cfg's RX/TX pins at cfg.baudRate and constructs the ModbusClientRTU
@@ -108,18 +113,34 @@ public:
     // Human-readable text for lastErrorCode() (a static string, never null).
     const char* lastErrorText() const;
 
+    // Why the most recent failed poll was rejected, sticky like lastErrorCode(): it also covers the
+    // failures that are not Modbus errors at all (kNone = no failed poll since boot).
+    irrigator::domain::Tuf2000mFailure lastFailure() const {
+        return static_cast<irrigator::domain::Tuf2000mFailure>(lastFailure_);
+    }
+
 private:
     void recordError(Modbus::Error error);
     void issueRequest(uint32_t pollSeq,
                        irrigator::domain::Tuf2000mPollTracker::Field field,
-                       uint16_t startRegister,
-                       uint16_t wordCount);
+                       uint16_t startRegister);
     void handleData(ModbusMessage msg, uint32_t token);
     void handleError(Modbus::Error error, uint32_t token);
     // Common "one field of the current poll is done" bookkeeping shared by handleData()/
     // handleError(): delegates to pollTracker_ and, once every field has reported in, publishes
     // scratch_ to resultQueue_. Runs on eModbus's worker task.
     void finishField(uint32_t token, bool ok);
+    // Reports one field of the current poll as failed for `failure` (a stale token's failure
+    // belongs to no current poll and is not remembered), then completes that field via finishField().
+    void failField(uint32_t token, irrigator::domain::Tuf2000mFailure failure);
+    // Keeps only the FIRST failure reason of the poll being built (and mirrors it into the sticky
+    // lastFailure_): later ones are usually knock-on effects of the first.
+    void noteFailure(irrigator::domain::Tuf2000mFailure failure);
+    // Decodes one reply's register data into scratch_. False if any value in it is NaN/infinity.
+    bool parseField(irrigator::domain::Tuf2000mPollTracker::Field field, const ModbusMessage& msg);
+    // Reads the next two registers of msg at idx as a low-word-first REAL4, advancing idx. False -
+    // and out untouched - if it decodes to NaN/infinity.
+    static bool takeFloat(const ModbusMessage& msg, uint16_t& idx, float& out);
 
     std::unique_ptr<ModbusClientRTU> client_;
     Config config_;
@@ -132,8 +153,14 @@ private:
     // own volatile comment).
     irrigator::domain::Tuf2000mPollTracker pollTracker_;
     Reading scratch_;
+    // First failure reason seen in the poll being built; reset by readAsync() at the same handoff
+    // point as scratch_, and only touched by the worker task's callbacks after that.
+    irrigator::domain::Tuf2000mFailure pollFailure_ = irrigator::domain::Tuf2000mFailure::kNone;
+    // Judged once per completed poll, on the worker task only. Real limit comes from begin().
+    irrigator::domain::TotalizerJumpGuard jumpGuard_{0.0f};
 
     volatile uint8_t lastErrorCode_ = 0;
+    volatile uint8_t lastFailure_ = 0;
 
     uint32_t lastPollMs_ = 0;
     bool everPolled_ = false;

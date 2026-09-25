@@ -3280,25 +3280,118 @@ void test_wifi_quality_thresholds_and_bar_count() {
     TEST_ASSERT_EQUAL_UINT8(0, wifiQualityBarCount(WifiQuality::Miserable));
 }
 
-// --- Tuf2000mProtocol: decodeSwappedFloat ------------------------------------------------------
+// --- Tuf2000mProtocol: low-word-first REAL4 decoding -------------------------------------------
 
-void test_decode_swapped_float_matches_reference_project_byte_order() {
-    using irrigator::domain::decodeSwappedFloat;
+static float decodeOrFail(uint16_t reg0, uint16_t reg1) {
+    float out = -999.0f;
+    TEST_ASSERT_TRUE(irrigator::domain::decodeFloatLowWordFirst(reg0, reg1, out));
+    return out;
+}
 
-    // 12.5f as IEEE-754 is 0x41480000. github.com/tczerwonka/tuf2000-modbus-reader's decode reads
-    // the two registers in wire order into buf[0]/buf[1], swaps them (buf[0]<->buf[1]), then
-    // memcpy's the pair into a float on a little-endian host - i.e. the float's low 16 bits come
-    // from the SECOND register (reg1) and its high 16 bits from the FIRST (reg0). So reg0 carries
-    // the high word (0x4148), reg1 the low word (0x0000).
-    TEST_ASSERT_EQUAL_FLOAT(12.5f, decodeSwappedFloat(0x4148, 0x0000));
+void test_decode_float_low_word_first_takes_first_register_as_low_word() {
+    // 12.5f is 0x41480000: the first register carries the low word (0x0000), the second the high.
+    TEST_ASSERT_EQUAL_FLOAT(12.5f, decodeOrFail(0x0000, 0x4148));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, decodeOrFail(0x0000, 0x0000));
+    TEST_ASSERT_EQUAL_FLOAT(-1.0f, decodeOrFail(0x0000, 0xBF80));
+    // 3.14159274f is 0x40490FDB - a non-zero low word exercises both halves.
+    TEST_ASSERT_FLOAT_WITHIN(0.0001f, 3.14159274f, decodeOrFail(0x0FDB, 0x4049));
+}
 
-    // 0.0f both ways, and a value whose low word is non-zero (reg1 != 0) to exercise both halves:
-    // -1.0f is 0xBF800000 (high word 0xBF80, low word 0x0000); 1.0f is 0x3F800000. Pick a value
-    // with a non-zero low word: 1.5f is 0x3FC00000 - still a zero low word. Use 3.14159274f
-    // (0x40490FDB): high word 0x4049, low word 0x0FDB.
-    TEST_ASSERT_EQUAL_FLOAT(0.0f, decodeSwappedFloat(0x0000, 0x0000));
-    TEST_ASSERT_EQUAL_FLOAT(-1.0f, decodeSwappedFloat(0xBF80, 0x0000));
-    TEST_ASSERT_FLOAT_WITHIN(0.0001f, 3.14159274f, decodeSwappedFloat(0x4049, 0x0FDB));
+void test_decode_float_rejects_nan_and_infinity_and_leaves_out_untouched() {
+    using irrigator::domain::decodeFloatLowWordFirst;
+    float out = 123.0f;
+
+    TEST_ASSERT_FALSE(decodeFloatLowWordFirst(0x0000, 0x7F80, out));  // +infinity
+    TEST_ASSERT_FALSE(decodeFloatLowWordFirst(0x0000, 0xFF80, out));  // -infinity
+    TEST_ASSERT_FALSE(decodeFloatLowWordFirst(0x0000, 0x7FC0, out));  // quiet NaN
+    TEST_ASSERT_FALSE(decodeFloatLowWordFirst(0x0001, 0x7F80, out));  // signalling NaN
+    TEST_ASSERT_FALSE(decodeFloatLowWordFirst(0xFFFF, 0xFFFF, out));  // all ones, e.g. a garbage frame
+    TEST_ASSERT_EQUAL_FLOAT(123.0f, out);
+
+    // Neighbours that ARE real numbers: the largest finite float and a subnormal.
+    TEST_ASSERT_TRUE(decodeFloatLowWordFirst(0xFFFF, 0x7F7F, out));
+    TEST_ASSERT_TRUE(decodeFloatLowWordFirst(0x0001, 0x0000, out));
+}
+
+void test_is_finite_float_matches_the_ieee_754_classes() {
+    using irrigator::domain::isFiniteFloat;
+    TEST_ASSERT_TRUE(isFiniteFloat(0.0f));
+    TEST_ASSERT_TRUE(isFiniteFloat(-2.5f));
+    TEST_ASSERT_TRUE(isFiniteFloat(3.0e38f));
+    TEST_ASSERT_FALSE(isFiniteFloat(3.0e38f * 10.0f));   // Overflows to +infinity.
+    TEST_ASSERT_FALSE(isFiniteFloat(-3.0e38f * 10.0f));  // -infinity.
+    TEST_ASSERT_FALSE(isFiniteFloat(0.0f / 0.0f));       // NaN.
+}
+
+void test_word_count_of_matches_each_fields_request() {
+    using irrigator::domain::Tuf2000mPollTracker;
+    TEST_ASSERT_EQUAL_UINT16(2, Tuf2000mPollTracker::wordCountOf(Tuf2000mPollTracker::kFlowRate));
+    TEST_ASSERT_EQUAL_UINT16(2, Tuf2000mPollTracker::wordCountOf(Tuf2000mPollTracker::kTotalizer));
+    TEST_ASSERT_EQUAL_UINT16(3, Tuf2000mPollTracker::wordCountOf(Tuf2000mPollTracker::kSignalQuality));
+    TEST_ASSERT_EQUAL_UINT16(2, Tuf2000mPollTracker::wordCountOf(Tuf2000mPollTracker::kSoundSpeed));
+}
+
+void test_reply_length_matches_only_an_exact_well_formed_reply() {
+    using irrigator::domain::replyLengthMatches;
+
+    // 2 words: 3 header bytes + 4 data bytes, byte count 4.
+    TEST_ASSERT_TRUE(replyLengthMatches(7, 4, 2));
+    TEST_ASSERT_TRUE(replyLengthMatches(9, 6, 3));
+
+    TEST_ASSERT_FALSE(replyLengthMatches(7, 2, 2));   // Byte count says fewer words than asked.
+    TEST_ASSERT_FALSE(replyLengthMatches(7, 6, 2));   // ... or more.
+    TEST_ASSERT_FALSE(replyLengthMatches(5, 4, 2));   // Truncated: header claims 4 but only 2 arrived.
+    TEST_ASSERT_FALSE(replyLengthMatches(9, 4, 2));   // Trailing bytes beyond the claimed data.
+    TEST_ASSERT_FALSE(replyLengthMatches(3, 0, 2));   // Header only.
+    TEST_ASSERT_FALSE(replyLengthMatches(0, 0, 2));   // Empty message.
+    TEST_ASSERT_FALSE(replyLengthMatches(7, 4, 3));   // Right reply, but for a different request.
+}
+
+void test_failure_text_is_distinct_and_keeps_the_original_modbus_reason() {
+    using irrigator::domain::Tuf2000mFailure;
+    using irrigator::domain::tuf2000mFailureText;
+
+    // The alert automation keys on this exact pre-existing string.
+    TEST_ASSERT_EQUAL_STRING("modbus_error_or_timeout", tuf2000mFailureText(Tuf2000mFailure::kModbusError));
+    TEST_ASSERT_EQUAL_STRING("none", tuf2000mFailureText(Tuf2000mFailure::kNone));
+    TEST_ASSERT_EQUAL_STRING("bad_reply_length", tuf2000mFailureText(Tuf2000mFailure::kBadReplyLength));
+    TEST_ASSERT_EQUAL_STRING("non_finite_value", tuf2000mFailureText(Tuf2000mFailure::kNonFiniteValue));
+    TEST_ASSERT_EQUAL_STRING("totalizer_jump_too_large", tuf2000mFailureText(Tuf2000mFailure::kTotalizerJump));
+}
+
+void test_totalizer_jump_guard_accepts_the_first_reading_and_normal_growth() {
+    irrigator::domain::TotalizerJumpGuard guard(10.0f);
+
+    TEST_ASSERT_TRUE(guard.accept(2.68f));  // Nothing to compare against yet.
+    TEST_ASSERT_TRUE(guard.accept(2.69f));
+    TEST_ASSERT_TRUE(guard.accept(2.69f));  // No flow: unchanged.
+    TEST_ASSERT_TRUE(guard.accept(12.69f)); // Exactly the limit is still plausible.
+}
+
+void test_totalizer_jump_guard_rejects_a_jump_above_the_limit_without_moving_the_baseline() {
+    irrigator::domain::TotalizerJumpGuard guard(10.0f);
+    TEST_ASSERT_TRUE(guard.accept(2.68f));
+
+    TEST_ASSERT_FALSE(guard.accept(12.69f));   // 10.01 m3 forward.
+    TEST_ASSERT_FALSE(guard.accept(1.0e30f));  // Garbage but finite.
+    // Baseline is still 2.68, so a plausible reading right after is judged against that.
+    TEST_ASSERT_TRUE(guard.accept(2.70f));
+}
+
+void test_totalizer_jump_guard_rejects_a_negative_total_but_accepts_a_reset_to_zero() {
+    irrigator::domain::TotalizerJumpGuard guard(10.0f);
+    TEST_ASSERT_TRUE(guard.accept(50.0f));
+
+    TEST_ASSERT_FALSE(guard.accept(-0.5f));    // A positive accumulator is never negative.
+    TEST_ASSERT_FALSE(guard.accept(-1.0e30f)); // Would otherwise poison the baseline downwards.
+    TEST_ASSERT_TRUE(guard.accept(0.0f));      // Totalizer reset on the meter: legitimate decrease.
+    TEST_ASSERT_TRUE(guard.accept(0.4f));      // ... and counting resumes from the new baseline.
+}
+
+void test_totalizer_jump_guard_rejects_a_negative_very_first_reading() {
+    irrigator::domain::TotalizerJumpGuard guard(10.0f);
+    TEST_ASSERT_FALSE(guard.accept(-3.0f));
+    TEST_ASSERT_TRUE(guard.accept(3.0f));  // Still no baseline: the first sane one is adopted.
 }
 
 // --- Tuf2000mProtocol: Tuf2000mPollTracker -----------------------------------------------------
@@ -3310,18 +3403,29 @@ void test_poll_tracker_token_round_trips_field_and_sequence() {
     TEST_ASSERT_EQUAL_UINT32(7, Tuf2000mPollTracker::pollSeqOf(token));
     TEST_ASSERT_TRUE(Tuf2000mPollTracker::kTotalizer == Tuf2000mPollTracker::fieldOf(token));
 
-    // All three fields, at a poll sequence large enough to matter (not just 0/1).
+    // Every field, at a poll sequence large enough to matter (not just 0/1).
     const uint32_t seq = 12345;
-    TEST_ASSERT_TRUE(Tuf2000mPollTracker::kFlowRate ==
-                     Tuf2000mPollTracker::fieldOf(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kFlowRate)));
-    TEST_ASSERT_TRUE(Tuf2000mPollTracker::kTotalizer ==
-                     Tuf2000mPollTracker::fieldOf(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kTotalizer)));
-    TEST_ASSERT_TRUE(Tuf2000mPollTracker::kSignalQuality ==
-                     Tuf2000mPollTracker::fieldOf(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality)));
-    TEST_ASSERT_TRUE(Tuf2000mPollTracker::kSoundSpeed ==
-                     Tuf2000mPollTracker::fieldOf(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSoundSpeed)));
-    TEST_ASSERT_EQUAL_UINT32(seq, Tuf2000mPollTracker::pollSeqOf(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality)));
-    TEST_ASSERT_EQUAL_UINT32(seq, Tuf2000mPollTracker::pollSeqOf(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSoundSpeed)));
+    for (uint32_t f = 0; f < Tuf2000mPollTracker::kFieldCount; ++f) {
+        const auto field = static_cast<Tuf2000mPollTracker::Field>(f);
+        const uint32_t t = Tuf2000mPollTracker::makeToken(seq, field);
+        TEST_ASSERT_TRUE(field == Tuf2000mPollTracker::fieldOf(t));
+        TEST_ASSERT_EQUAL_UINT32(seq, Tuf2000mPollTracker::pollSeqOf(t));
+    }
+}
+
+// Records every field of poll seq except the last one as ok; returns what the last one reported.
+static bool completeTufPollWithLastField(irrigator::domain::Tuf2000mPollTracker& tracker,
+                                         uint32_t seq, bool lastOk) {
+    using irrigator::domain::Tuf2000mPollTracker;
+    for (uint32_t f = 0; f + 1 < Tuf2000mPollTracker::kFieldCount; ++f) {
+        TEST_ASSERT_FALSE(tracker.recordField(
+            Tuf2000mPollTracker::makeToken(seq, static_cast<Tuf2000mPollTracker::Field>(f)), true));
+        TEST_ASSERT_TRUE(tracker.inFlight());  // Still waiting on the remaining fields.
+    }
+    return tracker.recordField(
+        Tuf2000mPollTracker::makeToken(
+            seq, static_cast<Tuf2000mPollTracker::Field>(Tuf2000mPollTracker::kFieldCount - 1)),
+        lastOk);
 }
 
 void test_poll_tracker_begin_poll_increments_sequence_and_starts_in_flight() {
@@ -3343,18 +3447,8 @@ void test_poll_tracker_completes_only_after_every_field_reports() {
     Tuf2000mPollTracker tracker;
 
     const uint32_t seq = tracker.beginPoll(0);
-    const uint32_t flowToken = Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kFlowRate);
-    const uint32_t totalToken = Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kTotalizer);
-    const uint32_t sigToken = Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality);
-    const uint32_t soundToken = Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSoundSpeed);
-
-    TEST_ASSERT_FALSE(tracker.recordField(flowToken, true));
-    TEST_ASSERT_TRUE(tracker.inFlight());  // Still waiting on 3 more fields.
-    TEST_ASSERT_FALSE(tracker.recordField(totalToken, true));
-    TEST_ASSERT_TRUE(tracker.inFlight());
-    TEST_ASSERT_FALSE(tracker.recordField(sigToken, true));
-    TEST_ASSERT_TRUE(tracker.inFlight());
-    TEST_ASSERT_TRUE(tracker.recordField(soundToken, true));  // The 4th field completes the poll.
+    // The last field completes the poll; every earlier one leaves it in flight.
+    TEST_ASSERT_TRUE(completeTufPollWithLastField(tracker, seq, true));
     TEST_ASSERT_FALSE(tracker.inFlight());
     TEST_ASSERT_FALSE(tracker.failed());
 }
@@ -3364,11 +3458,14 @@ void test_poll_tracker_any_field_error_marks_the_whole_poll_failed() {
     Tuf2000mPollTracker tracker;
 
     const uint32_t seq = tracker.beginPoll(0);
-    tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kFlowRate), true);
     tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kTotalizer), false);
-    tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality), true);
-    const bool complete =
-        tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSoundSpeed), true);
+    bool complete = false;
+    for (uint32_t f = 0; f < Tuf2000mPollTracker::kFieldCount; ++f) {
+        if (f != Tuf2000mPollTracker::kTotalizer) {
+            complete = tracker.recordField(
+                Tuf2000mPollTracker::makeToken(seq, static_cast<Tuf2000mPollTracker::Field>(f)), true);
+        }
+    }
 
     TEST_ASSERT_TRUE(complete);
     TEST_ASSERT_TRUE(tracker.failed());  // One failed field poisons the whole poll's reading.
@@ -3388,14 +3485,11 @@ void test_poll_tracker_stale_reply_from_abandoned_poll_is_ignored() {
     // it, and feeding it to recordField() must neither complete the new poll nor corrupt its state.
     TEST_ASSERT_FALSE(tracker.isCurrent(staleToken));
     TEST_ASSERT_FALSE(tracker.recordField(staleToken, false));
-    TEST_ASSERT_TRUE(tracker.inFlight());   // New poll still waiting on all 4 fields.
+    TEST_ASSERT_TRUE(tracker.inFlight());   // New poll still waiting on all of its fields.
     TEST_ASSERT_FALSE(tracker.failed());    // The stale error must not poison the new poll.
 
-    // The new poll still completes normally on its own 4 fields.
-    tracker.recordField(Tuf2000mPollTracker::makeToken(newSeq, Tuf2000mPollTracker::kFlowRate), true);
-    tracker.recordField(Tuf2000mPollTracker::makeToken(newSeq, Tuf2000mPollTracker::kTotalizer), true);
-    tracker.recordField(Tuf2000mPollTracker::makeToken(newSeq, Tuf2000mPollTracker::kSignalQuality), true);
-    TEST_ASSERT_TRUE(tracker.recordField(Tuf2000mPollTracker::makeToken(newSeq, Tuf2000mPollTracker::kSoundSpeed), true));
+    // The new poll still completes normally on its own fields.
+    TEST_ASSERT_TRUE(completeTufPollWithLastField(tracker, newSeq, true));
     TEST_ASSERT_FALSE(tracker.failed());
 }
 
@@ -3421,15 +3515,12 @@ void test_poll_tracker_force_clear_lets_a_new_poll_start_without_finishing_the_o
     tracker.forceClear();
     TEST_ASSERT_FALSE(tracker.inFlight());
 
-    // A fresh poll behaves normally afterwards - forceClear() doesn't wedge the tracker: the first
-    // three fields don't complete it, the fourth does.
+    // A fresh poll behaves normally afterwards - forceClear() doesn't wedge the tracker: only its
+    // last field completes it.
     const uint32_t seq = tracker.beginPoll(100);
     TEST_ASSERT_TRUE(tracker.inFlight());
     TEST_ASSERT_FALSE(tracker.failed());
-    TEST_ASSERT_FALSE(tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kFlowRate), true));
-    TEST_ASSERT_FALSE(tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kTotalizer), true));
-    TEST_ASSERT_FALSE(tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSignalQuality), true));
-    TEST_ASSERT_TRUE(tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kSoundSpeed), true));
+    TEST_ASSERT_TRUE(completeTufPollWithLastField(tracker, seq, true));
     TEST_ASSERT_FALSE(tracker.inFlight());
 }
 
@@ -3798,7 +3889,16 @@ int main(int argc, char** argv) {
     RUN_TEST(test_dst_rules_matches_known_2024_eu_transitions);
     RUN_TEST(test_standard_offset_from_geolocation_is_season_independent);
     RUN_TEST(test_standard_offset_from_geolocation_truncates_and_clamps);
-    RUN_TEST(test_decode_swapped_float_matches_reference_project_byte_order);
+    RUN_TEST(test_decode_float_low_word_first_takes_first_register_as_low_word);
+    RUN_TEST(test_decode_float_rejects_nan_and_infinity_and_leaves_out_untouched);
+    RUN_TEST(test_is_finite_float_matches_the_ieee_754_classes);
+    RUN_TEST(test_word_count_of_matches_each_fields_request);
+    RUN_TEST(test_reply_length_matches_only_an_exact_well_formed_reply);
+    RUN_TEST(test_failure_text_is_distinct_and_keeps_the_original_modbus_reason);
+    RUN_TEST(test_totalizer_jump_guard_accepts_the_first_reading_and_normal_growth);
+    RUN_TEST(test_totalizer_jump_guard_rejects_a_jump_above_the_limit_without_moving_the_baseline);
+    RUN_TEST(test_totalizer_jump_guard_rejects_a_negative_total_but_accepts_a_reset_to_zero);
+    RUN_TEST(test_totalizer_jump_guard_rejects_a_negative_very_first_reading);
     RUN_TEST(test_poll_tracker_token_round_trips_field_and_sequence);
     RUN_TEST(test_poll_tracker_begin_poll_increments_sequence_and_starts_in_flight);
     RUN_TEST(test_poll_tracker_completes_only_after_every_field_reports);
