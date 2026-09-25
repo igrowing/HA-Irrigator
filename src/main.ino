@@ -285,6 +285,10 @@ bool haveLastKnownTotalizerM3 = false;
 // main-loop-only ownership as the baseline above.
 irrigator::drivers::Tuf2000mFlowMeter::Reading lastValidFlowReading;
 bool haveValidFlowReading = false;
+// Outcome of the most recent poll: false while the meter is disconnected, timing out or being
+// rejected as implausible. The Info menu's Volume row goes "N/A" on it rather than showing the
+// (then stale) lastValidFlowReading.
+bool lastFlowPollOk = false;
 
 // Never-reset-while-running per-zone/"other" lifetime liters counters (see
 // irrigator::domain::FlowLifetimeCounters) and the current run's own volume-so-far (see
@@ -2777,6 +2781,7 @@ void updateFlowSampling(uint32_t nowMs) {
     if (!flowMeter.takeReading(reading)) {
         return;
     }
+    lastFlowPollOk = reading.valid;
     if (!reading.valid) {
         const char* failureText = irrigator::domain::tuf2000mFailureText(reading.failure);
         irrigator::drivers::Log.printf("[WARN] Flow meter poll rejected: %s\n", failureText);
@@ -3013,6 +3018,8 @@ void loop() {
                             lastWeatherUpdateLocalTm.tm_min);
                 }
                 renderData.lastWeatherUpdateDisplay = lastWeatherUpdateBuffer;
+                renderData.flowTotalValid = haveValidFlowReading && lastFlowPollOk;
+                renderData.flowTotalM3 = lastValidFlowReading.totalizerM3;
 
                 struct tm wallTm;
                 renderData.hasWallClock = clockService.now(wallTm);

@@ -445,6 +445,7 @@ INFO
   City: Springfield
   Loc: 42.35,-71.06
   Wtr upd:30-07 06:15
+  Volume: 12.345 m3
   FW: v.1.4.0
   BACK
 ```
@@ -458,6 +459,10 @@ INFO
 - **Wtr upd**: the date/time auto-adjustment last successfully fetched a forecast and applied it.
   Stays blank until the first successful cycle, and resets after every restart (this isn't saved —
   a restart simply re-runs today's cycle rather than remembering it already happened).
+- **Volume**: the flow meter's accumulated total, in cubic meters (`1.000 m3` = 1000 L), with the
+  meter calibration multiplier already applied — the same figure as **Flow Total** in Home Assistant.
+  Shows `N/A` while the meter isn't connected, isn't answering, or its latest reading was rejected
+  as implausible (including for the first seconds after boot, before the first reading arrives).
 - **FW**: the firmware version currently installed.
 
 ## Resetting to factory defaults

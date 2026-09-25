@@ -43,6 +43,11 @@ struct RenderData {
     // main.ino's lastWeatherUpdateDate global (that one stays "YYYY-MM-DD" — it's a day-comparison
     // key for the once-per-day gating logic, not a display value).
     const char* lastWeatherUpdateDisplay = "";
+    // Flow meter's accumulated total in m3, already multiplied by METER_CALIBRATION_MULTIPLIER by
+    // the driver - shown by renderMenuInfo's Volume row. flowTotalValid=false (meter never
+    // answered, or its latest poll failed) renders "N/A" instead.
+    bool flowTotalValid = false;
+    float flowTotalM3 = 0.0f;
     // Sampled at most every 5s by the caller (see main.ino's cachedWifiRssi), not read live —
     // RSSI jitters several dB reading-to-reading, so a live read would just flicker the display.
     int32_t wifiRssi = -127;

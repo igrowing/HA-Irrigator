@@ -744,6 +744,13 @@ void IrrigatorUi::renderMenuInfo(const RenderData& data) {
                                 ? data.lastWeatherUpdateDisplay
                                 : "-");
                     break;
+                case Info::kInfoIndexVolume:
+                    if (data.flowTotalValid) {
+                        snprintf(buffer, size, "Volume: %.3f m3", static_cast<double>(data.flowTotalM3));
+                    } else {
+                        snprintf(buffer, size, "Volume: N/A");
+                    }
+                    break;
                 case Info::kInfoIndexFirmware:
                     snprintf(buffer, size, "FW: v.%s", irrigator::board::FIRMWARE_VERSION);
                     break;

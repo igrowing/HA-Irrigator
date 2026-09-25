@@ -171,10 +171,10 @@ public:
     static constexpr uint8_t kSettingsIndexRestart = 12;
     static constexpr uint8_t kSettingsIndexBack = 13;
 
-    // MenuInfo: 10 rows, the read-only counterparts split out of MenuSettings (WiFi/IP/MQTT/Topic/
-    // City/Coordinates/LastUpdate/FW/Uptime are all display-only, per spec) plus BACK. None of the
-    // display-only rows are clickable — only BACK is.
-    static constexpr uint8_t kInfoItemCount = 10;
+    // MenuInfo: 11 rows, the read-only counterparts split out of MenuSettings (WiFi/IP/MQTT/Topic/
+    // City/Coordinates/LastUpdate/Volume/FW/Uptime are all display-only, per spec) plus BACK. None
+    // of the display-only rows are clickable — only BACK is.
+    static constexpr uint8_t kInfoItemCount = 11;
     static constexpr uint8_t kInfoIndexWifi = 0;
     static constexpr uint8_t kInfoIndexIp = 1;
     static constexpr uint8_t kInfoIndexMqtt = 2;
@@ -182,9 +182,10 @@ public:
     static constexpr uint8_t kInfoIndexCity = 4;
     static constexpr uint8_t kInfoIndexCoordinates = 5;
     static constexpr uint8_t kInfoIndexLastUpdate = 6;
-    static constexpr uint8_t kInfoIndexFirmware = 7;
-    static constexpr uint8_t kInfoIndexUptime = 8;
-    static constexpr uint8_t kInfoIndexBack = 9;
+    static constexpr uint8_t kInfoIndexVolume = 7;
+    static constexpr uint8_t kInfoIndexFirmware = 8;
+    static constexpr uint8_t kInfoIndexUptime = 9;
+    static constexpr uint8_t kInfoIndexBack = 10;
 
     UiIntent handleInput(UiInputEvent event, const Context& ctx, uint32_t nowMs);
 

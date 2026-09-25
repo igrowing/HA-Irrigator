@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.2.4"
+#define APP_VERSION "1.2.5"
 #endif
 
 namespace irrigator::board {
