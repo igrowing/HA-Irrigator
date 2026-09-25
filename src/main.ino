@@ -298,13 +298,6 @@ bool lastFlowPollOk = false;
 irrigator::domain::FlowLifetimeCounters flowLifetimeCounters;
 irrigator::domain::FlowRunVolumeTracker flowRunVolumeTracker;
 
-// /flow_totals publish cadence - simple once-a-minute timer (unlike /flow's threshold+cap gate,
-// there's no urgency case to react to here: this is long-term consumption bookkeeping, not leak
-// detection), so no dedicated domain/ class the way FlowPublishGate needed one.
-uint32_t lastFlowTotalsPublishMs = 0;
-bool flowTotalsPublishedOnce = false;
-constexpr uint32_t kFlowTotalsPublishIntervalMs = 60000;
-
 // Structured outcome of one handleCalibrateCommand() run, for callers that need more than the
 // MQTT side-effects (currently just the Settings-menu "Calibrate CS" flow — see UiIntentType::
 // CalibrateCurrentSensors in handleUiIntent — which mirrors it onto the display via
@@ -1723,6 +1716,12 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
 
     if (commandName == "status") {
         mqtt.publishStatus(buildStatusJson(nowMs));
+        // /flow is otherwise silent while idle (see FlowPublishGate) and not retained, so HA only
+        // learns the meter total after its own restart through this request (HA re-sends
+        // cmd/status on start, on device reconnect and hourly).
+        if (haveValidFlowReading && lastFlowPollOk) {
+            publishFlowTelemetry(nowMs);
+        }
         mqtt.publishWateringPercentage(settings.wateringPercentage);
         return;
     }
@@ -2677,8 +2676,8 @@ void drainCurrentBurstResults() {
 // Stage 4's lifetime-consumption bookkeeping: folds the delta since the last poll's totalizer
 // reading into whichever bucket irrigation.snapshot(nowMs) indicates (see
 // irrigator::domain::FlowLifetimeCounters' class comment for the exact zone/"other"/discarded
-// rule), then publishes all buckets to /flow_totals - throttled to kFlowTotalsPublishIntervalMs,
-// not on every poll.
+// rule). Publishing them is publishFlowTelemetry()'s job, on the same /flow message as the meter's
+// own readings.
 void updateFlowLifetimeTotals(uint32_t nowMs, const irrigator::drivers::Tuf2000mFlowMeter::Reading& reading) {
     if (haveLastKnownTotalizerM3) {
         const float deltaM3 = reading.totalizerM3 - lastKnownTotalizerM3;
@@ -2691,14 +2690,21 @@ void updateFlowLifetimeTotals(uint32_t nowMs, const irrigator::drivers::Tuf2000m
     }
     lastKnownTotalizerM3 = reading.totalizerM3;
     haveLastKnownTotalizerM3 = true;
+}
 
-    if (flowTotalsPublishedOnce && nowMs - lastFlowTotalsPublishMs < kFlowTotalsPublishIntervalMs) {
-        return;
-    }
-    flowTotalsPublishedOnce = true;
-    lastFlowTotalsPublishMs = nowMs;
+// Publishes /flow from the latest valid poll: the meter's own total and the active zone, plus
+// the lifetime liters counters (one `zone_<n>` per ENABLED zone and `other`). Callers must have a
+// valid reading (haveValidFlowReading && lastFlowPollOk). The flow rate is deliberately not
+// published: it stays firmware-side (for the flow anomaly alerting) and in cmd/meter for debugging.
+void publishFlowTelemetry(uint32_t nowMs) {
+    const auto& reading = lastValidFlowReading;
+    const auto snapshot = irrigation.snapshot(nowMs);
+    const uint8_t activeZone =
+        snapshot.state == irrigator::domain::IrrigationState::Watering ? snapshot.activeZone : 0;
 
     JsonDocument doc;
+    doc["total_liters"] = reading.totalizerM3 * 1000.0f;
+    doc["zone"] = activeZone;
     for (uint8_t zone = 1; zone <= irrigator::board::ZONE_COUNT; ++zone) {
         if (!isZoneEnabled(zone)) {
             continue;
@@ -2710,7 +2716,7 @@ void updateFlowLifetimeTotals(uint32_t nowMs, const irrigator::drivers::Tuf2000m
     doc["other"] = flowLifetimeCounters.otherLiters();
     String payload;
     serializeJson(doc, payload);
-    mqtt.publishFlowTotals(payload);
+    mqtt.publishFlow(payload);
 }
 
 // Stage 2 of the flow-meter integration (see docs/technical.md's "Water flow sensing" section):
@@ -2721,22 +2727,10 @@ void updateFlowLifetimeTotals(uint32_t nowMs, const irrigator::drivers::Tuf2000m
 void updateFlowPublishCadence(uint32_t nowMs, const irrigator::drivers::Tuf2000mFlowMeter::Reading& reading) {
     const auto snapshot = irrigation.snapshot(nowMs);
     const bool active = snapshot.state == irrigator::domain::IrrigationState::Watering || snapshot.pumpOn;
-    const uint8_t activeZone =
-        snapshot.state == irrigator::domain::IrrigationState::Watering ? snapshot.activeZone : 0;
-
-    const float totalLiters = reading.totalizerM3 * 1000.0f;
-    if (!flowPublishGate.shouldPublish(nowMs, active, totalLiters)) {
+    if (!flowPublishGate.shouldPublish(nowMs, active, reading.totalizerM3 * 1000.0f)) {
         return;
     }
-
-    char payload[96];
-    snprintf(payload,
-            sizeof(payload),
-            R"({"flow_rate_lpm":%.3f,"total_liters":%.3f,"zone":%u})",
-            static_cast<double>(reading.flowRateM3h * 1000.0f / 60.0f),
-            static_cast<double>(totalLiters),
-            static_cast<unsigned>(activeZone));
-    mqtt.publishFlow(payload);
+    publishFlowTelemetry(nowMs);
 }
 
 // cmd/meter: publishes the flow meter's latest poll plus the driver's sticky last-Modbus-error to

@@ -62,9 +62,9 @@ The schedule-active toggle and watering-percentage number are live MQTT entities
 
 ## Water Flow Sensing
 
-The **Water Flow** card (Garden tab) shows the TUF-2000M flow meter's live rate
-(`sensor.irrigator_flow_rate`, L/min) and its own running total (`sensor.irrigator_flow_total`, L —
-the meter's lifetime totalizer, not a per-zone breakdown). The **Water Consumption** card group
+The **Water Flow** card (Garden tab) shows the TUF-2000M flow meter's own running
+total (`sensor.irrigator_flow_total`, L — the meter's lifetime totalizer, not a per-zone breakdown).
+The live flow rate is deliberately not sent to Home Assistant; publish `cmd/meter` to see it. The **Water Consumption** card group
 right below it splits that same lifetime volume per zone (`sensor.irrigator_zone_N_water_total`,
 disabled zones' cards hidden the same way the Status section hides them) plus **Other**
 (`sensor.irrigator_other_water_total` — flow measured while every valve is closed, e.g. a hose bib
@@ -86,7 +86,7 @@ The **Flow-Meter Anomaly Check** card (next to **Current-Sensor Calibration**) h
   Water Flow / Water Consumption telemetry above, which keeps reporting regardless of this toggle.
 - **Expected Flow Rate** (L/min) — the steady-state rate the anomaly check compares live readings
   against. `0` (the default) means "not configured" — the check doesn't run until you set a real
-  value here, e.g. whatever **Live Flow Rate (for reference)** already reads during a normal run.
+  value here, e.g. the `flow_rate_lpm` that `cmd/meter` reports during a normal run.
 
 Both fields republish the full `settings.json`, same as every other Settings-tab field (see **How
 the download/sync model works** below).
@@ -159,7 +159,7 @@ The garage's Wi-Fi is flaky enough that the device drops off `.../online` often,
 - `input_select.irrigator_schedule_sort_by` - display-only sort order for the "Device Schedule" table.
 - `button.irrigator_refresh_from_device` ("Backup from the Irrigator Device"), `button.restore_to_the_irrigator_device` ("Restore to the Irrigator Device" - entity_id derived from its `name:`, not from `unique_id: irrigator_restore_from_backup`), `button.irrigator_save_schedule_record`, `button.irrigator_delete_schedule_record`, `button.irrigator_stop_all` - manual triggers for the corresponding scripts.
 - `sensor.irrigator_status`, `sensor.irrigator_watering_state`, `sensor.irrigator_last_alert`, `sensor.irrigator_queue`, `sensor.irrigator_schedule`, `binary_sensor.irrigator_online` - read-only device telemetry.
-- `sensor.irrigator_flow_rate` (L/min), `sensor.irrigator_flow_total` (L, the meter's own lifetime totalizer) - raw TUF-2000M flow-meter telemetry on the "Water Flow" card, published once/minute while watering and threshold-triggered while idle (see **Water flow sensing (TUF-2000M)** in [technical.md](technical.md)).
+- `sensor.irrigator_flow_total` (L, the meter's own lifetime totalizer) - TUF-2000M flow-meter telemetry on the "Water Flow" card, published once/minute while watering and threshold-triggered while idle (see **Water flow sensing (TUF-2000M)** in [technical.md](technical.md)).
 - `sensor.irrigator_zone_1_water_total`..`_11_water_total`, `sensor.irrigator_other_water_total` - lifetime (since-boot) liters per zone plus "other", on the "Water Consumption" card group - see **Water Flow Sensing** above.
 - `input_boolean.irrigator_flow_meter_enabled`, `input_number.irrigator_expected_flow_rate_lpm` - the flow anomaly check's on/off toggle and threshold, on the "Flow-Meter Anomaly Check" card - see **Water Flow Sensing** above.
 

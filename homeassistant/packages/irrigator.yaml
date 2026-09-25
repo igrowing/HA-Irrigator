@@ -137,20 +137,14 @@ mqtt:
       device: *irrigator_device
       availability: *irrigator_availability
 
-    # Raw TUF-2000M flow-meter telemetry (see docs/technical.md's "Water flow sensing (TUF-2000M)"
-    # section) — publish cadence is once/minute while watering, threshold-triggered while idle, not
-    # every Modbus poll. json_attributes_topic carries the full payload (flow_rate_lpm,
-    # total_liters, zone) so both sensors below can pull the field they need via value_template
-    # rather than each needing their own MQTT subscription.
-    - name: "Flow Rate"
-      unique_id: irrigator_flow_rate
-      icon: mdi:water-pump
-      state_topic: "irrigatorF4/flow"
-      value_template: "{{ value_json.flow_rate_lpm }}"
-      unit_of_measurement: "L/min"
-      json_attributes_topic: "irrigatorF4/flow"
-      device: *irrigator_device
-      availability: *irrigator_availability
+    # TUF-2000M flow-meter telemetry (see docs/technical.md's "Water flow sensing (TUF-2000M)"
+    # section). The live flow rate is deliberately not published to HA (firmware-only, for anomaly
+    # alerting; see cmd/meter for debugging) - publish cadence is once/minute while watering, threshold-triggered while idle, not
+    # every Modbus poll. Also republished on every cmd/status (HA sends one on start, on device
+    # reconnect and hourly), so HA relearns the total after its own restart even when idle.
+    # Every sensor pulls the field it needs from the same /flow payload (total_liters, zone and
+    # the per-zone counters below) via value_template; none of them sets json_attributes_topic,
+    # so HA doesn't store the whole payload as attributes on each state change.
 
     # total_liters is the meter's own lifetime totalizer, not a per-run figure — see the
     # irrigator_zone_N_water_total / irrigator_other_water_total sensors below for the per-zone
@@ -168,8 +162,8 @@ mqtt:
 
     # Lifetime (since-boot) water consumption per zone plus "other" (flow measured while every
     # valve is closed - a hose bib spliced into the irrigation line, a leak - not a second
-    # whole-house meter). Published roughly once a minute on `/flow_totals`, one field per ENABLED
-    # zone only - value_json.get(..., 0) covers a zone that's currently disabled (its key is simply
+    # whole-house meter). Published on `/flow` (same message and cadence as Flow Total above), one
+    # `zone_<n>` field per ENABLED zone only - value_json.get(..., 0) covers a zone that's currently disabled (its key is simply
     # absent from the payload) so the sensor reads 0 rather than "unknown".
     # `device_class: water` + `state_class: total_increasing` is what makes HA's recorder keep
     # long-term statistics for these - the "Water Consumption" dashboard group (garden_tab.yaml)
@@ -179,7 +173,7 @@ mqtt:
     - name: "Zone 1 Water Total"
       unique_id: irrigator_zone_1_water_total
       icon: mdi:water
-      state_topic: "irrigatorF4/flow_totals"
+      state_topic: "irrigatorF4/flow"
       value_template: "{{ value_json.get('zone_1', 0) }}"
       unit_of_measurement: "L"
       device_class: water
@@ -189,7 +183,7 @@ mqtt:
     - name: "Zone 2 Water Total"
       unique_id: irrigator_zone_2_water_total
       icon: mdi:water
-      state_topic: "irrigatorF4/flow_totals"
+      state_topic: "irrigatorF4/flow"
       value_template: "{{ value_json.get('zone_2', 0) }}"
       unit_of_measurement: "L"
       device_class: water
@@ -199,7 +193,7 @@ mqtt:
     - name: "Zone 3 Water Total"
       unique_id: irrigator_zone_3_water_total
       icon: mdi:water
-      state_topic: "irrigatorF4/flow_totals"
+      state_topic: "irrigatorF4/flow"
       value_template: "{{ value_json.get('zone_3', 0) }}"
       unit_of_measurement: "L"
       device_class: water
@@ -209,7 +203,7 @@ mqtt:
     - name: "Zone 4 Water Total"
       unique_id: irrigator_zone_4_water_total
       icon: mdi:water
-      state_topic: "irrigatorF4/flow_totals"
+      state_topic: "irrigatorF4/flow"
       value_template: "{{ value_json.get('zone_4', 0) }}"
       unit_of_measurement: "L"
       device_class: water
@@ -219,7 +213,7 @@ mqtt:
     - name: "Zone 5 Water Total"
       unique_id: irrigator_zone_5_water_total
       icon: mdi:water
-      state_topic: "irrigatorF4/flow_totals"
+      state_topic: "irrigatorF4/flow"
       value_template: "{{ value_json.get('zone_5', 0) }}"
       unit_of_measurement: "L"
       device_class: water
@@ -229,7 +223,7 @@ mqtt:
     - name: "Zone 6 Water Total"
       unique_id: irrigator_zone_6_water_total
       icon: mdi:water
-      state_topic: "irrigatorF4/flow_totals"
+      state_topic: "irrigatorF4/flow"
       value_template: "{{ value_json.get('zone_6', 0) }}"
       unit_of_measurement: "L"
       device_class: water
@@ -239,7 +233,7 @@ mqtt:
     - name: "Zone 7 Water Total"
       unique_id: irrigator_zone_7_water_total
       icon: mdi:water
-      state_topic: "irrigatorF4/flow_totals"
+      state_topic: "irrigatorF4/flow"
       value_template: "{{ value_json.get('zone_7', 0) }}"
       unit_of_measurement: "L"
       device_class: water
@@ -249,7 +243,7 @@ mqtt:
     - name: "Zone 8 Water Total"
       unique_id: irrigator_zone_8_water_total
       icon: mdi:water
-      state_topic: "irrigatorF4/flow_totals"
+      state_topic: "irrigatorF4/flow"
       value_template: "{{ value_json.get('zone_8', 0) }}"
       unit_of_measurement: "L"
       device_class: water
@@ -259,7 +253,7 @@ mqtt:
     - name: "Zone 9 Water Total"
       unique_id: irrigator_zone_9_water_total
       icon: mdi:water
-      state_topic: "irrigatorF4/flow_totals"
+      state_topic: "irrigatorF4/flow"
       value_template: "{{ value_json.get('zone_9', 0) }}"
       unit_of_measurement: "L"
       device_class: water
@@ -269,7 +263,7 @@ mqtt:
     - name: "Zone 10 Water Total"
       unique_id: irrigator_zone_10_water_total
       icon: mdi:water
-      state_topic: "irrigatorF4/flow_totals"
+      state_topic: "irrigatorF4/flow"
       value_template: "{{ value_json.get('zone_10', 0) }}"
       unit_of_measurement: "L"
       device_class: water
@@ -279,7 +273,7 @@ mqtt:
     - name: "Zone 11 Water Total"
       unique_id: irrigator_zone_11_water_total
       icon: mdi:water
-      state_topic: "irrigatorF4/flow_totals"
+      state_topic: "irrigatorF4/flow"
       value_template: "{{ value_json.get('zone_11', 0) }}"
       unit_of_measurement: "L"
       device_class: water
@@ -289,7 +283,7 @@ mqtt:
     - name: "Other Water Total"
       unique_id: irrigator_other_water_total
       icon: mdi:water-alert-outline
-      state_topic: "irrigatorF4/flow_totals"
+      state_topic: "irrigatorF4/flow"
       value_template: "{{ value_json.get('other', 0) }}"
       unit_of_measurement: "L"
       device_class: water
@@ -1203,8 +1197,8 @@ input_number:
   # Flow-meter anomaly-check threshold (settings.json's FlowMeter.expected_flow_rate_lpm) - the
   # steady-state flow rate expected while a zone is watering, compared against live readings
   # (±50%, flow_high/flow_low faults - see docs/technical.md's "Water flow sensing (TUF-2000M)"
-  # section). 0 = not configured, no check runs. A good starting value is whatever
-  # sensor.irrigator_flow_rate already reads during a normal run.
+  # section). 0 = not configured, no check runs. A good starting value is the flow_rate_lpm
+  # that cmd/meter reports during a normal run.
   irrigator_expected_flow_rate_lpm:
     name: "Expected Flow Rate"
     icon: mdi:water-pump

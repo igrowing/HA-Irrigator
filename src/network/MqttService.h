@@ -70,15 +70,11 @@ public:
                       uint16_t remainingMin,
                       float volumeLiters);
     void publishAlert(const String& jsonOrTextPayload);
-    // Publishes to `<prefix>/flow` - raw TUF-2000M flow-meter telemetry (see main.ino's
+    // Publishes to `<prefix>/flow` - TUF-2000M flow-meter telemetry (rate, total, active zone) plus
+    // the lifetime per-zone/"other" liters (see main.ino's publishFlowTelemetry(), and
     // updateFlowPublishCadence() for the publish-cadence rule; every poll's result is a candidate,
     // not every one goes out). Non-retained, like `/status`.
     void publishFlow(const String& jsonPayload);
-    // Publishes to `<prefix>/flow_totals` - lifetime (since-boot) water consumption per enabled
-    // zone plus "other" (see main.ino's FlowLifetimeCounters/buildFlowTotalsJson()), roughly once a
-    // minute. Feeds the HA "Water Consumption" dashboard group's long-term-statistics sensors.
-    // Non-retained, like `/status`.
-    void publishFlowTotals(const String& jsonPayload);
     // Publishes to `<prefix>/meter` in response to `<prefix>/cmd/meter` - flow-meter diagnostics
     // (signal strength/quality, sound speed, last Modbus error). Non-retained.
     void publishMeter(const String& jsonPayload);

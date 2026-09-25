@@ -529,8 +529,6 @@
                 name: Enabled
               - entity: input_number.irrigator_expected_flow_rate_lpm
                 name: Expected Flow Rate (L/min)
-              - entity: sensor.irrigator_flow_rate
-                name: Live Flow Rate (for reference)
           - type: tile
             entity: button.irrigator_refresh_from_device
             icon: mdi:cloud-download-outline
@@ -568,8 +566,6 @@
         cards:
           - type: heading
             heading: Water Flow
-          - type: tile
-            entity: sensor.irrigator_flow_rate
           - type: tile
             entity: sensor.irrigator_flow_total
       - type: grid

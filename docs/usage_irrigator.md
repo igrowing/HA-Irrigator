@@ -701,7 +701,7 @@ safety-critical shutoff.
 
 There's nothing to press on the device itself for this feature — like current-fault alerting (just
 above), it runs entirely in the background over MQTT, with no rotary-menu screen or on-device
-display of its own. Live flow rate, lifetime consumption per zone, and each completed run's own
+display of its own. Lifetime consumption per zone, and each completed run's own
 water use are all visible from Home Assistant instead — see
 [usage_homeassistant.md](usage_homeassistant.md)'s **Water Flow Sensing** section for exactly
 where, and its **Settings** section for the two things you can configure (whether the anomaly check

@@ -79,7 +79,7 @@ struct Settings {
     // current sensor's valveCurrentBaseLevel, there's no ESP32-side calibration step to capture
     // this automatically (the TUF-2000M is a self-calibrated ultrasonic meter with no zero-offset
     // of its own either) — the user sets it directly, e.g. from a value already seen on
-    // sensor.irrigator_flow_rate during a normal run. 0 means "not configured": no check runs.
+    // the flow_rate_lpm cmd/meter reports during a normal run. 0 means "not configured": no check runs.
     // A single value for the whole device rather than per-zone, the same simplification the
     // current sensor's shared valveCurrentBaseLevel already makes — only one zone ever waters at a
     // time — though unlike current draw, flow rate can genuinely differ a lot between a drip zone
