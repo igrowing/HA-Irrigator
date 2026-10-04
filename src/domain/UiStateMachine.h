@@ -46,8 +46,7 @@ public:
         int16_t wateringPercentage = 0;
         int16_t upperLimitPercent = 0;
         int16_t lowerLimitPercent = 0;
-        int16_t rainSkipProbabilityPercent = 0;
-        int16_t rainSkipAmountMm = 0;
+        int16_t rainForecastProbabilityPercent = 0;
         uint8_t defaultManualDuration = 0;
         // Disabled zones are skipped by the manual zone picker (handleNormal/handleZonePicker) —
         // see isZoneEnabled() in main.ino for the matching enforcement at the point of starting a
@@ -152,24 +151,23 @@ public:
     // Schedule is deliberately first: weather-based auto-adjustment only makes sense when the
     // schedule itself is active — with scheduling off, watering is manual/on-demand, and there's
     // nothing for the daily Adjust% recalculation to apply to. Auto-adjustment reads second, still
-    // before the fields it affects when enabled (Adjust/Upper/Lower/rain-skip thresholds); with it
+    // before the fields it affects when enabled (Adjust/Upper/Lower/forecast-rain threshold); with it
     // off, Adjust% is a plain manual value instead. The 4 alert toggles sit directly above
     // Calibrate CS (per spec) since they're only meaningful once a sensor is calibrated.
-    static constexpr uint8_t kSettingsItemCount = 14;
+    static constexpr uint8_t kSettingsItemCount = 13;
     static constexpr uint8_t kSettingsIndexScheduleActive = 0;
     static constexpr uint8_t kSettingsIndexAutoAdjustment = 1;
     static constexpr uint8_t kSettingsIndexPercentage = 2;
     static constexpr uint8_t kSettingsIndexUpperLimit = 3;
     static constexpr uint8_t kSettingsIndexLowerLimit = 4;
-    static constexpr uint8_t kSettingsIndexRainSkipProbability = 5;
-    static constexpr uint8_t kSettingsIndexRainSkipAmount = 6;
-    static constexpr uint8_t kSettingsIndexAlertPumpUc = 7;
-    static constexpr uint8_t kSettingsIndexAlertPumpOc = 8;
-    static constexpr uint8_t kSettingsIndexAlertValveUc = 9;
-    static constexpr uint8_t kSettingsIndexAlertValveOc = 10;
-    static constexpr uint8_t kSettingsIndexCalibrate = 11;
-    static constexpr uint8_t kSettingsIndexRestart = 12;
-    static constexpr uint8_t kSettingsIndexBack = 13;
+    static constexpr uint8_t kSettingsIndexRainForecastProbability = 5;
+    static constexpr uint8_t kSettingsIndexAlertPumpUc = 6;
+    static constexpr uint8_t kSettingsIndexAlertPumpOc = 7;
+    static constexpr uint8_t kSettingsIndexAlertValveUc = 8;
+    static constexpr uint8_t kSettingsIndexAlertValveOc = 9;
+    static constexpr uint8_t kSettingsIndexCalibrate = 10;
+    static constexpr uint8_t kSettingsIndexRestart = 11;
+    static constexpr uint8_t kSettingsIndexBack = 12;
 
     // MenuInfo: 11 rows, the read-only counterparts split out of MenuSettings (WiFi/IP/MQTT/Topic/
     // City/Coordinates/LastUpdate/Volume/FW/Uptime are all display-only, per spec) plus BACK. None
@@ -252,8 +250,7 @@ public:
     int16_t pendingPercentage() const { return pendingPercentage_; }
     int16_t pendingUpperLimit() const { return pendingUpperLimit_; }
     int16_t pendingLowerLimit() const { return pendingLowerLimit_; }
-    int16_t pendingRainSkipProbability() const { return pendingRainSkipProbability_; }
-    int16_t pendingRainSkipAmount() const { return pendingRainSkipAmount_; }
+    int16_t pendingRainForecastProbability() const { return pendingRainForecastProbability_; }
     bool factoryResetConfirmYesSelected() const { return factoryResetConfirmYes_; }
     bool factoryResetSucceeded() const { return factoryResetSucceeded_; }
     bool restartConfirmYesSelected() const { return restartConfirmYes_; }
@@ -338,8 +335,7 @@ private:
     int16_t pendingPercentage_ = 0;
     int16_t pendingUpperLimit_ = 0;
     int16_t pendingLowerLimit_ = 0;
-    int16_t pendingRainSkipProbability_ = 0;
-    int16_t pendingRainSkipAmount_ = 0;
+    int16_t pendingRainForecastProbability_ = 0;
 
     uint8_t pendingScheduleZone_ = 0;
     uint8_t pendingScheduleDay_ = 0;

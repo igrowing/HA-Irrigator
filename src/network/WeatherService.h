@@ -32,7 +32,7 @@ struct WeatherFetchResult {
     // temperatures, not a 24h mean — see domain::summarizePastAverageDailyMaxTemperature.
     float avgPastTempC = 0.0f;
     float rainPastDaysMm = 0.0f;
-    // Forecast (next board::AUTOADJUSTMENT_FORECAST_WINDOW_HOURS) — the rain-skip check's inputs
+    // Forecast (next board::AUTOADJUSTMENT_FORECAST_WINDOW_HOURS) — the forecast-rain term's inputs
     // (Step 1) only. Never used by the adjustment formula.
     float maxRainProbabilityPercent = 0.0f;
     float rainAmountNextWindowMm = 0.0f;
@@ -49,7 +49,7 @@ public:
     GeoLocationResult fetchGeoLocation();
 
     // Open-Meteo: primary provider, no API key needed. Two sequential HTTPS requests, deliberately
-    // not one: the forward AUTOADJUSTMENT_FORECAST_WINDOW_HOURS (rain-skip check) comes from the
+    // not one: the forward AUTOADJUSTMENT_FORECAST_WINDOW_HOURS (forecast-rain term) comes from the
     // forecast endpoint, the trailing AUTOADJUSTMENT_PAST_WEATHER_DAYS (temperature average +
     // rainfall total) from the ERA5 archive endpoint, which reflects real observations rather than
     // the forecast model's own recollection of them. Either failing fails the whole call, so the

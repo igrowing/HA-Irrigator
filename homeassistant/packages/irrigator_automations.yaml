@@ -182,14 +182,9 @@ automation:
           value: "{{ (state_attr('sensor.irrigator_settings', 'Watering') or {}).get('lower_limit', 40) }}"
       - action: input_number.set_value
         target:
-          entity_id: input_number.irrigator_rain_skip_probability
+          entity_id: input_number.irrigator_rain_forecast_probability
         data:
-          value: "{{ (state_attr('sensor.irrigator_settings', 'Watering') or {}).get('rain_skip_probability_percent', 70) }}"
-      - action: input_number.set_value
-        target:
-          entity_id: input_number.irrigator_rain_skip_amount
-        data:
-          value: "{{ (state_attr('sensor.irrigator_settings', 'Watering') or {}).get('rain_skip_amount_mm', 4) }}"
+          value: "{{ (state_attr('sensor.irrigator_settings', 'Watering') or {}).get('rain_forecast_probability_percent', 70) }}"
       - action: input_text.set_value
         target:
           entity_id: input_text.irrigator_weatherapi_key
@@ -317,8 +312,7 @@ automation:
           - input_number.irrigator_default_manual_duration
           - input_number.irrigator_upper_limit
           - input_number.irrigator_lower_limit
-          - input_number.irrigator_rain_skip_probability
-          - input_number.irrigator_rain_skip_amount
+          - input_number.irrigator_rain_forecast_probability
           - input_text.irrigator_weatherapi_key
           - input_number.irrigator_watering_percentage
           - input_boolean.irrigator_alert_pump_uc

@@ -57,7 +57,7 @@ public:
         uint16_t totalizerRegister = 0;
         uint16_t signalQualityRegister = 0;
         uint16_t soundSpeedRegister = 0;
-        uint32_t pollIntervalMs = 2000;
+        uint32_t pollIntervalMs = 5000;
         // Multiplied into flowRateM3h and totalizerM3 as they are decoded (1.0 = meter's own
         // values); corrects a meter whose calibration is off.
         float calibrationMultiplier = 1.0f;

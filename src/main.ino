@@ -1452,18 +1452,9 @@ void handleUiIntent(const irrigator::domain::UiIntent& intent, uint32_t nowMs) {
             }
             break;
         }
-        case UiIntentType::SetRainSkipProbability: {
+        case UiIntentType::SetRainForecastProbability: {
             irrigator::domain::Settings updated = settings;
-            updated.rainSkipProbabilityPercent = intent.percentage;
-            if (irrigator::domain::validateSettings(updated)) {
-                settings = updated;
-                persistSettings();
-            }
-            break;
-        }
-        case UiIntentType::SetRainSkipAmount: {
-            irrigator::domain::Settings updated = settings;
-            updated.rainSkipAmountMm = intent.percentage;
+            updated.rainForecastProbabilityPercent = intent.percentage;
             if (irrigator::domain::validateSettings(updated)) {
                 settings = updated;
                 persistSettings();
@@ -1726,7 +1717,7 @@ void handleMqttCommand(const String& commandName, const uint8_t* payload, size_t
         return;
     }
 
-    // Test-only escape hatch: runs the weather fetch + percentage/rain-skip adjustment right now,
+    // Test-only escape hatch: runs the weather fetch + percentage adjustment right now,
     // bypassing the schedule-today / lead-time-window / retry-pacing gates that runAutoAdjustmentIfDue
     // normally waits on — same background task, same settings.json write, same /status report at
     // the end (success or failure) so the whole pipeline is exercisable on demand without waiting
@@ -2180,18 +2171,6 @@ void tryGeolocateIfDue(uint32_t nowMs) {
     }
 }
 
-// Step 1's predictive rain-skip: cancels the rest of today's (and tomorrow morning's) scheduled
-// runs via the existing RainSkip gate — manual/MQTT cmd/run remain unaffected, same scoping the
-// device's own cmd/skip_rain_until already has.
-void applyRainSkipDecision(int64_t nowEpoch) {
-    const int64_t skipUntil = nowEpoch + irrigator::board::AUTOADJUSTMENT_RAIN_SKIP_DURATION_S;
-    rainSkip.setSkipUntil(skipUntil);
-    char iso[24];
-    irrigator::domain::formatIso8601Utc(skipUntil, iso, sizeof(iso));
-    mqtt.publishSkipRainUntil(iso);
-    irrigator::drivers::Log.info("Auto-adjustment: rain forecast triggered a 24h scheduled-run skip");
-}
-
 // Fires at most once per calendar day, on the first failed attempt that day — the retry loop
 // below keeps trying every AUTOADJUSTMENT_RETRY_INTERVAL_MS uncapped, which would otherwise spam
 // /alert for as long as both providers stay down. force=true (cmd/weather's manual test trigger)
@@ -2227,15 +2206,13 @@ struct WeatherAutoAdjustParams {
     int64_t nowEpoch;
     char today[11];
     char weatherApiKey[48];
-    int16_t rainSkipProbabilityPercent;
-    int16_t rainSkipAmountMm;
+    int16_t rainForecastProbabilityPercent;
     int16_t lowerLimitPercent;
     int16_t upperLimitPercent;
 };
 
 struct WeatherAutoAdjustResult {
     bool success;
-    bool rainSkip;
     int16_t newPercentage;
     int64_t nowEpoch;
     char today[11];
@@ -2269,19 +2246,19 @@ void weatherAutoAdjustTask(void* pvParameters) {
         result.success = false;
     } else {
         result.success = true;
-        if (irrigator::domain::shouldSkipForRain(forecast.maxRainProbabilityPercent,
-                                                 forecast.rainAmountNextWindowMm,
-                                                 params->rainSkipProbabilityPercent,
-                                                 params->rainSkipAmountMm)) {
-            result.rainSkip = true;
-        } else {
-            result.rainSkip = false;
-            result.newPercentage =
-                irrigator::domain::computeAutoCorrectedPercentage(forecast.avgPastTempC,
-                                                                   forecast.rainPastDaysMm,
-                                                                   params->lowerLimitPercent,
-                                                                   params->upperLimitPercent);
-        }
+        const float rainMm = irrigator::domain::effectiveRainMm(forecast.rainPastDaysMm,
+                                                                forecast.maxRainProbabilityPercent,
+                                                                forecast.rainAmountNextWindowMm,
+                                                                params->rainForecastProbabilityPercent);
+        irrigator::drivers::Log.printf(
+            "[INFO] Auto-adjustment rain: past %.1f mm, forecast %.1f mm at %.0f%% -> counted %.1f mm\n",
+            forecast.rainPastDaysMm, forecast.rainAmountNextWindowMm,
+            forecast.maxRainProbabilityPercent, rainMm);
+        result.newPercentage =
+            irrigator::domain::computeAutoCorrectedPercentage(forecast.avgPastTempC,
+                                                               rainMm,
+                                                               params->lowerLimitPercent,
+                                                               params->upperLimitPercent);
     }
 
     xQueueSend(weatherResultQueue, &result, 0);
@@ -2289,7 +2266,7 @@ void weatherAutoAdjustTask(void* pvParameters) {
 }
 
 // Drains the background task's result, if any, and applies its decision — the only place that
-// touches settings/mqtt/rainSkip/fileStore for the auto-adjustment cycle, so it all stays on the
+// touches settings/mqtt/fileStore for the auto-adjustment cycle, so it all stays on the
 // single-threaded loop() side.
 void consumeWeatherAutoAdjustResult(uint32_t nowMs) {
     if (!weatherTaskInFlight) {
@@ -2306,9 +2283,7 @@ void consumeWeatherAutoAdjustResult(uint32_t nowMs) {
         reportWeatherFailure(result.today, result.openMeteoErrorReason, result.weatherApiErrorReason,
                             weatherManualTriggerRequested);
     } else {
-        if (result.rainSkip) {
-            applyRainSkipDecision(result.nowEpoch);
-        } else if (result.newPercentage != settings.wateringPercentage) {
+        if (result.newPercentage != settings.wateringPercentage) {
             settings.wateringPercentage = result.newPercentage;
             mqtt.publishWateringPercentage(settings.wateringPercentage);
         } else if (weatherManualTriggerRequested) {
@@ -2335,7 +2310,7 @@ void consumeWeatherAutoAdjustResult(uint32_t nowMs) {
 //    first start (checked earlier on cmd/weather's manual trigger, which bypasses this entirely).
 //  - Nothing is scheduled today: due once AUTOADJUSTMENT_OFFDAY_CHECK_INTERVAL_S has passed since
 //    the last successful check (or immediately if there's never been one), so the weather pipeline
-//    and rain-skip still get exercised daily even through a stretch with an empty schedule.
+//    still gets exercised daily even through a stretch with an empty schedule.
 // Returns nullptr when due "on schedule grounds"; callers still need their own
 // weatherTaskInFlight/retry-timer gates on top of that.
 const char* autoAdjustScheduleGateReason(const struct tm& timeinfo, int64_t nowEpoch) {
@@ -2402,8 +2377,7 @@ bool startWeatherFetch(const char* today, int64_t nowEpoch) {
     params->nowEpoch = nowEpoch;
     snprintf(params->today, sizeof(params->today), "%s", today);
     snprintf(params->weatherApiKey, sizeof(params->weatherApiKey), "%s", settings.weatherApiKey);
-    params->rainSkipProbabilityPercent = settings.rainSkipProbabilityPercent;
-    params->rainSkipAmountMm = settings.rainSkipAmountMm;
+    params->rainForecastProbabilityPercent = settings.rainForecastProbabilityPercent;
     params->lowerLimitPercent = settings.lowerLimitPercent;
     params->upperLimitPercent = settings.upperLimitPercent;
 
@@ -2428,7 +2402,7 @@ bool startWeatherFetch(const char* today, int64_t nowEpoch) {
 // day with nothing scheduled, instead waits for AUTOADJUSTMENT_OFFDAY_CHECK_INTERVAL_S to pass
 // since the last successful check. Either way, retries are deliberately uncapped: a forecast that
 // only arrives after the first watering has already run still helps later same-day runs or
-// tomorrow's, or informs the rain-skip decision in time to save water.
+// tomorrow's, or counts the forecast rain in time to save water.
 void runAutoAdjustmentIfDue(uint32_t nowMs) {
     consumeWeatherAutoAdjustResult(nowMs);
 

@@ -161,12 +161,12 @@ device's actual prefix in every example below.
 | `/cmd/run` | `{"zone":3,"duration":15}` |  |  | **No special response** Response will be either adding to the queue or alert. Starts zone 3 for 15 min (or queues it if something's already running). `zone:0` = pump only. A **disabled** zone (`zone_names.<n>.enabled: false` in `settings.json`) is rejected outright with an `/alert` — `{"message":"Zone 3 (Back Lawn) is disabled. Enable it in settings first."}` — it's never silently ignored, and it never reaches the watering queue at all (see `enqueueOrStart()` in `src/main.ino`). |
 | `/cmd/stop` | empty, or `all`  |  |  | **No special response** Response will be either adding to the queue or alert. Stops the current run — closes the valve immediately, but a zone run's pump still gets its normal graceful-shutdown tail rather than cutting immediately (a pump-only run has no such tail). Plain/empty payload also pops and starts the next queued item, if any; `all` also empties the queue. |
 | `/cmd/scheduled` | bool | `/scheduled` | bool | Turn the schedule on/off, write the schedule state in settings.json if changed, report back true/false. |
-| `/cmd/auto_adjustment` | bool | `/auto_adjustment` | bool | Master on/off for weather-based auto-adjustment (both the daily percentage recalculation and the rain-skip check) — persisted to `settings.json`'s `auto_adjustment_enabled`, reported back true/false. |
+| `/cmd/auto_adjustment` | bool | `/auto_adjustment` | bool | Master on/off for weather-based auto-adjustment (the daily percentage recalculation, including the forecast-rain term) — persisted to `settings.json`'s `auto_adjustment_enabled`, reported back true/false. |
 | `/cmd/watering_percentage` | integer | `/watering_percentage` | integer | Sets the schedule-wide watering multiplier (0–300%; `0` from the auto-adjustment pipeline means "skip today's cycle entirely", not "water at 0%" — see **Weather-based irrigation auto-adjustment** below). **Retained message** — see **Wi-Fi/MQTT connection resilience** below for why. |
 | `/cmd/skip_rain_until` | `"2026-07-12T06:00:00"` |  `/skip_rain_until` | `"2026-07-12T06:00:00"` | Suppresses **scheduled** runs until this UTC timestamp (manual/MQTT runs are never affected — this only gates the schedule engine). |
 |  |  | `/online` |  boolean (LWT on ungraceful disconnect, or explicitly before a deliberate restart). | **Retained message**. Matches Home Assistant's default MQTT `availability_topic` convention. |
 | `/cmd/status` | "" | `/status`, `/flow` | JSON: `datetime`, `firmware_version`, `boot_reason`, `ip`, `uptime_s`, `rssi_db`, `wifi_quality` (verbal, `miserable`/`poor`/`fair`/`good`/`excellent`), `free_heap_bytes`, `free_storage_bytes`, `mqtt_buffer_bytes`, `cpu_temp_c`, `coredump_available` (read together with `boot_reason` — see [coredump.md](coredump.md)), `publish_failures`, `publish_retried`, `publish_offline`, `mqtt_forced_reconnects` (cumulative since boot — see **Wi-Fi/MQTT connection resilience** below), and the weather auto-adjustment block: `auto_adjustment_enabled`, `location_known`, `city` (only once known), `weather_adjust_status` (`disabled`/`no_location`/`no_clock`/`done_today`/`waiting_for_window`/`no_schedule_waiting_recheck`/`fetch_in_progress`/`waiting_retry` — why the daily cycle has or hasn't run), `watering_percentage` (what the schedule is running at right now; `0` = today's cycle is skipped) and `last_weather_update` (omitted until this session's first successful fetch). No `outputs`/current section — which zone/pump is on is `/state`'s job (fired on every start/stop, and on `cmd/state`), and current readings only have a meaningful number outside `cmd/calibrate`'s response as a comparison against a calibrated base; see **True-RMS current sampling** below. | ~15s after boot and on request.  |
-| `/cmd/weather` | "" | `/status`, `/watering_percentage`, `/skip_rain_until`, `/alert` | Manual test trigger for the whole weather auto-adjustment pipeline: runs the fetch + rain-skip check + percentage recalculation right now, bypassing the schedule-today / lead-time / retry-pacing gates. When the fetch finishes it always reports back with a `/status` (success or failure), and on success always republishes `/watering_percentage` — even when the value is unchanged, unlike the automatic daily cycle, which only publishes on change — or publishes `/skip_rain_until` if the forecast triggered a rain skip. On failure it also sends the `{"weather":"failed",...}` `/alert` regardless of the once-a-day cap. Rejected with an `/alert` if a fetch is already running, location isn't known yet or the clock isn't synced. | Test-only; the daily cycle needs no command. |
+| `/cmd/weather` | "" | `/status`, `/watering_percentage`, `/skip_rain_until`, `/alert` | Manual test trigger for the whole weather auto-adjustment pipeline: runs the fetch + percentage recalculation (forecast rain included) right now, bypassing the schedule-today / lead-time / retry-pacing gates. When the fetch finishes it always reports back with a `/status` (success or failure), and on success always republishes `/watering_percentage` — even when the value is unchanged, unlike the automatic daily cycle, which only publishes on change. On failure it also sends the `{"weather":"failed",...}` `/alert` regardless of the once-a-day cap. Rejected with an `/alert` if a fetch is already running, location isn't known yet or the clock isn't synced. | Test-only; the daily cycle needs no command. |
 |  |  | `/alert` | see **Error reporting** below | Fire-and-forget notices: current out of expected range, watering queue full, OTA result, and any command/topic error. Not retained, not queued for delivery guarantees. Every alert carries a `datetime` field — JSON alerts get it spliced in alongside their other keys, plain-text alerts are wrapped as `{"datetime":"...","message":"..."}`. |
 |  |  | `/flow` | JSON: `total_liters` (the meter's lifetime totalizer, calibrated), `zone` (whichever zone/pump is currently running, 0 = idle), one `zone_<n>` field (liters, since boot) per **enabled** zone, and `other` (flow while every valve is closed). | TUF-2000M total plus the ESP32's own per-zone consumption counters (the live flow rate is deliberately not published — firmware-side for anomaly alerting, `cmd/meter` for debugging) — see **Water flow sensing (TUF-2000M)** below for the publish-cadence rule (not every Modbus poll goes out). Also republished on every `/cmd/status` (when a valid reading exists), so HA relearns the total after its own restart. Not retained. |
 | `/cmd/restart` | "" |  |  | **No special response** Publishes `false` to `online`, then restarts. |
@@ -391,8 +391,7 @@ again since there's no Wi-Fi config left to load.
     "auto_adjustment_enabled": true,
     "upper_limit": 200,
     "lower_limit": 40,
-    "rain_skip_probability_percent": 70,
-    "rain_skip_amount_mm": 4,
+    "rain_forecast_probability_percent": 70,
     "weatherapi_key": ""
   }
 }
@@ -672,10 +671,10 @@ around.
 Pure calculation lives in `src/domain/AutoAdjustment.h`/`.cpp` and `src/domain/WeatherSummary.h`/
 `.cpp` (both unit-tested, see **Testing** below); the HTTP/JSON fetching lives in
 `src/network/WeatherService.h`/`.cpp` (not unit-testable — it's a live HTTP client, verified by
-flashing); orchestration (retry pacing, the daily trigger window, rain-skip vs. percentage
+flashing); orchestration (retry pacing, the daily trigger window, the percentage
 decision) lives in `src/main.ino`'s `tryGeolocateIfDue()`/`runAutoAdjustmentIfDue()`.
 
-The feature has exactly one forward-looking input (the rain-skip forecast, Step 1) and two
+The feature has exactly one forward-looking input (the forecast rain, Step 1) and two
 backward-looking inputs (the adjustment formula's temperature and rainfall, Step 2) — it's easy to
 assume both steps use the forecast, so `network::WeatherFetchResult`'s field names spell out the
 direction explicitly: `avgPastTempC`/`rainPastDaysMm` (historical) vs.
@@ -691,7 +690,7 @@ direction explicitly: `avgPastTempC`/`rainPastDaysMm` (historical) vs.
    saving".
 2. **Weather**, primary — [Open-Meteo](https://open-meteo.com) (no API key), as **two sequential
    HTTPS requests**, one per direction, to two different endpoints:
-   - **Forward (rain-skip, Step 1)** — `/v1/forecast?hourly=precipitation_probability,precipitation
+   - **Forward (forecast rain, Step 1)** — `/v1/forecast?hourly=precipitation_probability,precipitation
      &past_days=5&forecast_days=2&timezone=UTC`. An ArduinoJson `DeserializationOption::Filter` keeps
      only those two hourly arrays (the raw payload also carries `hourly_units`, `elevation`,
      `generationtime_ms`, etc., which would otherwise inflate the parsed `JsonDocument`). Passing
@@ -725,7 +724,7 @@ direction explicitly: `avgPastTempC`/`rainPastDaysMm` (historical) vs.
    attempt**, which falls through to WeatherAPI below — deliberately not "use the forecast series as
    a stand-in", for the mixing reason above.
 3. **Weather, fallback** — [WeatherAPI.com](https://www.weatherapi.com) (`forecast.json` for the
-   forward rain-skip window, + 5×`history.json` — one call per past day, since that endpoint only
+   forward forecast-rain window, + 5×`history.json` — one call per past day, since that endpoint only
    ever returns a single day — for the historical temperature/rainfall), used only when
    Open-Meteo's request fails outright (bad HTTP status or JSON parse error). Each `history.json`
    response's `day.maxtemp_c`/`day.totalprecip_mm` are averaged/summed across the 5 calls —
@@ -755,9 +754,9 @@ worth having even with adjustment disabled.
 
 `runAutoAdjustmentIfDue()` (called every `loop()` iteration, cheap to no-op) picks its gate from `autoAdjustScheduleGateReason()` depending on whether *today* has an active schedule entry:
 - **Watering scheduled today**: opens a window `AUTOADJUSTMENT_LEAD_TIME_MINUTES` (5) before the day's *earliest* start — or immediately, if the device boots after that window has already opened. Once open, it retries every `AUTOADJUSTMENT_WEATHER_RETRY_INTERVAL_MS` (1 minute), so a failed/slow fetch still gets a few attempts before that first watering fires.
-- **Nothing scheduled today**: instead waits for `AUTOADJUSTMENT_OFFDAY_CHECK_INTERVAL_S` (24h) to pass since the last successful check (or checks immediately if there's never been one). This keeps the weather pipeline — and its failure alerts — exercised daily even through a stretch with an empty schedule, and lets a rain-skip decision land ahead of tomorrow's first watering instead of waiting for that day's own 5-minute window.
+- **Nothing scheduled today**: instead waits for `AUTOADJUSTMENT_OFFDAY_CHECK_INTERVAL_S` (24h) to pass since the last successful check (or checks immediately if there's never been one). This keeps the weather pipeline — and its failure alerts — exercised daily even through a stretch with an empty schedule, and lets the forecast-rain term land ahead of tomorrow's first watering instead of waiting for that day's own 5-minute window.
 
-Either path stops retrying once a forecast is successfully applied for that calendar date, tracked by `main.ino`'s `lastWeatherUpdateDate`. Retries are otherwise **deliberately uncapped** — a forecast that only arrives after the first watering has already run at the last-known percentage still helps later same-day waterings, or the rain-skip decision, so retrying past that point is worth it rather than giving up.
+Either path stops retrying once a forecast is successfully applied for that calendar date, tracked by `main.ino`'s `lastWeatherUpdateDate`. Retries are otherwise **deliberately uncapped** — a forecast that only arrives after the first watering has already run at the last-known percentage still helps later same-day waterings, so retrying past that point is worth it rather than giving up.
 
 `lastWeatherUpdateDate` is a plain in-RAM global, **not** a `settings.json` field — a power cycle resets it to empty, so the device re-attempts today's cycle on the next boot (immediately, or once the lead-time window opens) rather than remembering it already ran before the reboot. This is deliberate: the auto-adjustment window is designed to tolerate re-running, so there's no reason to persist "already done today" across a restart, and doing so would mean writing to flash daily for no benefit.
 
@@ -799,9 +798,9 @@ Daily (past 5 days feed Step 2; today/tomorrow are ignored by the formula):
 
 Next-12h hourly window (06:00→17:00 UTC today, nowIndex=126), feeds Step 1: every hour came back precipitation_probability=0%, precipitation=0mm. So max prob = 0%, summed rain = 0mm.
 
-**Step 1 — Rain-skip check**
+**Step 1 — Forecast rain**
 
-`shouldSkipForRain`(prob>=70%, amount>4mm) (board_config.h:121-122, or from `settings.json`): 0% >= 70% → false. No skip.
+`effectiveRainMm`(prob>=70%) (`board_config.h`, or from `settings.json`): 0% >= 70% → false. The forecast is not counted; rain fed to Step 2 is the 68.9mm of past rain alone.
 
 **Step 2 — Correction formula**
 
@@ -899,14 +898,21 @@ so far. See `src/domain/AutoAdjustment.cpp` and its unit tests for the exact beh
 threshold.
 
 Separately — and using the *forecast*, not the history above — if the next 12 hours show rain
-probability **at or over** `rain_skip_probability_percent` (default 70) **and** rain amount **over**
-`rain_skip_amount_mm` (default 4), the day's percentage calculation is skipped entirely and
-`rainSkip.setSkipUntil()` is called for 24 hours instead — reusing the same `RainSkip` gate
-`cmd/skip_rain_until` already writes to (see **MQTT**, above), so manual/MQTT `cmd/run` remain
-unaffected either way. The two thresholds are intentionally asymmetric: the probability check is
-`>=`, the amount check is `>` (see `domain::shouldSkipForRain()`, which takes both thresholds as
-parameters rather than reading fixed constants — they're user-configurable settings, like
-`upper_limit`/`lower_limit`, not compiled-in defaults).
+probability **at or over** `rain_forecast_probability_percent` (default 70), the whole forecast amount is
+**added to `rainPastDaysMm`** as if it had already fallen (`domain::effectiveRainMm()`), and the
+formula above runs on that total. Example:
+3mm past + 6mm forecast at 70% is calculated as 9mm (72% at base temperature, vs. 91% for the 3mm
+alone). There is no separate skip: a heavy enough forecast drives the result under `lower_limit`,
+which yields 0% by the ordinary rule. (Until 2026-09 a qualifying forecast instead cancelled the
+day's watering outright via a 24 h `RainSkip`, gated by a second `rain_skip_amount_mm` threshold —
+since retired, because the formula already scales with the amount. The probability setting was
+renamed from `rain_skip_probability_percent` to `rain_forecast_probability_percent` at the same time;
+both parseSettings() and mergeSettings() still accept the old key, so an existing unit keeps its
+value. A `rain_skip_amount_mm` still present in an old `settings.json` is ignored and dropped on
+the next save.) `cmd/skip_rain_until` remains as a manual/HA gate on **scheduled** runs (see
+**MQTT**, above); manual/MQTT `cmd/run` are unaffected either way. The probability check is `>=`, and the
+threshold is passed to `effectiveRainMm()` as a parameter rather than read from a fixed constant —
+it's a user-configurable setting, like `upper_limit`/`lower_limit`, not a compiled-in default.
 
 ### Known limitations
 

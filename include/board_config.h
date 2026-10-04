@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.2.5"
+#define APP_VERSION "1.2.6"
 #endif
 
 namespace irrigator::board {
@@ -170,20 +170,20 @@ static constexpr int16_t AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT = 40;
 // bias) and stays a candidate for re-tuning — see docs/technical.md.
 // All three are compile-time only: a per-device override via settings.json's Watering group is
 // currently disabled (commented out in Settings.cpp), so tuning them needs a firmware flash.
-static constexpr float AUTOADJUSTMENT_BASE_TEMP_C = 23.0f;
-static constexpr float AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE = 12.5f;
-static constexpr float AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM = 3.1f;
+static constexpr float AUTOADJUSTMENT_BASE_TEMP_C = 24.0f;
+static constexpr float AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE = 15.0f;
+static constexpr float AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM = 5.0f;
 
-// Rain-skip (Step 1) is the only *forecast*-based check — probability is inclusive (>=), amount
-// is not (>), matching shouldSkipForRain()'s exact comparison. Both thresholds are user-configurable
-// (Settings::rainSkipProbabilityPercent/rainSkipAmountMm) — these are only the factory defaults.
-static constexpr int16_t AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_PROBABILITY_PERCENT = 70;
-static constexpr int16_t AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_AMOUNT_MM = 4;
-static constexpr int64_t AUTOADJUSTMENT_RAIN_SKIP_DURATION_S = 24LL * 3600;
+// Step 1: the next-12h rain forecast is the only forward-looking input. When its probability is at
+// or over this threshold (>=) — matching effectiveRainMm()'s exact comparison — the whole forecast
+// amount is added to the past rainfall as if it had already fallen; otherwise it is ignored. The
+// threshold is user-configurable (Settings::rainForecastProbabilityPercent) — this is only the
+// factory default.
+static constexpr int16_t AUTOADJUSTMENT_DEFAULT_RAIN_FORECAST_PROBABILITY_PERCENT = 70;
 
 // The correction formula's (Step 2) temperature and rain terms are both historical, over this
 // same trailing window — a rolling 5-day average temperature and a 5-day rainfall total. Only
-// the rain-skip check above looks forward.
+// the forecast-rain term of Step 1 above looks forward.
 static constexpr uint8_t AUTOADJUSTMENT_PAST_WEATHER_DAYS = 5;
 static constexpr uint8_t AUTOADJUSTMENT_FORECAST_WINDOW_HOURS = 12;
 // How far ahead of the day's first scheduled watering the fetch/retry cycle starts, on days that
@@ -199,7 +199,7 @@ static constexpr uint32_t AUTOADJUSTMENT_WEATHER_RETRY_INTERVAL_MS = 1UL * 60UL 
 static constexpr uint32_t AUTOADJUSTMENT_RETRY_INTERVAL_MS = 5UL * 60UL * 1000UL;
 // On days with nothing scheduled, how often to check anyway — keeps the weather pipeline
 // (and its failure alerts) exercised daily instead of going silent for however long the
-// schedule stays empty, and lets a rain-skip decision land ahead of tomorrow's first watering
+// schedule stays empty, and lets the forecast-rain term land ahead of tomorrow's first watering
 // rather than waiting for that day's own 5-minute pre-watering window.
 static constexpr int64_t AUTOADJUSTMENT_OFFDAY_CHECK_INTERVAL_S = 24LL * 3600;
 
@@ -221,7 +221,7 @@ static constexpr const char* OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v
 // ERA5 reanalysis - the source of the correction formula's *historical* inputs (avg daily max
 // temperature, rainfall). Unlike the forecast endpoint's past_days series (the weather model's own
 // output for those hours, never revised), ERA5 assimilates real observations after the fact. The
-// forecast endpoint above is still used for the forward-looking rain-skip window.
+// forecast endpoint above is still used for the forward-looking forecast-rain window.
 static constexpr const char* OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive";
 static constexpr const char* WEATHERAPI_FORECAST_URL = "https://api.weatherapi.com/v1/forecast.json";
 static constexpr const char* WEATHERAPI_HISTORY_URL = "https://api.weatherapi.com/v1/history.json";

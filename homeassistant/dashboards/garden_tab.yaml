@@ -417,12 +417,7 @@
               - type: numeric-input
                 style: buttons
           - type: tile
-            entity: input_number.irrigator_rain_skip_probability
-            features:
-              - type: numeric-input
-                style: buttons
-          - type: tile
-            entity: input_number.irrigator_rain_skip_amount
+            entity: input_number.irrigator_rain_forecast_probability
             features:
               - type: numeric-input
                 style: buttons

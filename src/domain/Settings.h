@@ -36,7 +36,7 @@ struct Settings {
     bool alertValveOc = true;
 
     // Weather-based auto-adjustment. Master on/off switch for the whole feature (both the
-    // percentage recalculation and the rain-skip check) — defaults true so upgrading an existing
+    // percentage recalculation, including the forecast-rain term) — defaults true so upgrading an existing
     // settings.json (missing this field) preserves today's behavior instead of silently disabling
     // a feature that was already running. Geolocation resolution (tryGeolocateIfDue in main.ino)
     // is intentionally NOT gated by this: it's cheap, one-time, and its result (city/coordinates)
@@ -56,11 +56,10 @@ struct Settings {
     // reboot.
     int16_t upperLimitPercent = board::AUTOADJUSTMENT_DEFAULT_UPPER_LIMIT_PERCENT;
     int16_t lowerLimitPercent = board::AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT;
-    // Step 1's rain-skip trigger thresholds (see domain::shouldSkipForRain) — whole percent/mm,
-    // matching the rotary UI's existing integer-only editing convention (no field in this project
-    // is rotary-edited as a float today).
-    int16_t rainSkipProbabilityPercent = board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_PROBABILITY_PERCENT;
-    int16_t rainSkipAmountMm = board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_AMOUNT_MM;
+    // Step 1's forecast-rain threshold (see domain::effectiveRainMm): the forecast counts as fallen
+    // rain only at/over this probability — whole percent, matching the rotary UI's existing
+    // integer-only editing convention (no field in this project is rotary-edited as a float today).
+    int16_t rainForecastProbabilityPercent = board::AUTOADJUSTMENT_DEFAULT_RAIN_FORECAST_PROBABILITY_PERCENT;
     // WeatherAPI.com key, used only as the Phase 4 fallback when Open-Meteo (no key required)
     // fails. Note: sensor.irrigator_settings in the HA package mirrors the whole settings.json
     // payload as attributes (see homeassistant/packages/irrigator.yaml), so this key is visible
@@ -96,7 +95,7 @@ bool validateSettings(const Settings& settings);
 // (valve/pump_current_base_level, alertPumpUc/Oc/ValveUc/Oc), FlowMeter
 // (flow_meter_enabled/expected_flow_rate_lpm), Watering (everything else: watering
 // percentage, schedule_active, default_manual_duration, auto_adjustment_enabled, upper/lower limit,
-// rain_skip_probability_percent/rain_skip_amount_mm, weatherapi_key). parseSettings() additionally
+// rain_forecast_probability_percent, weatherapi_key). parseSettings() additionally
 // falls back to each field's old flat top-level key when its new nested key is absent, so a
 // pre-restructuring settings.json still loads its real values instead of resetting to defaults —
 // see main.ino's boot-time load, which persists once right after a successful parse to rewrite the

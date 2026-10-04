@@ -186,17 +186,38 @@ void test_auto_adjustment_percentage_uses_factory_default_coefficients() {
             31.5f, 2.0f, 40, 200));
 }
 
-void test_should_skip_for_rain_probability_inclusive_amount_exclusive() {
-    TEST_ASSERT_FALSE(irrigator::domain::shouldSkipForRain(69.9f, 10.0f, 70, 4));  // Probability under 70%.
-    TEST_ASSERT_TRUE(irrigator::domain::shouldSkipForRain(70.0f, 4.1f, 70, 4));    // Probability >=70% now counts.
-    TEST_ASSERT_FALSE(irrigator::domain::shouldSkipForRain(70.0f, 4.0f, 70, 4));   // Amount exactly 4.0mm still doesn't.
-    TEST_ASSERT_TRUE(irrigator::domain::shouldSkipForRain(100.0f, 4.1f, 70, 4));
+void test_effective_rain_counts_forecast_when_probability_at_or_over_threshold() {
+    // Under the probability threshold: the forecast is ignored, only past rain counts.
+    TEST_ASSERT_EQUAL_FLOAT(3.0f, irrigator::domain::effectiveRainMm(3.0f, 69.9f, 10.0f, 70));
+    // Probability >=70% (inclusive): the whole forecast amount is added to the past rain.
+    TEST_ASSERT_EQUAL_FLOAT(13.0f, irrigator::domain::effectiveRainMm(3.0f, 70.0f, 10.0f, 70));
+    TEST_ASSERT_EQUAL_FLOAT(13.0f, irrigator::domain::effectiveRainMm(3.0f, 100.0f, 10.0f, 70));
 }
 
-void test_should_skip_for_rain_uses_configured_thresholds() {
-    // Same inputs, different (lower) configured thresholds -> now triggers where it didn't above.
-    TEST_ASSERT_TRUE(irrigator::domain::shouldSkipForRain(50.0f, 2.5f, 50, 2));
-    TEST_ASSERT_FALSE(irrigator::domain::shouldSkipForRain(50.0f, 2.5f, 70, 4));
+void test_effective_rain_has_no_amount_threshold() {
+    // Small forecasts count in full too - no cliff at some minimum amount.
+    TEST_ASSERT_EQUAL_FLOAT(3.5f, irrigator::domain::effectiveRainMm(3.0f, 70.0f, 0.5f, 70));
+    // A certain forecast of no rain adds nothing.
+    TEST_ASSERT_EQUAL_FLOAT(3.0f, irrigator::domain::effectiveRainMm(3.0f, 100.0f, 0.0f, 70));
+}
+
+void test_effective_rain_uses_configured_threshold() {
+    // Same inputs, lower configured threshold -> the forecast now counts where it didn't.
+    TEST_ASSERT_EQUAL_FLOAT(2.5f, irrigator::domain::effectiveRainMm(0.0f, 50.0f, 2.5f, 50));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, irrigator::domain::effectiveRainMm(0.0f, 50.0f, 2.5f, 70));
+}
+
+// The example the feature is specified by: 3mm fell in the past days and 6mm are forecast at >=70%,
+// so the formula is run as if 9mm had fallen — the run is reduced, not cancelled outright.
+void test_effective_rain_forecast_is_added_to_past_rain_in_the_formula() {
+    const float rainMm = irrigator::domain::effectiveRainMm(3.0f, 70.0f, 6.0f, 70);
+    TEST_ASSERT_EQUAL_FLOAT(9.0f, rainMm);
+    // 100 - 9mm*3.1 = 72.1 -> 72%, versus 100 - 3mm*3.1 = 90.7 -> 91% had the forecast been ignored.
+    TEST_ASSERT_EQUAL_INT16(72, irrigator::domain::computeAutoCorrectedPercentage(
+                                    irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C, rainMm, 40, 200));
+    TEST_ASSERT_EQUAL_INT16(91, irrigator::domain::computeAutoCorrectedPercentage(
+                                    irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
+                                    irrigator::domain::effectiveRainMm(3.0f, 69.0f, 6.0f, 70), 40, 200));
 }
 
 // The skip/clamp comparisons are both strict (`<` lower, `>` upper), so a percentage landing
@@ -984,10 +1005,7 @@ void test_validate_settings_rejects_each_out_of_range_field() {
     TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
 
     settings = baseline;
-    settings.rainSkipProbabilityPercent = 101;
-    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
-    settings = baseline;
-    settings.rainSkipAmountMm = -1;
+    settings.rainForecastProbabilityPercent = 101;
     TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
 
     settings = baseline;
@@ -1068,8 +1086,7 @@ void test_settings_store_round_trips_zones_location_and_api_key() {
     snprintf(settings.city, sizeof(settings.city), "%s", "Testville");
     snprintf(settings.weatherApiKey, sizeof(settings.weatherApiKey), "%s", "abc123deadbeef");
     settings.defaultManualDuration = 9;
-    settings.rainSkipProbabilityPercent = 55;
-    settings.rainSkipAmountMm = 7;
+    settings.rainForecastProbabilityPercent = 55;
 
     char buffer[irrigator::board::SETTINGS_JSON_MAX_BYTES];
     const size_t written = irrigator::domain::serializeSettings(settings, buffer, sizeof(buffer));
@@ -1088,8 +1105,40 @@ void test_settings_store_round_trips_zones_location_and_api_key() {
     TEST_ASSERT_EQUAL_STRING("Testville", roundTripped.city);
     TEST_ASSERT_EQUAL_STRING("abc123deadbeef", roundTripped.weatherApiKey);
     TEST_ASSERT_EQUAL_UINT8(9, roundTripped.defaultManualDuration);
-    TEST_ASSERT_EQUAL_INT16(55, roundTripped.rainSkipProbabilityPercent);
-    TEST_ASSERT_EQUAL_INT16(7, roundTripped.rainSkipAmountMm);
+    TEST_ASSERT_EQUAL_INT16(55, roundTripped.rainForecastProbabilityPercent);
+    // The retired amount threshold must not be written back out.
+    TEST_ASSERT_NULL(strstr(buffer, "rain_skip_amount_mm"));
+}
+
+// Devices flashed before the amount threshold was retired still have rain_skip_amount_mm in their
+// settings.json. It must be ignored, not rejected, so the rest of the file still loads.
+void test_parse_settings_ignores_retired_rain_skip_amount() {
+    const char json[] =
+        R"({"Watering":{"rain_forecast_probability_percent":60,"rain_skip_amount_mm":4}})";
+    irrigator::domain::Settings parsed;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(json, sizeof(json) - 1, parsed));
+    TEST_ASSERT_EQUAL_INT16(60, parsed.rainForecastProbabilityPercent);
+}
+
+// The setting was renamed from rain_skip_probability_percent; a stored file (or a not-yet-updated HA
+// upload) using the old key must keep its value rather than fall back to the default.
+void test_parse_settings_reads_legacy_rain_skip_probability_key() {
+    const char nested[] = R"({"Watering":{"rain_skip_probability_percent":55}})";
+    irrigator::domain::Settings parsed;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(nested, sizeof(nested) - 1, parsed));
+    TEST_ASSERT_EQUAL_INT16(55, parsed.rainForecastProbabilityPercent);
+
+    const char flat[] = R"({"rain_skip_probability_percent":45})";
+    irrigator::domain::Settings parsedFlat;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(flat, sizeof(flat) - 1, parsedFlat));
+    TEST_ASSERT_EQUAL_INT16(45, parsedFlat.rainForecastProbabilityPercent);
+
+    // The new key wins when both are present.
+    const char both[] =
+        R"({"Watering":{"rain_forecast_probability_percent":80,"rain_skip_probability_percent":55}})";
+    irrigator::domain::Settings parsedBoth;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(both, sizeof(both) - 1, parsedBoth));
+    TEST_ASSERT_EQUAL_INT16(80, parsedBoth.rainForecastProbabilityPercent);
 }
 
 // serializeJson() truncates against an undersized buffer and still reports a nonzero byte count
@@ -1250,6 +1299,32 @@ void test_merge_settings_keeps_untouched_fields_and_updates_present_ones() {
     TEST_ASSERT_EQUAL_INT16(150, merged.wateringPercentage);
     // Zone name that wasn't mentioned in the upload must survive.
     TEST_ASSERT_EQUAL_STRING("Trees", merged.zoneNames[2]);
+}
+
+// An HA package that predates the rename still publishes rain_skip_probability_percent; that upload
+// must keep tuning the threshold, and the new key must win when both are sent.
+void test_merge_settings_accepts_legacy_and_new_rain_probability_key() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    irrigator::domain::Settings merged;
+    char rejected[256];
+
+    const char* legacy = R"({"Watering":{"rain_skip_probability_percent":55}})";
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, legacy, strlen(legacy), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("", rejected);
+    TEST_ASSERT_EQUAL_INT16(55, merged.rainForecastProbabilityPercent);
+
+    const char* both =
+        R"({"Watering":{"rain_forecast_probability_percent":80,"rain_skip_probability_percent":55}})";
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, both, strlen(both), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_INT16(80, merged.rainForecastProbabilityPercent);
+
+    // An out-of-range legacy value is rejected under the new field name, not silently clamped.
+    const char* bad = R"({"Watering":{"rain_skip_probability_percent":101}})";
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, bad, strlen(bad), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_NOT_NULL(strstr(rejected, "Watering.rain_forecast_probability_percent"));
 }
 
 void test_merge_settings_rejects_bad_type_field_and_alerts_but_keeps_rest() {
@@ -2248,38 +2323,35 @@ void test_ui_state_machine_settings_alert_toggles_sit_above_calibrate() {
     TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexCalibrate, ui.selectedIndex());
 }
 
-void test_ui_state_machine_settings_rain_skip_threshold_edit() {
+void test_ui_state_machine_settings_rain_forecast_threshold_edit() {
     irrigator::domain::UiStateMachine ui;
     irrigator::domain::UiStateMachine::Context ctx;
-    ctx.rainSkipProbabilityPercent = 70;
-    ctx.rainSkipAmountMm = 4;
+    ctx.rainForecastProbabilityPercent = 70;
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Schedule -> Test all zones
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Test all zones -> Settings
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
 
-    for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexRainSkipProbability; ++i) {
+    for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexRainForecastProbability; ++i) {
         ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 350 + i);
     }
-    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);  // enter rain-skip-probability edit
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);  // enter forecast-rain-probability edit
     TEST_ASSERT_TRUE(ui.editing());
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 450);
-    TEST_ASSERT_EQUAL_INT16(80, ui.pendingRainSkipProbability());
+    TEST_ASSERT_EQUAL_INT16(80, ui.pendingRainForecastProbability());
     const irrigator::domain::UiIntent probIntent =
         ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);
-    TEST_ASSERT_TRUE(probIntent.type == irrigator::domain::UiIntentType::SetRainSkipProbability);
+    TEST_ASSERT_TRUE(probIntent.type == irrigator::domain::UiIntentType::SetRainForecastProbability);
     TEST_ASSERT_EQUAL_INT16(80, probIntent.percentage);
     TEST_ASSERT_FALSE(ui.editing());
 
-    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 550);  // -> rain-skip amount
-    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 600);      // enter rain-skip-amount edit
-    ui.handleInput(irrigator::domain::UiInputEvent::CounterClockwise, ctx, 650);
-    TEST_ASSERT_EQUAL_INT16(3, ui.pendingRainSkipAmount());  // Amount steps by 1, not 10.
-    const irrigator::domain::UiIntent amountIntent =
-        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 700);
-    TEST_ASSERT_TRUE(amountIntent.type == irrigator::domain::UiIntentType::SetRainSkipAmount);
-    TEST_ASSERT_EQUAL_INT16(3, amountIntent.percentage);
+    // The row right after the probability is now the first alert toggle - the retired amount row
+    // must not sit between them.
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 550);
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexAlertPumpUc, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexRainForecastProbability + 1,
+                             ui.selectedIndex());
 }
 
 void test_ui_state_machine_settings_restart_confirm_flow() {
@@ -3738,8 +3810,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_auto_adjustment_percentage_exactly_on_lower_limit_is_kept_not_zeroed);
     RUN_TEST(test_auto_adjustment_percentage_exactly_on_upper_limit_is_not_clamped_down);
     RUN_TEST(test_auto_adjustment_percentage_zero_lower_limit_floors_at_zero);
-    RUN_TEST(test_should_skip_for_rain_probability_inclusive_amount_exclusive);
-    RUN_TEST(test_should_skip_for_rain_uses_configured_thresholds);
+    RUN_TEST(test_effective_rain_counts_forecast_when_probability_at_or_over_threshold);
+    RUN_TEST(test_effective_rain_has_no_amount_threshold);
+    RUN_TEST(test_effective_rain_uses_configured_threshold);
+    RUN_TEST(test_effective_rain_forecast_is_added_to_past_rain_in_the_formula);
     RUN_TEST(test_open_meteo_now_index_is_days_back_times_24_plus_hour);
     RUN_TEST(test_open_meteo_now_index_at_midnight);
     RUN_TEST(test_open_meteo_now_index_with_no_past_days_is_just_the_hour);
@@ -3791,6 +3865,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_settings_store_rejects_out_of_range_percentage);
     RUN_TEST(test_settings_store_round_trips);
     RUN_TEST(test_settings_store_round_trips_zones_location_and_api_key);
+    RUN_TEST(test_parse_settings_ignores_retired_rain_skip_amount);
+    RUN_TEST(test_parse_settings_reads_legacy_rain_skip_probability_key);
     RUN_TEST(test_serialize_into_undersized_buffer_produces_output_that_does_not_parse_back);
     RUN_TEST(test_settings_store_defaults_auto_adjustment_enabled_to_true_when_missing);
     RUN_TEST(test_settings_store_defaults_alert_toggles_to_true_when_missing);
@@ -3800,6 +3876,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_merge_config_rejects_out_of_range_field_but_keeps_rest);
     RUN_TEST(test_merge_config_rejects_malformed_json_outright);
     RUN_TEST(test_merge_settings_keeps_untouched_fields_and_updates_present_ones);
+    RUN_TEST(test_merge_settings_accepts_legacy_and_new_rain_probability_key);
     RUN_TEST(test_merge_settings_rejects_bad_type_field_and_alerts_but_keeps_rest);
     RUN_TEST(test_merge_settings_rejects_out_of_range_numeric_field);
     RUN_TEST(test_merge_settings_updates_single_zone_without_disturbing_others);
@@ -3850,7 +3927,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_settings_schedule_active_toggle_is_first_item);
     RUN_TEST(test_ui_state_machine_settings_auto_adjustment_toggle_is_second_item);
     RUN_TEST(test_ui_state_machine_settings_alert_toggles_sit_above_calibrate);
-    RUN_TEST(test_ui_state_machine_settings_rain_skip_threshold_edit);
+    RUN_TEST(test_ui_state_machine_settings_rain_forecast_threshold_edit);
     RUN_TEST(test_ui_state_machine_settings_restart_confirm_flow);
     RUN_TEST(test_ui_state_machine_settings_calibrate_confirm_flow);
     RUN_TEST(test_ui_state_machine_calibrate_result_shows_outcome_and_ok_returns_to_normal);

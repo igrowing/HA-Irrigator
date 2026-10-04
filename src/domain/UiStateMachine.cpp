@@ -865,12 +865,11 @@ UiIntent UiStateMachine::handleMenuSettings(UiInputEvent event, const Context& c
     UiIntent intent;
 
     // selectedIndex_ is left untouched by entering edit mode, so it still tells us which of the
-    // editable int16 rows is being adjusted right now. Step size defaults to 10 (matches the
-    // percentage-style fields); rain-skip amount uses a finer step since its useful range is much
-    // narrower (a handful of mm, not 0-500%).
+    // editable int16 rows is being adjusted right now. All of them are percentages, so the step
+    // is 10.
     if (editing_) {
         int16_t* pending = nullptr;
-        int16_t step = 10;
+        constexpr int16_t step = 10;
         UiIntentType setIntentType = UiIntentType::None;
         switch (selectedIndex_) {
             case kSettingsIndexPercentage:
@@ -885,14 +884,9 @@ UiIntent UiStateMachine::handleMenuSettings(UiInputEvent event, const Context& c
                 pending = &pendingLowerLimit_;
                 setIntentType = UiIntentType::SetLowerLimit;
                 break;
-            case kSettingsIndexRainSkipProbability:
-                pending = &pendingRainSkipProbability_;
-                setIntentType = UiIntentType::SetRainSkipProbability;
-                break;
-            case kSettingsIndexRainSkipAmount:
-                pending = &pendingRainSkipAmount_;
-                step = 1;
-                setIntentType = UiIntentType::SetRainSkipAmount;
+            case kSettingsIndexRainForecastProbability:
+                pending = &pendingRainForecastProbability_;
+                setIntentType = UiIntentType::SetRainForecastProbability;
                 break;
             default:
                 break;
@@ -936,11 +930,8 @@ UiIntent UiStateMachine::handleMenuSettings(UiInputEvent event, const Context& c
             } else if (selectedIndex_ == kSettingsIndexLowerLimit) {
                 pendingLowerLimit_ = ctx.lowerLimitPercent;
                 editing_ = true;
-            } else if (selectedIndex_ == kSettingsIndexRainSkipProbability) {
-                pendingRainSkipProbability_ = ctx.rainSkipProbabilityPercent;
-                editing_ = true;
-            } else if (selectedIndex_ == kSettingsIndexRainSkipAmount) {
-                pendingRainSkipAmount_ = ctx.rainSkipAmountMm;
+            } else if (selectedIndex_ == kSettingsIndexRainForecastProbability) {
+                pendingRainForecastProbability_ = ctx.rainForecastProbabilityPercent;
                 editing_ = true;
             } else if (selectedIndex_ == kSettingsIndexScheduleActive) {
                 intent.type = UiIntentType::ToggleScheduleActive;

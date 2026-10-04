@@ -384,8 +384,7 @@ SETTINGS
   Adjust: 100 %
   Upper limit: 200 %
   Lower limit: 40 %
-  Skip rain prob: 70 %
-  Skip rain amt: 4 mm
+  Fcst rain prob: 70 %
   Alert pump UC: on
   Alert pump OC: on
   Alert valve UC: on
@@ -400,7 +399,7 @@ SETTINGS
   off, watering is manual/on-demand, and there's nothing for the daily **Adjust** recalculation to
   apply to.
 - **Auto-adjust**: the master on/off switch for the whole weather-based auto-adjustment feature
-  (both the daily percentage recalculation and the rain-skip check, below) — click to flip it.
+  (the daily percentage recalculation, below) — click to flip it.
   Turning it off freezes **Adjust** at whatever it's currently set to (a plain manual value) until
   turned back on; it's also available as `switch.irrigator_auto_adjustment` in Home Assistant,
   topmost in the **Auto-adjustment Weather Data** card.
@@ -412,9 +411,9 @@ SETTINGS
   within (defaults 200% / 40%). If the computed percentage would fall below **Lower limit**, the
   day's watering is skipped entirely (0%) rather than clamped up to it; above **Upper limit**, it's
   capped at that value.
-- **Skip rain prob** / **Skip rain amt**: the two thresholds that decide whether today's watering
-  is skipped outright because of rain in the forecast (defaults 70% / 4mm) — see **Step 1** below
-  for exactly how they're combined.
+- **Fcst rain prob**: the probability at or above which the rain in the forecast is counted as if
+  it had already fallen (default 70%) — see **Step 1** below. (The name is historical; a rainy
+  forecast reduces the watering rather than cancelling it.)
 - **Alert pump UC** / **Alert pump OC** / **Alert valve UC** / **Alert valve OC**: on/off switches
   (click to flip, no extra confirmation) for the four over/under-current alerts — see **How to
   control over-current and under-current alerts**, near the end of this document, for what these
@@ -484,49 +483,49 @@ This requires physical access to the device, on purpose — it can't be triggere
 
 Everything in this section only happens while **Auto-adjust** (Settings, above) is on — turn it off
 and the device just keeps using **Adjust** exactly as you last set it, with no daily recalculation
-and no rain-skip check.
+and no forecast-rain counting.
 
 Once the device has resolved its location (see **City** / **Loc** in Info, above), it checks
-the weather once a day — a few hours before your first scheduled watering — and either skips the
-day's watering entirely, or nudges the **Adjust** percentage up or down for that day. Two checks
-happen, always in this order, and the first one decides whether the second one runs at all.
+the weather once a day — a few hours before your first scheduled watering — and nudges the
+**Adjust** percentage up or down for that day (down to 0% when it has been, or is about to be,
+wet enough). Two steps happen, always in this order, and both feed one calculation.
 
-### Step 1 — Is today's watering skipped because of rain?
+### Step 1 — Does the forecast rain count as already fallen?
 
-The device looks at the rain **forecast for the next 12 hours** — the only forward-looking check
-in the whole feature; everything in Step 2 below looks backward instead. Watering is skipped for
-the next 24 hours only if **both** are true at once, against the **Skip rain prob** / **Skip rain
-amt** thresholds from Settings (above; defaults shown here):
-- rain probability is **at or above Skip rain prob** (default 70%), **and**
-- the forecast rain amount is **strictly above Skip rain amt** (default 4mm — exactly 4mm doesn't count)
+The device looks at the rain **forecast for the next 12 hours** — the only forward-looking input
+in the whole feature; the temperature and past rain in Step 2 below look backward. If the highest
+rain probability in that window is **at or above Fcst rain prob** from Settings (above; default
+70%), the whole forecast rain amount is added to the rain that fell in the past 5 days, as if it
+had already fallen. Below that probability the forecast is ignored and only the past 5 days' rain
+counts. There is no minimum amount: the more rain is forecast, the more it counts.
 
-If either condition isn't met, nothing is skipped — Step 2 (below) runs as normal. Note the two
-thresholds work differently on purpose: probability counts *at* the threshold, amount only counts
-*above* it — the table below uses the factory-default values (70% / 4mm) to illustrate.
-
-| Rain probability (next 12h) | Rain amount (next 12h) | Watering skipped today? |
+| Rain probability (next 12h) | Rain amount (next 12h) | Added to the past rain? |
 |---|---|---|
 | 50% | 10mm | No — probability under 70% |
-| 70% | 4mm | No — probability qualifies, but exactly 4mm doesn't count |
-| 70% | 4.1mm | **Yes** |
-| 71% | 4mm | No — probability well over, but amount still exactly 4mm |
-| 80% | 5mm | **Yes** |
-| 100% | 0mm | No — certain but no actual rain amount forecast |
+| 69% | 6mm | No — just under 70% |
+| 70% | 6mm | **Yes, +6mm** — 70% is enough |
+| 70% | 1mm | **Yes, +1mm** |
+| 100% | 0mm | Counts, but adds nothing — no rain amount forecast |
 | 30% | 20mm | No — probability too low despite the heavy rain amount |
 
-Lowering either threshold from Settings makes the device skip more readily (e.g. dropping **Skip
-rain amt** to 2mm would make the 70%/4mm row above trigger a skip too); raising them makes it more
-tolerant of rain in the forecast.
+Example: 3mm fell over the past 5 days and 6mm are forecast at 70%. The forecast qualifies, so
+Step 2 is calculated as if **9mm** had fallen — at a mild 23°C that is 72% instead of the 91% the
+past 3mm alone would give. A heavy enough forecast pushes the result under **Lower limit**, which
+is what cancels the day's watering; a moderate one only shortens it.
 
-### Step 2 — If not skipped: how much to adjust
+Lowering **Fcst rain prob** from Settings makes the device count the forecast more readily;
+raising it makes the device more tolerant of rain in the forecast.
 
-If Step 1 didn't skip the day, the device recalculates **Adjust** (the watering percentage)
-automatically, based on the **last 5 days**' actual weather — never the forecast:
+### Step 2 — How much to adjust
+
+The device recalculates **Adjust** (the watering percentage) automatically, based on the
+**last 5 days**' actual weather, plus the forecast rain if Step 1 counted it:
 - the **average of the past 5 days' daily *maximum* temperatures** — hotter than 23°C increases
   the percentage, cooler decreases it. Note this is the average daily *peak*, not an all-day average:
   a day that runs 16°C overnight and 28°C at noon counts as 28°C here, so 23°C is a mild day,
   not a warm one;
-- the **total rainfall over the past 5 days** — more recent rain decreases the percentage.
+- the **total rainfall over the past 5 days** (plus the qualifying forecast rain from Step 1) —
+  more rain decreases the percentage.
 
 Both come from Open-Meteo's ERA5 reanalysis archive, which is fitted to real observations after the
 fact (weather stations, radar, satellite) rather than being a forecast model's own guess about what
@@ -677,7 +676,7 @@ then turn to the row you want:
 
 ```
 SETTINGS
-  Skip rain amt: 4 mm
+  Fcst rain prob: 70 %
 > Alert pump UC: on
   Alert pump OC: on
   Alert valve UC: on

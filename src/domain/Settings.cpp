@@ -8,6 +8,12 @@ namespace irrigator::domain {
 
 namespace {
 
+// rain_forecast_probability_percent was called rain_skip_probability_percent until the forecast
+// stopped cancelling the run and started counting as fallen rain. Both parseSettings() (a stored
+// file) and mergeSettings() (an upload from an HA package that hasn't been updated yet) still
+// accept the old key, so an existing unit keeps its tuned value instead of resetting to default.
+constexpr const char* kLegacyRainSkipProbabilityKey = "rain_skip_probability_percent";
+
 // True if `value` is present and, for a string, non-empty — the "there's something here worth
 // considering" test every merged field starts with. A JSON null and an absent key both read as
 // isNull() via ArduinoJson.
@@ -77,10 +83,7 @@ bool validateSettings(const Settings& settings) {
         settings.upperLimitPercent > 500) {
         return false;
     }
-    if (settings.rainSkipProbabilityPercent < 0 || settings.rainSkipProbabilityPercent > 100) {
-        return false;
-    }
-    if (settings.rainSkipAmountMm < 0) {
+    if (settings.rainForecastProbabilityPercent < 0 || settings.rainForecastProbabilityPercent > 100) {
         return false;
     }
     // 500 L/min is already generous headroom above anything this residential-scale device's
@@ -148,11 +151,12 @@ bool parseSettings(const char* json, size_t length, Settings& out) {
         watering["upper_limit"] | (doc["upper_limit"] | board::AUTOADJUSTMENT_DEFAULT_UPPER_LIMIT_PERCENT);
     parsed.lowerLimitPercent =
         watering["lower_limit"] | (doc["lower_limit"] | board::AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT);
-    parsed.rainSkipProbabilityPercent =
-        watering["rain_skip_probability_percent"] |
-        (doc["rain_skip_probability_percent"] | board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_PROBABILITY_PERCENT);
-    parsed.rainSkipAmountMm = watering["rain_skip_amount_mm"] |
-                              (doc["rain_skip_amount_mm"] | board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_AMOUNT_MM);
+    parsed.rainForecastProbabilityPercent =
+        watering["rain_forecast_probability_percent"] |
+        (watering[kLegacyRainSkipProbabilityKey] |
+         (doc["rain_forecast_probability_percent"] |
+          (doc[kLegacyRainSkipProbabilityKey] |
+           board::AUTOADJUSTMENT_DEFAULT_RAIN_FORECAST_PROBABILITY_PERCENT)));
     snprintf(parsed.weatherApiKey, sizeof(parsed.weatherApiKey), "%s",
              watering["weatherapi_key"] | (doc["weatherapi_key"] | ""));
 
@@ -365,22 +369,16 @@ bool mergeSettings(const Settings& existing,
         }
     }
 
-    JsonVariantConst rainSkipProbability = watering["rain_skip_probability_percent"];
-    if (hasValue(rainSkipProbability)) {
-        if (rainSkipProbability.is<long>() && rainSkipProbability.as<long>() >= 0 &&
-            rainSkipProbability.as<long>() <= 100) {
-            out.rainSkipProbabilityPercent = static_cast<int16_t>(rainSkipProbability.as<long>());
-        } else {
-            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.rain_skip_probability_percent");
-        }
+    JsonVariantConst rainForecastProbability = watering["rain_forecast_probability_percent"];
+    if (!hasValue(rainForecastProbability)) {
+        rainForecastProbability = watering[kLegacyRainSkipProbabilityKey];
     }
-
-    JsonVariantConst rainSkipAmount = watering["rain_skip_amount_mm"];
-    if (hasValue(rainSkipAmount)) {
-        if (rainSkipAmount.is<long>() && rainSkipAmount.as<long>() >= 0) {
-            out.rainSkipAmountMm = static_cast<int16_t>(rainSkipAmount.as<long>());
+    if (hasValue(rainForecastProbability)) {
+        if (rainForecastProbability.is<long>() && rainForecastProbability.as<long>() >= 0 &&
+            rainForecastProbability.as<long>() <= 100) {
+            out.rainForecastProbabilityPercent = static_cast<int16_t>(rainForecastProbability.as<long>());
         } else {
-            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.rain_skip_amount_mm");
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.rain_forecast_probability_percent");
         }
     }
 
@@ -495,8 +493,7 @@ size_t serializeSettings(const Settings& settings, char* buffer, size_t bufferSi
     watering["auto_adjustment_enabled"] = settings.autoAdjustmentEnabled;
     watering["upper_limit"] = settings.upperLimitPercent;
     watering["lower_limit"] = settings.lowerLimitPercent;
-    watering["rain_skip_probability_percent"] = settings.rainSkipProbabilityPercent;
-    watering["rain_skip_amount_mm"] = settings.rainSkipAmountMm;
+    watering["rain_forecast_probability_percent"] = settings.rainForecastProbabilityPercent;
     watering["weatherapi_key"] = settings.weatherApiKey;
 
     JsonObject location = doc["Location"].to<JsonObject>();

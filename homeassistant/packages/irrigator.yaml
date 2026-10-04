@@ -343,7 +343,7 @@ mqtt:
       availability: *irrigator_availability
 
     # Read-only echo of the device's own /skip_rain_until topic (published by
-    # applyRainSkipDecision() / cmd/skip_rain_until in main.ino). Payload is a bare, naive UTC
+    # the cmd/skip_rain_until handler in main.ino). Payload is a bare, naive UTC
     # timestamp string ("2026-09-02T06:00:00", no zone suffix) - deliberately NOT given
     # device_class: timestamp here, since HA rejects a tz-naive value for that class; consumers
     # (sensor.irrigator_last_decision below) append "+00:00" before parsing, same as the
@@ -583,7 +583,7 @@ template:
             data: {topic: "irrigatorF4/cmd/scheduled", payload: "false"}
 
       # Master on/off for weather-based auto-adjustment (both the daily percentage recalculation
-      # and the rain-skip check) — same template-switch-over-echo-sensor pattern as "Irrigator
+      # and the forecast-rain term) — same template-switch-over-echo-sensor pattern as "Irrigator
       # Schedule Active" above, for the same reason: writes go through
       # script.irrigator_enqueue_or_publish so they queue for retry when offline, and it carries
       # no `availability:` so it's never greyed out.
@@ -1173,10 +1173,11 @@ input_number:
     unit_of_measurement: "%"
     initial: 40
 
-  # Step 1's rain-skip trigger thresholds - also user-configurable from HA (see
-  # domain::shouldSkipForRain). Probability is inclusive (>=), amount is not (>).
-  irrigator_rain_skip_probability:
-    name: "Rain-Skip Probability Threshold"
+  # Step 1's forecast-rain threshold - also user-configurable from HA (see
+  # domain::effectiveRainMm): a forecast at/over this probability (>=) is counted as
+  # already-fallen rain, in full, in the percentage formula.
+  irrigator_rain_forecast_probability:
+    name: "Forecast Rain Probability Threshold"
     icon: mdi:weather-pouring
     min: 0
     max: 100
@@ -1184,15 +1185,6 @@ input_number:
     mode: box
     unit_of_measurement: "%"
     initial: 70
-  irrigator_rain_skip_amount:
-    name: "Rain-Skip Amount Threshold"
-    icon: mdi:water-alert-outline
-    min: 0
-    max: 50
-    step: 1
-    mode: box
-    unit_of_measurement: "mm"
-    initial: 4
 
   # Flow-meter anomaly-check threshold (settings.json's FlowMeter.expected_flow_rate_lpm) - the
   # steady-state flow rate expected while a zone is watering, compared against live readings
@@ -1691,8 +1683,7 @@ script:
               'default_manual_duration': states('input_number.irrigator_default_manual_duration') | int(5),
               'upper_limit': states('input_number.irrigator_upper_limit') | int(200),
               'lower_limit': states('input_number.irrigator_lower_limit') | int(40),
-              'rain_skip_probability_percent': states('input_number.irrigator_rain_skip_probability') | int(70),
-              'rain_skip_amount_mm': states('input_number.irrigator_rain_skip_amount') | int(4),
+              'rain_forecast_probability_percent': states('input_number.irrigator_rain_forecast_probability') | int(70),
               'weatherapi_key': states('input_text.irrigator_weatherapi_key') | default('')
             } %}
             {% set location = {
