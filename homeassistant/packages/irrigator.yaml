@@ -1531,6 +1531,19 @@ sensor:
     sampling_size: 1000
 
 # -----------------------------------------------------------------------
+# Keep the per-minute countdown sensors (template block above) out of the recorder database: they
+# only change while a run is active, are derived from sensor.irrigator_watering_state (which is
+# recorded), and have no value as history. Excluding them skips both state rows and statistics.
+# Existing rows are purged with the recorder.purge_entities action (entity_globs below).
+# Do not also define `recorder:` in configuration.yaml - merge these keys there instead.
+# -----------------------------------------------------------------------
+recorder:
+  exclude:
+    entity_globs:
+      - sensor.irrigator_zone_*_remaining
+      - sensor.irrigator_pump_remaining
+
+# -----------------------------------------------------------------------
 # Manual-run duration sliders (1-120 min), one per pump/zone card.
 # -----------------------------------------------------------------------
 input_number:
