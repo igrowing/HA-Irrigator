@@ -491,6 +491,7 @@
               - type: custom:bubble-card
                 card_type: button
                 button_type: switch
+                show_state: true
                 entity: input_boolean.irrigator_zone_1_enabled
                 name: Enabled
           - type: grid
@@ -507,6 +508,7 @@
               - type: custom:bubble-card
                 card_type: button
                 button_type: switch
+                show_state: true
                 entity: input_boolean.irrigator_zone_2_enabled
                 name: Enabled
           - type: grid
@@ -523,6 +525,7 @@
               - type: custom:bubble-card
                 card_type: button
                 button_type: switch
+                show_state: true
                 entity: input_boolean.irrigator_zone_3_enabled
                 name: Enabled
           - type: grid
@@ -539,6 +542,7 @@
               - type: custom:bubble-card
                 card_type: button
                 button_type: switch
+                show_state: true
                 entity: input_boolean.irrigator_zone_4_enabled
                 name: Enabled
           - type: grid
@@ -555,6 +559,7 @@
               - type: custom:bubble-card
                 card_type: button
                 button_type: switch
+                show_state: true
                 entity: input_boolean.irrigator_zone_5_enabled
                 name: Enabled
           - type: grid
@@ -571,6 +576,7 @@
               - type: custom:bubble-card
                 card_type: button
                 button_type: switch
+                show_state: true
                 entity: input_boolean.irrigator_zone_6_enabled
                 name: Enabled
           - type: grid
@@ -587,6 +593,7 @@
               - type: custom:bubble-card
                 card_type: button
                 button_type: switch
+                show_state: true
                 entity: input_boolean.irrigator_zone_7_enabled
                 name: Enabled
           - type: grid
@@ -603,6 +610,7 @@
               - type: custom:bubble-card
                 card_type: button
                 button_type: switch
+                show_state: true
                 entity: input_boolean.irrigator_zone_8_enabled
                 name: Enabled
           - type: grid
@@ -619,6 +627,7 @@
               - type: custom:bubble-card
                 card_type: button
                 button_type: switch
+                show_state: true
                 entity: input_boolean.irrigator_zone_9_enabled
                 name: Enabled
           - type: grid
@@ -635,6 +644,7 @@
               - type: custom:bubble-card
                 card_type: button
                 button_type: switch
+                show_state: true
                 entity: input_boolean.irrigator_zone_10_enabled
                 name: Enabled
           - type: grid
@@ -651,6 +661,7 @@
               - type: custom:bubble-card
                 card_type: button
                 button_type: switch
+                show_state: true
                 entity: input_boolean.irrigator_zone_11_enabled
                 name: Enabled
           - type: entities
