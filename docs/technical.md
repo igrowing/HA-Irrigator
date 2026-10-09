@@ -566,8 +566,8 @@ WhatsApp + logbook" automation) forwards every fault alert (identified by the `f
 An ultrasonic clamp-on flow meter (TUF-2000M) on Modbus RTU/RS-485 — see
 [hardware/readme.md](../hardware/readme.md)'s **Water flow sensing** section for the wiring/converter
 and the failsafe reasoning (the meter's own onboard relay, not this firmware, is what actually closes
-a shut-off valve; polling here is for HA visibility/logging only). `src/drivers/Tuf2000mFlowMeter.*`
-is the driver, built on the [eModbus](https://github.com/eModbus/eModbus) library rather than a
+a shut-off valve; polling here is for HA visibility/logging only). the external [`igrowing/tuf2000`](https://registry.platformio.org/libraries/igrowing/tuf2000)
+library (`<Tuf2000.h>`, PlatformIO registry) is the driver, built on the [eModbus](https://github.com/eModbus/eModbus) library rather than a
 blocking one — its `ModbusClientRTU` runs its own FreeRTOS worker task internally and delivers
 results via callback, so unlike **True-RMS current sampling** above, no extra task needed to be
 created for this feature.
@@ -576,9 +576,7 @@ created for this feature.
 `docs/`). Two bring-up findings apply to every register: the Modbus protocol address is the manual's
 register number **minus one** (the manual's own example reads REG0001 with start address 0x0000), and
 every 32-bit REAL4 value arrives **low word first** ("lower byte first" in the manual). Decoding
-lives in `irrigator::domain::decodeFloatLowWordFirst()` (`src/domain/Tuf2000mProtocol.*`, pulled out of
-the driver so the decode and the poll-sequencing state machine are unit-testable under
-`pio test -e native`). Four requests per poll, manual register numbers:
+and the poll-sequencing state machine live in the library (unit-tested there). Four requests per poll, manual register numbers:
 
 | Manual regs | Content | Used for |
 |--|--|--|
@@ -609,12 +607,12 @@ backed by `irrigator::domain::FlowPublishGate`):
 
 **Reply validation.** A poll is rejected as a whole (`Reading::valid == false`, nothing from it reaches
 the totals or the payloads) not only on a Modbus error or timeout but whenever a reply cannot be
-trusted. Each rejection carries a reason (`Reading::failure`, `irrigator::domain::Tuf2000mFailure`):
+trusted. Each rejection carries a reason (`Reading::failure`, `tuf2000::Tuf2000Failure` in the library):
 
 | Reason (`/alert` `reason`, `cmd/meter` `last_failure`) | Trigger |
 |--|--|
 | `modbus_error_or_timeout` | wire-level error, timeout, or the request could not even be enqueued |
-| `bad_reply_length` | the reply's byte count is not exactly 2 per word requested, or the message is not that long (`replyLengthMatches()`; the word count per field is `Tuf2000mPollTracker::wordCountOf()`, the same value the request itself uses) — without this a truncated reply reads back as zeros and looks like a valid zero flow |
+| `bad_reply_length` | the reply's byte count is not exactly 2 per word requested, or the message is not that long (`replyLengthMatches()` in the library) — without this a truncated reply reads back as zeros and looks like a valid zero flow |
 | `non_finite_value` | a REAL4 in the reply decodes to NaN or ±infinity, or overflows to infinity once the 1.4 calibration is applied |
 | `totalizer_jump_too_large` | the totalizer went negative, or forward by more than `FLOW_METER_MAX_TOTALIZER_JUMP_M3` (10 m³) since the last accepted poll (`TotalizerJumpGuard`) — a garbage-but-finite value would otherwise be credited to a zone's lifetime total. A *decrease* is accepted (a totalizer reset on the meter) and consumers already only count positive deltas |
 
@@ -636,7 +634,7 @@ out of an expected band while watering) planned as a later stage — not impleme
 
 **Per-run and lifetime volume** are tracked by `irrigator::domain::FlowConsumptionTracker.h/.cpp`'s
 two pure classes (pulled out of `main.ino` for the same `pio test -e native` reason as
-`Tuf2000mPollTracker`/`FlowPublishGate`):
+`FlowPublishGate`):
 - `FlowRunVolumeTracker` captures the totalizer reading at the moment a run starts
   (`startIrrigation()`) and computes+clears it exactly once — the completed run's own liters — at
   the moment that run's watering actually ends (`reportValveClosed()` for a zone+pump run,
