@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.2.6"
+#define APP_VERSION "1.3.1"
 #endif
 
 namespace irrigator::board {
@@ -79,18 +79,18 @@ static constexpr uint8_t WATERING_QUEUE_DEPTH = 15;
 // --- TUF-2000M ultrasonic flow meter (Modbus RTU/RS-485) ---
 // See hardware/readme.md's "Water flow sensing" section for the wiring/converter this talks to
 // (Waveshare TTL-to-RS485 (C), auto direction switching - no DE/RE GPIO needed) and
-// src/drivers/Tuf2000mFlowMeter.h for the driver built on top of these. RX/TX are the only two
+// the tuf2000 library for the driver built on top of these. RX/TX are the only two
 // strapping-safe GPIOs left free on this board once zones/pump/LED/rotary/ADC/I2C are all
 // accounted for (see the pin groups above).
 static constexpr uint8_t FLOW_METER_RX_PIN = 36;
 static constexpr uint8_t FLOW_METER_TX_PIN = 2;
 static constexpr uint32_t FLOW_METER_BAUD_RATE = 9600;
 static constexpr uint8_t FLOW_METER_MODBUS_SLAVE_ID = 1;
-// Throttles Tuf2000mFlowMeter::readAsync() - independent of any later MQTT publish cadence (that's
+// Throttles Tuf2000FlowMeter::readAsync() - independent of any later MQTT publish cadence (that's
 // a Stage 2+ concern layered on top; every poll here still needs to happen regardless of whether
 // its result gets published). Short enough for a bench sanity-check ("two back-to-back reads while
 // flow is genuinely unchanged agree" - see the driver's class comment) without hammering the bus.
-static constexpr uint32_t FLOW_METER_POLL_INTERVAL_MS = 2000;
+static constexpr uint32_t FLOW_METER_POLL_INTERVAL_MS = 5000;
 // Holding-register map (function code 03), per chapter 7 of the TUF-2000M manual in docs/. These
 // are Modbus protocol ADDRESSES = the manual's register number MINUS ONE (the manual's own example
 // reads REG0001 with start address 0x0000; confirmed at bench bring-up). Every 32-bit value arrives
@@ -103,7 +103,7 @@ static constexpr uint32_t FLOW_METER_POLL_INTERVAL_MS = 2000;
 //  - signal block: manual regs 92-94 (3 words): quality (high byte autogain step, low byte 0-99
 //    quality), then upstream and downstream signal strength (0-4095, M90 shows it as 0-99.9).
 // Correction factor for this particular meter's known-bad calibration (cannot be fixed on the
-// meter itself). Applied once, in Tuf2000mFlowMeter, to flow rate and totalizer - so every consumer
+// meter itself). Applied once, in Tuf2000FlowMeter, to flow rate and totalizer - so every consumer
 // (/flow, /flow_totals, per-run volume, cmd/meter) sees the corrected values, and nothing downstream
 // may multiply again. Not applied to sound speed or signal values.
 static constexpr float METER_CALIBRATION_MULTIPLIER = 1.4f;
@@ -118,7 +118,7 @@ static constexpr uint16_t FLOW_METER_REG_TOTALIZER = 114;
 static constexpr uint16_t FLOW_METER_REG_SIGNAL_QUALITY = 91;
 // Ceiling for one whole poll cycle (4 sequential register reads - see the driver): eModbus's own
 // per-request timeout is 2000ms, so this covers all four timing out in a row plus margin. If
-// Tuf2000mFlowMeter::readAsync() finds a poll still in flight past this, it force-clears and lets
+// Tuf2000FlowMeter::readAsync() finds a poll still in flight past this, it force-clears and lets
 // the next throttle window retry rather than wedging every future poll on a stuck transceiver/bug.
 static constexpr uint32_t FLOW_METER_STUCK_REQUEST_TIMEOUT_MS = 10000;
 

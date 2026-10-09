@@ -66,7 +66,7 @@ struct Settings {
     // there too — not selectively excludable without reworking that sensor.
     char weatherApiKey[48] = {};
 
-    // TUF-2000M flow-meter feature (src/drivers/Tuf2000mFlowMeter.*, board_config.h's FLOW_METER_*
+    // TUF-2000M flow-meter feature (the tuf2000 library, board_config.h's FLOW_METER_*
     // constants) — settings.json's FlowMeter group. Default true, same rationale as
     // autoAdjustmentEnabled: upgrading an existing settings.json shouldn't silently disable a
     // feature that was already running. Scoped specifically to the flow-rate anomaly check

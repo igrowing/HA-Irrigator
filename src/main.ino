@@ -38,7 +38,7 @@
 #include "drivers/LedIndicator.h"
 #include "drivers/Logger.h"
 #include "drivers/RelayBank.h"
-#include "drivers/Tuf2000mFlowMeter.h"
+#include <Tuf2000.h>
 #include "network/CaptivePortalService.h"
 #include "network/MqttService.h"
 #include "network/OtaService.h"
@@ -73,11 +73,11 @@ irrigator::drivers::FileStore fileStore;
 irrigator::drivers::RelayBank relayBank;
 irrigator::drivers::CurrentSensor valveCurrentSensor(VALVE_CURRENT_ADC_PIN);
 irrigator::drivers::CurrentSensor pumpCurrentSensor(PUMP_CURRENT_ADC_PIN);
-// TUF-2000M flow meter over Modbus RTU/RS-485 - see src/drivers/Tuf2000mFlowMeter.h and
+// TUF-2000M flow meter over Modbus RTU/RS-485 - external tuf2000 library (<Tuf2000.h>) and
 // board_config.h's FLOW_METER_* constants (pins, baud, register map). Serial2 is remapped onto
 // FLOW_METER_RX_PIN/FLOW_METER_TX_PIN by the driver's begin() - its default pins (16/17) are
 // already claimed by zones (see GPIO_ZONE_PINS).
-irrigator::drivers::Tuf2000mFlowMeter flowMeter;
+tuf2000::Tuf2000FlowMeter flowMeter;
 irrigator::drivers::LedIndicator led(STATUS_LED_PIN);
 irrigator::drivers::Clock clockService;
 irrigator::drivers::FactoryResetButton factoryResetButton;
@@ -283,7 +283,7 @@ bool haveLastKnownTotalizerM3 = false;
 // Latest whole valid poll (not just the totalizer), kept for cmd/meter's diagnostics reply so the
 // command answers from cache instead of triggering a Modbus transaction of its own. Same
 // main-loop-only ownership as the baseline above.
-irrigator::drivers::Tuf2000mFlowMeter::Reading lastValidFlowReading;
+tuf2000::Tuf2000FlowMeter::Reading lastValidFlowReading;
 bool haveValidFlowReading = false;
 // Outcome of the most recent poll: false while the meter is disconnected, timing out or being
 // rejected as implausible. The Info menu's Volume row goes "N/A" on it rather than showing the
@@ -2652,7 +2652,7 @@ void drainCurrentBurstResults() {
 // irrigator::domain::FlowLifetimeCounters' class comment for the exact zone/"other"/discarded
 // rule). Publishing them is publishFlowTelemetry()'s job, on the same /flow message as the meter's
 // own readings.
-void updateFlowLifetimeTotals(uint32_t nowMs, const irrigator::drivers::Tuf2000mFlowMeter::Reading& reading) {
+void updateFlowLifetimeTotals(uint32_t nowMs, const tuf2000::Tuf2000FlowMeter::Reading& reading) {
     if (haveLastKnownTotalizerM3) {
         const float deltaM3 = reading.totalizerM3 - lastKnownTotalizerM3;
         if (deltaM3 > 0.0f) {
@@ -2698,7 +2698,7 @@ void publishFlowTelemetry(uint32_t nowMs) {
 // inside the driver) - polling stays cheap and frequent regardless of whether a given poll's result
 // actually goes out over MQTT. The actual cadence rule (once/minute while active, threshold-while-
 // idle) lives in flowPublishGate (irrigator::domain::FlowPublishGate) - see its class comment.
-void updateFlowPublishCadence(uint32_t nowMs, const irrigator::drivers::Tuf2000mFlowMeter::Reading& reading) {
+void updateFlowPublishCadence(uint32_t nowMs, const tuf2000::Tuf2000FlowMeter::Reading& reading) {
     const auto snapshot = irrigation.snapshot(nowMs);
     const bool active = snapshot.state == irrigator::domain::IrrigationState::Watering || snapshot.pumpOn;
     if (!flowPublishGate.shouldPublish(nowMs, active, reading.totalizerM3 * 1000.0f)) {
@@ -2719,8 +2719,8 @@ void publishMeterDiagnostics(uint32_t nowMs) {
         doc["total_m3"] = reading.totalizerM3;
         doc["signal_strength_up"] = reading.signalStrengthUp;
         doc["signal_strength_down"] = reading.signalStrengthDown;
-        doc["quality"] = irrigator::domain::signalQualityValue(reading.signalQuality);
-        doc["autogain_step"] = irrigator::domain::signalAutogainStep(reading.signalQuality);
+        doc["quality"] = tuf2000::signalQualityValue(reading.signalQuality);
+        doc["autogain_step"] = tuf2000::signalAutogainStep(reading.signalQuality);
         doc["sound_speed_ms"] = reading.soundSpeedMs;
         doc["reading_age_s"] = (nowMs - reading.timestampMs) / 1000;
     } else {
@@ -2730,12 +2730,16 @@ void publishMeterDiagnostics(uint32_t nowMs) {
     doc["last_modbus_error_text"] = flowMeter.lastErrorText();
     // Sticky like the Modbus error above, but also covers the rejections that are not Modbus
     // errors at all (bad reply length, NaN/infinity, implausible totalizer jump).
-    doc["last_failure"] = irrigator::domain::tuf2000mFailureText(flowMeter.lastFailure());
+    doc["last_failure"] = tuf2000::tuf2000FailureText(flowMeter.lastFailure());
 
     String payload;
     serializeJson(doc, payload);
     mqtt.publishMeter(payload);
 }
+
+// The library calls this from eModbus's worker task as well as loop(); Log.warn() is a plain
+// serial write, which is fine for the few short messages the library emits.
+void logFlowMeterMessage(const char* message) { irrigator::drivers::Log.warn(message); }
 
 // Stage 1 of the flow-meter integration: drives flowMeter's own internal poll throttle every
 // loop() tick and logs whatever lands. Stage 2 layers the MQTT /flow publish (cadence-gated
@@ -2745,13 +2749,13 @@ void updateFlowSampling(uint32_t nowMs) {
     if (!flowMeter.responseReady()) {
         return;
     }
-    irrigator::drivers::Tuf2000mFlowMeter::Reading reading;
+    tuf2000::Tuf2000FlowMeter::Reading reading;
     if (!flowMeter.takeReading(reading)) {
         return;
     }
     lastFlowPollOk = reading.valid;
     if (!reading.valid) {
-        const char* failureText = irrigator::domain::tuf2000mFailureText(reading.failure);
+        const char* failureText = tuf2000::tuf2000FailureText(reading.failure);
         irrigator::drivers::Log.printf("[WARN] Flow meter poll rejected: %s\n", failureText);
         // Same once-a-day-per-fault idiom as the current-sensor faults (consumeDailyAlertGate) -
         // a wedged transceiver or a disconnected RS-485 cable would otherwise either go completely
@@ -2840,20 +2844,27 @@ void setup() {
     pumpCurrentSensor.begin();
 
     {
-        irrigator::drivers::Tuf2000mFlowMeter::Config flowMeterConfig;
+        tuf2000::Tuf2000FlowMeter::Config flowMeterConfig;
         flowMeterConfig.rxPin = irrigator::board::FLOW_METER_RX_PIN;
         flowMeterConfig.txPin = irrigator::board::FLOW_METER_TX_PIN;
         flowMeterConfig.baudRate = irrigator::board::FLOW_METER_BAUD_RATE;
         flowMeterConfig.slaveId = irrigator::board::FLOW_METER_MODBUS_SLAVE_ID;
         flowMeterConfig.flowRateRegister = irrigator::board::FLOW_METER_REG_FLOW_RATE;
-        flowMeterConfig.totalizerRegister = irrigator::board::FLOW_METER_REG_TOTALIZER;        flowMeterConfig.signalQualityRegister = irrigator::board::FLOW_METER_REG_SIGNAL_QUALITY;
+        flowMeterConfig.totalizerRegister = irrigator::board::FLOW_METER_REG_TOTALIZER;
+        flowMeterConfig.signalQualityRegister = irrigator::board::FLOW_METER_REG_SIGNAL_QUALITY;
         flowMeterConfig.soundSpeedRegister = irrigator::board::FLOW_METER_REG_SOUND_SPEED;
         flowMeterConfig.calibrationMultiplier = irrigator::board::METER_CALIBRATION_MULTIPLIER;
         flowMeterConfig.maxTotalizerJumpM3 = irrigator::board::FLOW_METER_MAX_TOTALIZER_JUMP_M3;
         flowMeterConfig.pollIntervalMs = irrigator::board::FLOW_METER_POLL_INTERVAL_MS;
+        flowMeterConfig.stuckRequestTimeoutMs = irrigator::board::FLOW_METER_STUCK_REQUEST_TIMEOUT_MS;
         // No Wi-Fi/captive-portal dependency, so - like the current sensors above - this begins
         // unconditionally rather than waiting for enterOperationalMode().
-        flowMeter.begin(Serial2, flowMeterConfig);
+        flowMeter.setLogger(logFlowMeterMessage);
+        if (!flowMeter.begin(Serial2, flowMeterConfig)) {
+            irrigator::drivers::Log.error("Flow meter failed to start (invalid config)");
+            // No MQTT yet this early in setup(); the daily flow_meter alert path in
+            // updateFlowSampling() cannot fire either, so this is logged only.
+        }
     }
     // Depth 3 comfortably covers normal loop() jitter between drains; currentSamplingTask drops a
     // burst outright (see its comment) rather than blocking if this ever fills up.

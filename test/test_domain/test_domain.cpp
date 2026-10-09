@@ -15,7 +15,6 @@
 #include "../../src/domain/Schedule.h"
 #include "../../src/domain/ScheduleEngine.h"
 #include "../../src/domain/Settings.h"
-#include "../../src/domain/Tuf2000mProtocol.h"
 #include "../../src/domain/UiStateMachine.h"
 #include "../../src/domain/WateringQueue.h"
 #include "../../src/domain/WifiQuality.h"
@@ -105,7 +104,7 @@ void test_watering_percentage_edge_cases() {
 }
 
 // computeAutoCorrectedPercentage() reads the coefficients straight from board_config.h (currently
-// base 23C, 12.5 %/degC, 3.1 %/mm), so every expected value below is hard-coded against those
+// base 24C, 15 %/degC, 5 %/mm), so every expected value below is hard-coded against those
 // defaults on purpose: re-tuning them should fail these tests and force the arithmetic in the
 // comments to be redone, rather than silently re-baselining.
 void test_auto_adjustment_percentage_base_case_is_100() {
@@ -114,38 +113,38 @@ void test_auto_adjustment_percentage_base_case_is_100() {
 }
 
 void test_auto_adjustment_percentage_temp_below_base_decreases_it() {
-    // 100 + (20-23)*12.5 = 62.5 -> 63%
+    // 100 + (21-24)*15 = 55%
     TEST_ASSERT_EQUAL_INT16(
-        63, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 0.0f, 40, 200));
+        55, irrigator::domain::computeAutoCorrectedPercentage(21.0f, 0.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_temp_above_base_increases_it() {
-    // 100 + (26-23)*12.5 = 137.5 -> 138%
+    // 100 + (26-24)*15 = 130%
     TEST_ASSERT_EQUAL_INT16(
-        138, irrigator::domain::computeAutoCorrectedPercentage(26.0f, 0.0f, 40, 200));
+        130, irrigator::domain::computeAutoCorrectedPercentage(26.0f, 0.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_rain_on_base_temp_reduces_it() {
-    // 100 - 4mm*3.1 = 87.6 -> 88%
+    // 100 - 4mm*5 = 80%
     TEST_ASSERT_EQUAL_INT16(
-        88, irrigator::domain::computeAutoCorrectedPercentage(irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C, 4.0f, 40, 200));
+        80, irrigator::domain::computeAutoCorrectedPercentage(irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C, 4.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_rain_on_lower_temp_stops_it() {
-    // 100 + (19-23)*12.5 - 6mm*3.1 = 31.4%, below the 40% lower limit -> 0 (skip).
-    // The same 19C with no rain would still water (50%), so it is the rain that stops it.
+    // 100 + (21-24)*15 - 6mm*5 = 25%, below the 40% lower limit -> 0 (skip).
+    // The same 21C with no rain would still water (55%), so it is the rain that stops it.
     TEST_ASSERT_EQUAL_INT16(
-        0, irrigator::domain::computeAutoCorrectedPercentage(19.0f, 6.0f, 40, 200));
+        0, irrigator::domain::computeAutoCorrectedPercentage(21.0f, 6.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_clamps_to_upper_limit() {
-    // 100 + (80-23)*12.5 = 812.5%, over the 200% limit -> clamped to 200.
+    // 100 + (80-24)*15 = 940%, over the 200% limit -> clamped to 200.
     TEST_ASSERT_EQUAL_INT16(
         200, irrigator::domain::computeAutoCorrectedPercentage(80.0f, 0.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_below_lower_limit_sets_zero() {
-    // 100 + (13-23)*12.5 - 30mm*3.1 = -118%, below the 40% lower limit -> 0 (skip), not clamped to 40.
+    // 100 + (13-24)*15 - 30mm*5 = -215%, below the 40% lower limit -> 0 (skip), not clamped to 40.
     TEST_ASSERT_EQUAL_INT16(
         0, irrigator::domain::computeAutoCorrectedPercentage(13.0f, 30.0f, 40, 200));
 }
@@ -162,15 +161,14 @@ void test_auto_adjustment_percentage_uses_factory_default_coefficients() {
     // test exists to make loud.
     //
     // Window 2026-09-14..18: avg daily max 25.32C, 10.5mm rain over the 5 days.
-    // 100 + (25.32-23)*12.5 - 10.5*3.1 = 96.45 -> 96%. The original 20C/10 per degC pairing on the
-    // model series gave 117%.
+    // 100 + (25.32-24)*15 - 10.5*5 = 67.3 -> 67%.
     TEST_ASSERT_EQUAL_INT16(
-        96,
+        67,
         irrigator::domain::computeAutoCorrectedPercentage(
             25.32f, 10.5f, 40, 200));
     // Peak summer still has to reach the 200% cap - that saturation is deliberate (it is the water
     // budget, not a modelling artifact), and a recalibration that quietly lost it would under-water
-    // July. Window 2026-06-27..07-01: avg daily max 33.62C, 7.3mm (raw 210%).
+    // July. Window 2026-06-27..07-01: avg daily max 33.62C, 7.3mm (raw 207.8%).
     TEST_ASSERT_EQUAL_INT16(
         200,
         irrigator::domain::computeAutoCorrectedPercentage(
@@ -178,8 +176,8 @@ void test_auto_adjustment_percentage_uses_factory_default_coefficients() {
     // An ordinary July week (31.5C, 3mm) must sit at the cap too, not just an extreme one - the
     // first re-fit candidate (slope 16) landed at 191% here and would have quietly under-watered
     // the typical summer day while still passing the peak-day check above. Raw value here is
-    // 100 + (31.5-23)*12.5 - 2*3.1 = 200.05%: the margin over the cap is only 0.05 points, and at
-    // 3mm it would be 196.95% - so this case is the first to fail if the slope or rain term is nudged.
+    // 100 + (31.5-24)*15 - 2*5 = 202.5%: the margin over the cap is 2.5 points, and at
+    // 3mm it would be 197.5% - so this case is the first to fail if the slope or rain term is nudged.
     TEST_ASSERT_EQUAL_INT16(
         200,
         irrigator::domain::computeAutoCorrectedPercentage(
@@ -212,30 +210,32 @@ void test_effective_rain_uses_configured_threshold() {
 void test_effective_rain_forecast_is_added_to_past_rain_in_the_formula() {
     const float rainMm = irrigator::domain::effectiveRainMm(3.0f, 70.0f, 6.0f, 70);
     TEST_ASSERT_EQUAL_FLOAT(9.0f, rainMm);
-    // 100 - 9mm*3.1 = 72.1 -> 72%, versus 100 - 3mm*3.1 = 90.7 -> 91% had the forecast been ignored.
-    TEST_ASSERT_EQUAL_INT16(72, irrigator::domain::computeAutoCorrectedPercentage(
+    // 100 - 9mm*5 = 55%, versus 100 - 3mm*5 = 85% had the forecast been ignored.
+    TEST_ASSERT_EQUAL_INT16(55, irrigator::domain::computeAutoCorrectedPercentage(
                                     irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C, rainMm, 40, 200));
-    TEST_ASSERT_EQUAL_INT16(91, irrigator::domain::computeAutoCorrectedPercentage(
+    TEST_ASSERT_EQUAL_INT16(85, irrigator::domain::computeAutoCorrectedPercentage(
                                     irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
                                     irrigator::domain::effectiveRainMm(3.0f, 69.0f, 6.0f, 70), 40, 200));
 }
 
 // The skip/clamp comparisons are both strict (`<` lower, `>` upper), so a percentage landing
-// exactly on a limit is a legal value, not a boundary that trips the special case. With base 23C and
-// 12.5 %/degree at 0mm the limits sit at 18.2C -> 40 and 31.0C -> 200. 31.0 is exact in float; 18.2f
-// is not (it is a hair above 18.2), which happens to land the raw value a hair above 40 and keep it.
+// exactly on a limit is a legal value, not a boundary that trips the special case. With base 24C and
+// 15 %/degree at 0mm the lower limit sits at 20.0C -> 40, exact in float.
 void test_auto_adjustment_percentage_exactly_on_lower_limit_is_kept_not_zeroed() {
     TEST_ASSERT_EQUAL_INT16(
-        40, irrigator::domain::computeAutoCorrectedPercentage(18.2f, 0.0f, 40, 200));
-    // A hair below is the skip case (38.75%), confirming 40 above really was the boundary and not a clamp.
+        40, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 0.0f, 40, 200));
+    // A hair below is the skip case (38.5%), confirming 40 above really was the boundary and not a clamp.
     TEST_ASSERT_EQUAL_INT16(
-        0, irrigator::domain::computeAutoCorrectedPercentage(18.1f, 0.0f, 40, 200));
+        0, irrigator::domain::computeAutoCorrectedPercentage(19.9f, 0.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_exactly_on_upper_limit_is_not_clamped_down() {
-    // 100 + (31-23)*12.5 = 200% exactly. (32C would be 212.5%, i.e. clamped rather than "on" the limit.)
+    // 100 + (32-24)*15 - 4mm*5 = 200% exactly (at 0mm the 200% point, 30.67C, is not exact in float,
+    // so rain is used to land on it). One degree more would be 215% and clamped rather than "on" it.
     TEST_ASSERT_EQUAL_INT16(
-        200, irrigator::domain::computeAutoCorrectedPercentage(31.0f, 0.0f, 40, 200));
+        200, irrigator::domain::computeAutoCorrectedPercentage(32.0f, 4.0f, 40, 200));
+    TEST_ASSERT_EQUAL_INT16(
+        200, irrigator::domain::computeAutoCorrectedPercentage(33.0f, 4.0f, 40, 200));
 }
 
 // A lower limit of 0 disables the skip branch entirely (nothing can be < 0 once the negative floor
@@ -3352,258 +3352,6 @@ void test_wifi_quality_thresholds_and_bar_count() {
     TEST_ASSERT_EQUAL_UINT8(0, wifiQualityBarCount(WifiQuality::Miserable));
 }
 
-// --- Tuf2000mProtocol: low-word-first REAL4 decoding -------------------------------------------
-
-static float decodeOrFail(uint16_t reg0, uint16_t reg1) {
-    float out = -999.0f;
-    TEST_ASSERT_TRUE(irrigator::domain::decodeFloatLowWordFirst(reg0, reg1, out));
-    return out;
-}
-
-void test_decode_float_low_word_first_takes_first_register_as_low_word() {
-    // 12.5f is 0x41480000: the first register carries the low word (0x0000), the second the high.
-    TEST_ASSERT_EQUAL_FLOAT(12.5f, decodeOrFail(0x0000, 0x4148));
-    TEST_ASSERT_EQUAL_FLOAT(0.0f, decodeOrFail(0x0000, 0x0000));
-    TEST_ASSERT_EQUAL_FLOAT(-1.0f, decodeOrFail(0x0000, 0xBF80));
-    // 3.14159274f is 0x40490FDB - a non-zero low word exercises both halves.
-    TEST_ASSERT_FLOAT_WITHIN(0.0001f, 3.14159274f, decodeOrFail(0x0FDB, 0x4049));
-}
-
-void test_decode_float_rejects_nan_and_infinity_and_leaves_out_untouched() {
-    using irrigator::domain::decodeFloatLowWordFirst;
-    float out = 123.0f;
-
-    TEST_ASSERT_FALSE(decodeFloatLowWordFirst(0x0000, 0x7F80, out));  // +infinity
-    TEST_ASSERT_FALSE(decodeFloatLowWordFirst(0x0000, 0xFF80, out));  // -infinity
-    TEST_ASSERT_FALSE(decodeFloatLowWordFirst(0x0000, 0x7FC0, out));  // quiet NaN
-    TEST_ASSERT_FALSE(decodeFloatLowWordFirst(0x0001, 0x7F80, out));  // signalling NaN
-    TEST_ASSERT_FALSE(decodeFloatLowWordFirst(0xFFFF, 0xFFFF, out));  // all ones, e.g. a garbage frame
-    TEST_ASSERT_EQUAL_FLOAT(123.0f, out);
-
-    // Neighbours that ARE real numbers: the largest finite float and a subnormal.
-    TEST_ASSERT_TRUE(decodeFloatLowWordFirst(0xFFFF, 0x7F7F, out));
-    TEST_ASSERT_TRUE(decodeFloatLowWordFirst(0x0001, 0x0000, out));
-}
-
-void test_is_finite_float_matches_the_ieee_754_classes() {
-    using irrigator::domain::isFiniteFloat;
-    TEST_ASSERT_TRUE(isFiniteFloat(0.0f));
-    TEST_ASSERT_TRUE(isFiniteFloat(-2.5f));
-    TEST_ASSERT_TRUE(isFiniteFloat(3.0e38f));
-    TEST_ASSERT_FALSE(isFiniteFloat(3.0e38f * 10.0f));   // Overflows to +infinity.
-    TEST_ASSERT_FALSE(isFiniteFloat(-3.0e38f * 10.0f));  // -infinity.
-    TEST_ASSERT_FALSE(isFiniteFloat(0.0f / 0.0f));       // NaN.
-}
-
-void test_word_count_of_matches_each_fields_request() {
-    using irrigator::domain::Tuf2000mPollTracker;
-    TEST_ASSERT_EQUAL_UINT16(2, Tuf2000mPollTracker::wordCountOf(Tuf2000mPollTracker::kFlowRate));
-    TEST_ASSERT_EQUAL_UINT16(2, Tuf2000mPollTracker::wordCountOf(Tuf2000mPollTracker::kTotalizer));
-    TEST_ASSERT_EQUAL_UINT16(3, Tuf2000mPollTracker::wordCountOf(Tuf2000mPollTracker::kSignalQuality));
-    TEST_ASSERT_EQUAL_UINT16(2, Tuf2000mPollTracker::wordCountOf(Tuf2000mPollTracker::kSoundSpeed));
-}
-
-void test_reply_length_matches_only_an_exact_well_formed_reply() {
-    using irrigator::domain::replyLengthMatches;
-
-    // 2 words: 3 header bytes + 4 data bytes, byte count 4.
-    TEST_ASSERT_TRUE(replyLengthMatches(7, 4, 2));
-    TEST_ASSERT_TRUE(replyLengthMatches(9, 6, 3));
-
-    TEST_ASSERT_FALSE(replyLengthMatches(7, 2, 2));   // Byte count says fewer words than asked.
-    TEST_ASSERT_FALSE(replyLengthMatches(7, 6, 2));   // ... or more.
-    TEST_ASSERT_FALSE(replyLengthMatches(5, 4, 2));   // Truncated: header claims 4 but only 2 arrived.
-    TEST_ASSERT_FALSE(replyLengthMatches(9, 4, 2));   // Trailing bytes beyond the claimed data.
-    TEST_ASSERT_FALSE(replyLengthMatches(3, 0, 2));   // Header only.
-    TEST_ASSERT_FALSE(replyLengthMatches(0, 0, 2));   // Empty message.
-    TEST_ASSERT_FALSE(replyLengthMatches(7, 4, 3));   // Right reply, but for a different request.
-}
-
-void test_failure_text_is_distinct_and_keeps_the_original_modbus_reason() {
-    using irrigator::domain::Tuf2000mFailure;
-    using irrigator::domain::tuf2000mFailureText;
-
-    // The alert automation keys on this exact pre-existing string.
-    TEST_ASSERT_EQUAL_STRING("modbus_error_or_timeout", tuf2000mFailureText(Tuf2000mFailure::kModbusError));
-    TEST_ASSERT_EQUAL_STRING("none", tuf2000mFailureText(Tuf2000mFailure::kNone));
-    TEST_ASSERT_EQUAL_STRING("bad_reply_length", tuf2000mFailureText(Tuf2000mFailure::kBadReplyLength));
-    TEST_ASSERT_EQUAL_STRING("non_finite_value", tuf2000mFailureText(Tuf2000mFailure::kNonFiniteValue));
-    TEST_ASSERT_EQUAL_STRING("totalizer_jump_too_large", tuf2000mFailureText(Tuf2000mFailure::kTotalizerJump));
-}
-
-void test_totalizer_jump_guard_accepts_the_first_reading_and_normal_growth() {
-    irrigator::domain::TotalizerJumpGuard guard(10.0f);
-
-    TEST_ASSERT_TRUE(guard.accept(2.68f));  // Nothing to compare against yet.
-    TEST_ASSERT_TRUE(guard.accept(2.69f));
-    TEST_ASSERT_TRUE(guard.accept(2.69f));  // No flow: unchanged.
-    TEST_ASSERT_TRUE(guard.accept(12.69f)); // Exactly the limit is still plausible.
-}
-
-void test_totalizer_jump_guard_rejects_a_jump_above_the_limit_without_moving_the_baseline() {
-    irrigator::domain::TotalizerJumpGuard guard(10.0f);
-    TEST_ASSERT_TRUE(guard.accept(2.68f));
-
-    TEST_ASSERT_FALSE(guard.accept(12.69f));   // 10.01 m3 forward.
-    TEST_ASSERT_FALSE(guard.accept(1.0e30f));  // Garbage but finite.
-    // Baseline is still 2.68, so a plausible reading right after is judged against that.
-    TEST_ASSERT_TRUE(guard.accept(2.70f));
-}
-
-void test_totalizer_jump_guard_rejects_a_negative_total_but_accepts_a_reset_to_zero() {
-    irrigator::domain::TotalizerJumpGuard guard(10.0f);
-    TEST_ASSERT_TRUE(guard.accept(50.0f));
-
-    TEST_ASSERT_FALSE(guard.accept(-0.5f));    // A positive accumulator is never negative.
-    TEST_ASSERT_FALSE(guard.accept(-1.0e30f)); // Would otherwise poison the baseline downwards.
-    TEST_ASSERT_TRUE(guard.accept(0.0f));      // Totalizer reset on the meter: legitimate decrease.
-    TEST_ASSERT_TRUE(guard.accept(0.4f));      // ... and counting resumes from the new baseline.
-}
-
-void test_totalizer_jump_guard_rejects_a_negative_very_first_reading() {
-    irrigator::domain::TotalizerJumpGuard guard(10.0f);
-    TEST_ASSERT_FALSE(guard.accept(-3.0f));
-    TEST_ASSERT_TRUE(guard.accept(3.0f));  // Still no baseline: the first sane one is adopted.
-}
-
-// --- Tuf2000mProtocol: Tuf2000mPollTracker -----------------------------------------------------
-
-void test_poll_tracker_token_round_trips_field_and_sequence() {
-    using irrigator::domain::Tuf2000mPollTracker;
-
-    const uint32_t token = Tuf2000mPollTracker::makeToken(7, Tuf2000mPollTracker::kTotalizer);
-    TEST_ASSERT_EQUAL_UINT32(7, Tuf2000mPollTracker::pollSeqOf(token));
-    TEST_ASSERT_TRUE(Tuf2000mPollTracker::kTotalizer == Tuf2000mPollTracker::fieldOf(token));
-
-    // Every field, at a poll sequence large enough to matter (not just 0/1).
-    const uint32_t seq = 12345;
-    for (uint32_t f = 0; f < Tuf2000mPollTracker::kFieldCount; ++f) {
-        const auto field = static_cast<Tuf2000mPollTracker::Field>(f);
-        const uint32_t t = Tuf2000mPollTracker::makeToken(seq, field);
-        TEST_ASSERT_TRUE(field == Tuf2000mPollTracker::fieldOf(t));
-        TEST_ASSERT_EQUAL_UINT32(seq, Tuf2000mPollTracker::pollSeqOf(t));
-    }
-}
-
-// Records every field of poll seq except the last one as ok; returns what the last one reported.
-static bool completeTufPollWithLastField(irrigator::domain::Tuf2000mPollTracker& tracker,
-                                         uint32_t seq, bool lastOk) {
-    using irrigator::domain::Tuf2000mPollTracker;
-    for (uint32_t f = 0; f + 1 < Tuf2000mPollTracker::kFieldCount; ++f) {
-        TEST_ASSERT_FALSE(tracker.recordField(
-            Tuf2000mPollTracker::makeToken(seq, static_cast<Tuf2000mPollTracker::Field>(f)), true));
-        TEST_ASSERT_TRUE(tracker.inFlight());  // Still waiting on the remaining fields.
-    }
-    return tracker.recordField(
-        Tuf2000mPollTracker::makeToken(
-            seq, static_cast<Tuf2000mPollTracker::Field>(Tuf2000mPollTracker::kFieldCount - 1)),
-        lastOk);
-}
-
-void test_poll_tracker_begin_poll_increments_sequence_and_starts_in_flight() {
-    irrigator::domain::Tuf2000mPollTracker tracker;
-
-    const uint32_t seq1 = tracker.beginPoll(1000);
-    TEST_ASSERT_EQUAL_UINT32(seq1, tracker.activePollSeq());
-    TEST_ASSERT_TRUE(tracker.inFlight());
-    TEST_ASSERT_FALSE(tracker.failed());
-    TEST_ASSERT_EQUAL_UINT32(1000, tracker.startedAtMs());
-
-    const uint32_t seq2 = tracker.beginPoll(2000);
-    TEST_ASSERT_TRUE(seq2 > seq1);  // Monotonically increasing, never reused.
-    TEST_ASSERT_EQUAL_UINT32(seq2, tracker.activePollSeq());
-}
-
-void test_poll_tracker_completes_only_after_every_field_reports() {
-    using irrigator::domain::Tuf2000mPollTracker;
-    Tuf2000mPollTracker tracker;
-
-    const uint32_t seq = tracker.beginPoll(0);
-    // The last field completes the poll; every earlier one leaves it in flight.
-    TEST_ASSERT_TRUE(completeTufPollWithLastField(tracker, seq, true));
-    TEST_ASSERT_FALSE(tracker.inFlight());
-    TEST_ASSERT_FALSE(tracker.failed());
-}
-
-void test_poll_tracker_any_field_error_marks_the_whole_poll_failed() {
-    using irrigator::domain::Tuf2000mPollTracker;
-    Tuf2000mPollTracker tracker;
-
-    const uint32_t seq = tracker.beginPoll(0);
-    tracker.recordField(Tuf2000mPollTracker::makeToken(seq, Tuf2000mPollTracker::kTotalizer), false);
-    bool complete = false;
-    for (uint32_t f = 0; f < Tuf2000mPollTracker::kFieldCount; ++f) {
-        if (f != Tuf2000mPollTracker::kTotalizer) {
-            complete = tracker.recordField(
-                Tuf2000mPollTracker::makeToken(seq, static_cast<Tuf2000mPollTracker::Field>(f)), true);
-        }
-    }
-
-    TEST_ASSERT_TRUE(complete);
-    TEST_ASSERT_TRUE(tracker.failed());  // One failed field poisons the whole poll's reading.
-}
-
-void test_poll_tracker_stale_reply_from_abandoned_poll_is_ignored() {
-    using irrigator::domain::Tuf2000mPollTracker;
-    Tuf2000mPollTracker tracker;
-
-    const uint32_t staleSeq = tracker.beginPoll(0);
-    const uint32_t staleToken = Tuf2000mPollTracker::makeToken(staleSeq, Tuf2000mPollTracker::kFlowRate);
-    tracker.forceClear();  // Watchdog gave up on this poll (see isStuck()) before it completed.
-
-    const uint32_t newSeq = tracker.beginPoll(9000);
-
-    // The old poll's late reply must not be mistaken for part of the new one: isCurrent() rejects
-    // it, and feeding it to recordField() must neither complete the new poll nor corrupt its state.
-    TEST_ASSERT_FALSE(tracker.isCurrent(staleToken));
-    TEST_ASSERT_FALSE(tracker.recordField(staleToken, false));
-    TEST_ASSERT_TRUE(tracker.inFlight());   // New poll still waiting on all of its fields.
-    TEST_ASSERT_FALSE(tracker.failed());    // The stale error must not poison the new poll.
-
-    // The new poll still completes normally on its own fields.
-    TEST_ASSERT_TRUE(completeTufPollWithLastField(tracker, newSeq, true));
-    TEST_ASSERT_FALSE(tracker.failed());
-}
-
-void test_poll_tracker_is_stuck_only_once_timeout_elapsed_while_in_flight() {
-    irrigator::domain::Tuf2000mPollTracker tracker;
-
-    tracker.beginPoll(1000);
-    TEST_ASSERT_FALSE(tracker.isStuck(1000, 8000));     // No time elapsed yet.
-    TEST_ASSERT_FALSE(tracker.isStuck(8999, 8000));     // Just under the timeout.
-    TEST_ASSERT_TRUE(tracker.isStuck(9000, 8000));      // Exactly at the timeout.
-    TEST_ASSERT_TRUE(tracker.isStuck(20000, 8000));     // Well past it.
-
-    tracker.forceClear();
-    TEST_ASSERT_FALSE(tracker.isStuck(999999, 8000));   // Nothing in flight - can't be stuck.
-}
-
-void test_poll_tracker_force_clear_lets_a_new_poll_start_without_finishing_the_old_one() {
-    using irrigator::domain::Tuf2000mPollTracker;
-    Tuf2000mPollTracker tracker;
-
-    tracker.beginPoll(0);
-    TEST_ASSERT_TRUE(tracker.inFlight());
-    tracker.forceClear();
-    TEST_ASSERT_FALSE(tracker.inFlight());
-
-    // A fresh poll behaves normally afterwards - forceClear() doesn't wedge the tracker: only its
-    // last field completes it.
-    const uint32_t seq = tracker.beginPoll(100);
-    TEST_ASSERT_TRUE(tracker.inFlight());
-    TEST_ASSERT_FALSE(tracker.failed());
-    TEST_ASSERT_TRUE(completeTufPollWithLastField(tracker, seq, true));
-    TEST_ASSERT_FALSE(tracker.inFlight());
-}
-
-void test_signal_quality_register_splits_into_quality_and_autogain_step() {
-    // Low byte = the actual 0-100 quality, high byte = autogain step.
-    TEST_ASSERT_EQUAL_UINT8(87, irrigator::domain::signalQualityValue(0x0C57));
-    TEST_ASSERT_EQUAL_UINT8(12, irrigator::domain::signalAutogainStep(0x0C57));
-    TEST_ASSERT_EQUAL_UINT8(0, irrigator::domain::signalQualityValue(0xFF00));
-    TEST_ASSERT_EQUAL_UINT8(255, irrigator::domain::signalAutogainStep(0xFF00));
-}
-
 // --- FlowPublishGate -----------------------------------------------------------------------
 
 void test_flow_publish_gate_publishes_immediately_on_the_very_first_reading() {
@@ -3966,24 +3714,6 @@ int main(int argc, char** argv) {
     RUN_TEST(test_dst_rules_matches_known_2024_eu_transitions);
     RUN_TEST(test_standard_offset_from_geolocation_is_season_independent);
     RUN_TEST(test_standard_offset_from_geolocation_truncates_and_clamps);
-    RUN_TEST(test_decode_float_low_word_first_takes_first_register_as_low_word);
-    RUN_TEST(test_decode_float_rejects_nan_and_infinity_and_leaves_out_untouched);
-    RUN_TEST(test_is_finite_float_matches_the_ieee_754_classes);
-    RUN_TEST(test_word_count_of_matches_each_fields_request);
-    RUN_TEST(test_reply_length_matches_only_an_exact_well_formed_reply);
-    RUN_TEST(test_failure_text_is_distinct_and_keeps_the_original_modbus_reason);
-    RUN_TEST(test_totalizer_jump_guard_accepts_the_first_reading_and_normal_growth);
-    RUN_TEST(test_totalizer_jump_guard_rejects_a_jump_above_the_limit_without_moving_the_baseline);
-    RUN_TEST(test_totalizer_jump_guard_rejects_a_negative_total_but_accepts_a_reset_to_zero);
-    RUN_TEST(test_totalizer_jump_guard_rejects_a_negative_very_first_reading);
-    RUN_TEST(test_poll_tracker_token_round_trips_field_and_sequence);
-    RUN_TEST(test_poll_tracker_begin_poll_increments_sequence_and_starts_in_flight);
-    RUN_TEST(test_poll_tracker_completes_only_after_every_field_reports);
-    RUN_TEST(test_poll_tracker_any_field_error_marks_the_whole_poll_failed);
-    RUN_TEST(test_poll_tracker_stale_reply_from_abandoned_poll_is_ignored);
-    RUN_TEST(test_poll_tracker_is_stuck_only_once_timeout_elapsed_while_in_flight);
-    RUN_TEST(test_poll_tracker_force_clear_lets_a_new_poll_start_without_finishing_the_old_one);
-    RUN_TEST(test_signal_quality_register_splits_into_quality_and_autogain_step);
     RUN_TEST(test_flow_publish_gate_publishes_immediately_on_the_very_first_reading);
     RUN_TEST(test_flow_publish_gate_active_state_uses_a_flat_once_per_minute_cadence);
     RUN_TEST(test_flow_publish_gate_idle_state_never_publishes_below_threshold_no_matter_how_long);
