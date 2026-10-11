@@ -490,6 +490,13 @@ the weather once a day — a few hours before your first scheduled watering — 
 **Adjust** percentage up or down for that day (down to 0% when it has been, or is about to be,
 wet enough). Two steps happen, always in this order, and both feed one calculation.
 
+The result of auto-adjustment work is shown on the chart below:
+![Chart](./irrigation_chart.png)
+
+Rain reduces the waterin time/amount. The amount of rain in last 5 days has the same impact as forecasted amount of rain with probability higher than 70%.
+
+You can adjust the probability of rain to be taken into account and the lower threshold to skip watering - default 40%.
+
 ### Step 1 — Does the forecast rain count as already fallen?
 
 The device looks at the rain **forecast for the next 12 hours** — the only forward-looking input
