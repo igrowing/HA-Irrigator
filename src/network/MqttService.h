@@ -57,14 +57,27 @@ public:
     void publishAvailability(bool online);
 
     void publishStatus(const String& jsonPayload);
+    // volumeLiters: 0 while a zone/pump is running or idle; carries the just-completed run's total
+    // liters ONLY in the specific /state message that reports "on":false at the exact moment that
+    // run's watering ends (see main.ino's FlowRunVolumeTracker/reportStop()/reportValveClosed()) -
+    // not a persisted "last run" figure, just a one-shot field on that one message.
     void publishState(uint8_t zone,
                       const char* name,
                       bool on,
                       bool pump,
                       ::irrigator::domain::RunReason reason,
                       bool scheduled,
-                      uint16_t remainingMin);
+                      uint16_t remainingMin,
+                      float volumeLiters);
     void publishAlert(const String& jsonOrTextPayload);
+    // Publishes to `<prefix>/flow` - TUF-2000M flow-meter telemetry (rate, total, active zone) plus
+    // the lifetime per-zone/"other" liters (see main.ino's publishFlowTelemetry(), and
+    // updateFlowPublishCadence() for the publish-cadence rule; every poll's result is a candidate,
+    // not every one goes out). Non-retained, like `/status`.
+    void publishFlow(const String& jsonPayload);
+    // Publishes to `<prefix>/meter` in response to `<prefix>/cmd/meter` - flow-meter diagnostics
+    // (signal strength/quality, sound speed, last Modbus error). Non-retained.
+    void publishMeter(const String& jsonPayload);
     void publishSchedule(const String& jsonPayload);
     void publishQueue(const String& jsonPayload);
     // Publishes to `<prefix>/calibrate` in response to `<prefix>/cmd/calibrate` — one call per

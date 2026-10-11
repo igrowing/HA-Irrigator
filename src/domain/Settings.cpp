@@ -8,6 +8,12 @@ namespace irrigator::domain {
 
 namespace {
 
+// rain_forecast_probability_percent was called rain_skip_probability_percent until the forecast
+// stopped cancelling the run and started counting as fallen rain. Both parseSettings() (a stored
+// file) and mergeSettings() (an upload from an HA package that hasn't been updated yet) still
+// accept the old key, so an existing unit keeps its tuned value instead of resetting to default.
+constexpr const char* kLegacyRainSkipProbabilityKey = "rain_skip_probability_percent";
+
 // True if `value` is present and, for a string, non-empty — the "there's something here worth
 // considering" test every merged field starts with. A JSON null and an absent key both read as
 // isNull() via ArduinoJson.
@@ -77,10 +83,13 @@ bool validateSettings(const Settings& settings) {
         settings.upperLimitPercent > 500) {
         return false;
     }
-    if (settings.rainSkipProbabilityPercent < 0 || settings.rainSkipProbabilityPercent > 100) {
+    if (settings.rainForecastProbabilityPercent < 0 || settings.rainForecastProbabilityPercent > 100) {
         return false;
     }
-    if (settings.rainSkipAmountMm < 0) {
+    // 500 L/min is already generous headroom above anything this residential-scale device's
+    // current-sensor board is sized for (11 zones, one 12A pump) - well past a real system's
+    // expected flow rate, same "generous but bounded" spirit as upperLimitPercent's 500 above.
+    if (settings.expectedFlowRateLpm < 0 || settings.expectedFlowRateLpm > 500) {
         return false;
     }
     return true;
@@ -102,6 +111,7 @@ bool parseSettings(const char* json, size_t length, Settings& out) {
     JsonVariantConst watering = doc["Watering"];
     JsonVariantConst location = doc["Location"];
     JsonVariantConst currentSensor = doc["Current_sensor"];
+    JsonVariantConst flowMeter = doc["FlowMeter"];
     JsonVariantConst zones = doc["Zones"];
     if (zones.isNull()) {
         zones = doc["zone_names"];
@@ -126,6 +136,11 @@ bool parseSettings(const char* json, size_t length, Settings& out) {
     parsed.alertValveUc = currentSensor["alert_valve_uc"] | true;
     parsed.alertValveOc = currentSensor["alert_valve_oc"] | true;
 
+    // FlowMeter group is also new - no flat-key fallback needed, same as the four alert toggles
+    // above. Default true/0 (see Settings.h's field comments).
+    parsed.flowMeterEnabled = flowMeter["flow_meter_enabled"] | true;
+    parsed.expectedFlowRateLpm = flowMeter["expected_flow_rate_lpm"] | 0;
+
     parsed.autoAdjustmentEnabled =
         watering["auto_adjustment_enabled"] | (doc["auto_adjustment_enabled"] | true);
     parsed.locationKnown = location["location_known"] | (doc["location_known"] | false);
@@ -136,11 +151,12 @@ bool parseSettings(const char* json, size_t length, Settings& out) {
         watering["upper_limit"] | (doc["upper_limit"] | board::AUTOADJUSTMENT_DEFAULT_UPPER_LIMIT_PERCENT);
     parsed.lowerLimitPercent =
         watering["lower_limit"] | (doc["lower_limit"] | board::AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT);
-    parsed.rainSkipProbabilityPercent =
-        watering["rain_skip_probability_percent"] |
-        (doc["rain_skip_probability_percent"] | board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_PROBABILITY_PERCENT);
-    parsed.rainSkipAmountMm = watering["rain_skip_amount_mm"] |
-                              (doc["rain_skip_amount_mm"] | board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_AMOUNT_MM);
+    parsed.rainForecastProbabilityPercent =
+        watering["rain_forecast_probability_percent"] |
+        (watering[kLegacyRainSkipProbabilityKey] |
+         (doc["rain_forecast_probability_percent"] |
+          (doc[kLegacyRainSkipProbabilityKey] |
+           board::AUTOADJUSTMENT_DEFAULT_RAIN_FORECAST_PROBABILITY_PERCENT)));
     snprintf(parsed.weatherApiKey, sizeof(parsed.weatherApiKey), "%s",
              watering["weatherapi_key"] | (doc["weatherapi_key"] | ""));
 
@@ -199,6 +215,7 @@ bool mergeSettings(const Settings& existing,
     // `existing`'s value, no rejection).
     JsonVariantConst watering = doc["Watering"];
     JsonVariantConst currentSensor = doc["Current_sensor"];
+    JsonVariantConst flowMeter = doc["FlowMeter"];
 
     JsonVariantConst wateringPercentage = watering["watering_percentage"];
     if (hasValue(wateringPercentage)) {
@@ -284,6 +301,27 @@ bool mergeSettings(const Settings& existing,
         }
     }
 
+    // FlowMeter's two fields are plain, individually-merged fields - user-editable (not
+    // device-owned), same as the four alert toggles above, so no post-merge override is needed in
+    // main.ino.
+    JsonVariantConst flowMeterEnabled = flowMeter["flow_meter_enabled"];
+    if (hasValue(flowMeterEnabled)) {
+        if (flowMeterEnabled.is<bool>()) {
+            out.flowMeterEnabled = flowMeterEnabled.as<bool>();
+        } else {
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "FlowMeter.flow_meter_enabled");
+        }
+    }
+    JsonVariantConst expectedFlowRateLpm = flowMeter["expected_flow_rate_lpm"];
+    if (hasValue(expectedFlowRateLpm)) {
+        if (expectedFlowRateLpm.is<long>() && expectedFlowRateLpm.as<long>() >= 0 &&
+            expectedFlowRateLpm.as<long>() <= 500) {
+            out.expectedFlowRateLpm = static_cast<int16_t>(expectedFlowRateLpm.as<long>());
+        } else {
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "FlowMeter.expected_flow_rate_lpm");
+        }
+    }
+
     // upper_limit/lower_limit are cross-validated together (upper >= lower, matching
     // validateSettings()) instead of field-by-field, so a combination that only makes sense
     // together doesn't get half-applied; if the combination doesn't hold, whichever of the two
@@ -331,22 +369,16 @@ bool mergeSettings(const Settings& existing,
         }
     }
 
-    JsonVariantConst rainSkipProbability = watering["rain_skip_probability_percent"];
-    if (hasValue(rainSkipProbability)) {
-        if (rainSkipProbability.is<long>() && rainSkipProbability.as<long>() >= 0 &&
-            rainSkipProbability.as<long>() <= 100) {
-            out.rainSkipProbabilityPercent = static_cast<int16_t>(rainSkipProbability.as<long>());
-        } else {
-            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.rain_skip_probability_percent");
-        }
+    JsonVariantConst rainForecastProbability = watering["rain_forecast_probability_percent"];
+    if (!hasValue(rainForecastProbability)) {
+        rainForecastProbability = watering[kLegacyRainSkipProbabilityKey];
     }
-
-    JsonVariantConst rainSkipAmount = watering["rain_skip_amount_mm"];
-    if (hasValue(rainSkipAmount)) {
-        if (rainSkipAmount.is<long>() && rainSkipAmount.as<long>() >= 0) {
-            out.rainSkipAmountMm = static_cast<int16_t>(rainSkipAmount.as<long>());
+    if (hasValue(rainForecastProbability)) {
+        if (rainForecastProbability.is<long>() && rainForecastProbability.as<long>() >= 0 &&
+            rainForecastProbability.as<long>() <= 100) {
+            out.rainForecastProbabilityPercent = static_cast<int16_t>(rainForecastProbability.as<long>());
         } else {
-            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.rain_skip_amount_mm");
+            appendRejected(rejectedFieldsOut, rejectedFieldsOutSize, "Watering.rain_forecast_probability_percent");
         }
     }
 
@@ -461,8 +493,7 @@ size_t serializeSettings(const Settings& settings, char* buffer, size_t bufferSi
     watering["auto_adjustment_enabled"] = settings.autoAdjustmentEnabled;
     watering["upper_limit"] = settings.upperLimitPercent;
     watering["lower_limit"] = settings.lowerLimitPercent;
-    watering["rain_skip_probability_percent"] = settings.rainSkipProbabilityPercent;
-    watering["rain_skip_amount_mm"] = settings.rainSkipAmountMm;
+    watering["rain_forecast_probability_percent"] = settings.rainForecastProbabilityPercent;
     watering["weatherapi_key"] = settings.weatherApiKey;
 
     JsonObject location = doc["Location"].to<JsonObject>();
@@ -478,6 +509,10 @@ size_t serializeSettings(const Settings& settings, char* buffer, size_t bufferSi
     currentSensor["alert_pump_oc"] = settings.alertPumpOc;
     currentSensor["alert_valve_uc"] = settings.alertValveUc;
     currentSensor["alert_valve_oc"] = settings.alertValveOc;
+
+    JsonObject flowMeter = doc["FlowMeter"].to<JsonObject>();
+    flowMeter["flow_meter_enabled"] = settings.flowMeterEnabled;
+    flowMeter["expected_flow_rate_lpm"] = settings.expectedFlowRateLpm;
 
     JsonObject zones = doc["Zones"].to<JsonObject>();
     for (uint8_t i = 0; i < board::ZONE_COUNT; ++i) {

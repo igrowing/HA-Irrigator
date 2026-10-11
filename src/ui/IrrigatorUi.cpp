@@ -124,8 +124,7 @@ const char* IrrigatorUi::dayOfWeekName(uint8_t isoDay) {
     ctx.wateringPercentage = data.settings != nullptr ? data.settings->wateringPercentage : 0;
     ctx.upperLimitPercent = data.settings != nullptr ? data.settings->upperLimitPercent : 0;
     ctx.lowerLimitPercent = data.settings != nullptr ? data.settings->lowerLimitPercent : 0;
-    ctx.rainSkipProbabilityPercent = data.settings != nullptr ? data.settings->rainSkipProbabilityPercent : 0;
-    ctx.rainSkipAmountMm = data.settings != nullptr ? data.settings->rainSkipAmountMm : 0;
+    ctx.rainForecastProbabilityPercent = data.settings != nullptr ? data.settings->rainForecastProbabilityPercent : 0;
     ctx.defaultManualDuration = data.settings != nullptr ? data.settings->defaultManualDuration : 0;
     if (data.settings != nullptr) {
         for (uint8_t i = 0; i < irrigator::board::ZONE_COUNT; ++i) {
@@ -605,7 +604,7 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
     using Settings = ::irrigator::domain::UiStateMachine;
 
     // Shows the pending (still-being-ticked) value while that exact row is mid-edit, otherwise
-    // the live settings value — one place for the 5 editable-int16-row displays instead of each
+    // the live settings value — one place for the 4 editable-int16-row displays instead of each
     // repeating the same "am I the row currently being edited" check.
     auto displayValue = [this](uint8_t index, int16_t liveValue, int16_t pendingValue) {
         return (uiState_.editing() && uiState_.selectedIndex() == index) ? pendingValue : liveValue;
@@ -620,17 +619,14 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
     const int16_t lowerLimit = displayValue(Settings::kSettingsIndexLowerLimit,
                                             data.settings != nullptr ? data.settings->lowerLimitPercent : 0,
                                             uiState_.pendingLowerLimit());
-    const int16_t rainSkipProbability =
-        displayValue(Settings::kSettingsIndexRainSkipProbability,
-                    data.settings != nullptr ? data.settings->rainSkipProbabilityPercent : 0,
-                    uiState_.pendingRainSkipProbability());
-    const int16_t rainSkipAmount = displayValue(Settings::kSettingsIndexRainSkipAmount,
-                                                data.settings != nullptr ? data.settings->rainSkipAmountMm : 0,
-                                                uiState_.pendingRainSkipAmount());
+    const int16_t rainForecastProbability =
+        displayValue(Settings::kSettingsIndexRainForecastProbability,
+                    data.settings != nullptr ? data.settings->rainForecastProbabilityPercent : 0,
+                    uiState_.pendingRainForecastProbability());
 
     drawMenuList(
         "SETTINGS", Settings::kSettingsItemCount, uiState_.selectedIndex(),
-        [this, &data, percentage, upperLimit, lowerLimit, rainSkipProbability, rainSkipAmount](
+        [this, &data, percentage, upperLimit, lowerLimit, rainForecastProbability](
             uint16_t index, char* buffer, size_t size) {
             switch (index) {
                 case Settings::kSettingsIndexAutoAdjustment:
@@ -648,11 +644,8 @@ void IrrigatorUi::renderMenuSettings(const RenderData& data) {
                 case Settings::kSettingsIndexLowerLimit:
                     snprintf(buffer, size, "Lower limit: %d %%", lowerLimit);
                     break;
-                case Settings::kSettingsIndexRainSkipProbability:
-                    snprintf(buffer, size, "Skip rain prob: %d %%", rainSkipProbability);
-                    break;
-                case Settings::kSettingsIndexRainSkipAmount:
-                    snprintf(buffer, size, "Skip rain amt: %d mm", rainSkipAmount);
+                case Settings::kSettingsIndexRainForecastProbability:
+                    snprintf(buffer, size, "Fcst rain prob: %d %%", rainForecastProbability);
                     break;
                 case Settings::kSettingsIndexScheduleActive:
                     snprintf(buffer, size, "Schedule: %s", data.scheduleActive ? "active" : "paused");
@@ -743,6 +736,13 @@ void IrrigatorUi::renderMenuInfo(const RenderData& data) {
                             (data.lastWeatherUpdateDisplay != nullptr && data.lastWeatherUpdateDisplay[0] != '\0')
                                 ? data.lastWeatherUpdateDisplay
                                 : "-");
+                    break;
+                case Info::kInfoIndexVolume:
+                    if (data.flowTotalValid) {
+                        snprintf(buffer, size, "Volume: %.3f m3", static_cast<double>(data.flowTotalM3));
+                    } else {
+                        snprintf(buffer, size, "Volume: N/A");
+                    }
                     break;
                 case Info::kInfoIndexFirmware:
                     snprintf(buffer, size, "FW: v.%s", irrigator::board::FIRMWARE_VERSION);

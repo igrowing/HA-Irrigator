@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #ifndef APP_VERSION
-#define APP_VERSION "1.1.16"
+#define APP_VERSION "1.3.2"
 #endif
 
 namespace irrigator::board {
@@ -76,6 +76,52 @@ static constexpr float CURRENT_PUMP_UNDERCURRENT_MULTIPLIER = 0.5f;
 // cost tens of bytes total — a non-issue against the ESP32's RAM budget.
 static constexpr uint8_t WATERING_QUEUE_DEPTH = 15;
 
+// --- TUF-2000M ultrasonic flow meter (Modbus RTU/RS-485) ---
+// See hardware/readme.md's "Water flow sensing" section for the wiring/converter this talks to
+// (Waveshare TTL-to-RS485 (C), auto direction switching - no DE/RE GPIO needed) and
+// the tuf2000 library for the driver built on top of these. RX/TX are the only two
+// strapping-safe GPIOs left free on this board once zones/pump/LED/rotary/ADC/I2C are all
+// accounted for (see the pin groups above).
+static constexpr uint8_t FLOW_METER_RX_PIN = 36;
+static constexpr uint8_t FLOW_METER_TX_PIN = 2;
+static constexpr uint32_t FLOW_METER_BAUD_RATE = 9600;
+static constexpr uint8_t FLOW_METER_MODBUS_SLAVE_ID = 1;
+// Throttles Tuf2000FlowMeter::readAsync() - independent of any later MQTT publish cadence (that's
+// a Stage 2+ concern layered on top; every poll here still needs to happen regardless of whether
+// its result gets published). Short enough for a bench sanity-check ("two back-to-back reads while
+// flow is genuinely unchanged agree" - see the driver's class comment) without hammering the bus.
+static constexpr uint32_t FLOW_METER_POLL_INTERVAL_MS = 5000;
+// Holding-register map (function code 03), per chapter 7 of the TUF-2000M manual in docs/. These
+// are Modbus protocol ADDRESSES = the manual's register number MINUS ONE (the manual's own example
+// reads REG0001 with start address 0x0000; confirmed at bench bring-up). Every 32-bit value arrives
+// low word first - see domain::decodeFloatLowWordFirst().
+//  - flow rate: manual regs 1-2, REAL4 m3/h.
+//  - sound speed: manual regs 7-8, REAL4 m/s.
+//  - totalizer: manual regs 115-116, REAL4, always m3 whatever the meter's M32 unit/M33 multiplier
+//    menus say (the manual's integer + fraction regs 9-12 need those two scaled in by hand; the
+//    two agreed exactly at bench, so only this one is read).
+//  - signal block: manual regs 92-94 (3 words): quality (high byte autogain step, low byte 0-99
+//    quality), then upstream and downstream signal strength (0-4095, M90 shows it as 0-99.9).
+// Correction factor for this particular meter's known-bad calibration (cannot be fixed on the
+// meter itself). Applied once, in Tuf2000FlowMeter, to flow rate and totalizer - so every consumer
+// (/flow, /flow_totals, per-run volume, cmd/meter) sees the corrected values, and nothing downstream
+// may multiply again. Not applied to sound speed or signal values.
+static constexpr float METER_CALIBRATION_MULTIPLIER = 1.4f;
+// Largest forward move of the (already calibrated) totalizer accepted between two polls. At a poll
+// every few seconds no real irrigation line moves anywhere near this much water, so a bigger jump is
+// garbage that would otherwise be credited to a zone's lifetime total. See
+// domain::TotalizerJumpGuard for what a rejection does and how it recovers.
+static constexpr float FLOW_METER_MAX_TOTALIZER_JUMP_M3 = 10.0f;
+static constexpr uint16_t FLOW_METER_REG_FLOW_RATE = 0;
+static constexpr uint16_t FLOW_METER_REG_SOUND_SPEED = 6;
+static constexpr uint16_t FLOW_METER_REG_TOTALIZER = 114;
+static constexpr uint16_t FLOW_METER_REG_SIGNAL_QUALITY = 91;
+// Ceiling for one whole poll cycle (4 sequential register reads - see the driver): eModbus's own
+// per-request timeout is 2000ms, so this covers all four timing out in a row plus margin. If
+// Tuf2000FlowMeter::readAsync() finds a poll still in flight past this, it force-clears and lets
+// the next throttle window retry rather than wedging every future poll on a stuck transceiver/bug.
+static constexpr uint32_t FLOW_METER_STUCK_REQUEST_TIMEOUT_MS = 10000;
+
 static constexpr uint8_t MANUAL_DURATION_MIN_MINUTES = 1;
 static constexpr uint8_t MANUAL_DURATION_MAX_MINUTES = 120;
 static constexpr uint8_t SCHEDULE_DURATION_MIN_MINUTES = 1;
@@ -124,20 +170,20 @@ static constexpr int16_t AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT = 40;
 // bias) and stays a candidate for re-tuning — see docs/technical.md.
 // All three are compile-time only: a per-device override via settings.json's Watering group is
 // currently disabled (commented out in Settings.cpp), so tuning them needs a firmware flash.
-static constexpr float AUTOADJUSTMENT_BASE_TEMP_C = 23.0f;
-static constexpr float AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE = 12.5f;
-static constexpr float AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM = 3.1f;
+static constexpr float AUTOADJUSTMENT_BASE_TEMP_C = 24.0f;
+static constexpr float AUTOADJUSTMENT_DEFAULT_TEMP_MODIFIER_PCT_PER_DEGREE = 15.0f;
+static constexpr float AUTOADJUSTMENT_DEFAULT_RAIN_MODIFIER_PCT_PER_MM = 5.0f;
 
-// Rain-skip (Step 1) is the only *forecast*-based check — probability is inclusive (>=), amount
-// is not (>), matching shouldSkipForRain()'s exact comparison. Both thresholds are user-configurable
-// (Settings::rainSkipProbabilityPercent/rainSkipAmountMm) — these are only the factory defaults.
-static constexpr int16_t AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_PROBABILITY_PERCENT = 70;
-static constexpr int16_t AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_AMOUNT_MM = 4;
-static constexpr int64_t AUTOADJUSTMENT_RAIN_SKIP_DURATION_S = 24LL * 3600;
+// Step 1: the next-12h rain forecast is the only forward-looking input. When its probability is at
+// or over this threshold (>=) — matching effectiveRainMm()'s exact comparison — the whole forecast
+// amount is added to the past rainfall as if it had already fallen; otherwise it is ignored. The
+// threshold is user-configurable (Settings::rainForecastProbabilityPercent) — this is only the
+// factory default.
+static constexpr int16_t AUTOADJUSTMENT_DEFAULT_RAIN_FORECAST_PROBABILITY_PERCENT = 70;
 
 // The correction formula's (Step 2) temperature and rain terms are both historical, over this
 // same trailing window — a rolling 5-day average temperature and a 5-day rainfall total. Only
-// the rain-skip check above looks forward.
+// the forecast-rain term of Step 1 above looks forward.
 static constexpr uint8_t AUTOADJUSTMENT_PAST_WEATHER_DAYS = 5;
 static constexpr uint8_t AUTOADJUSTMENT_FORECAST_WINDOW_HOURS = 12;
 // How far ahead of the day's first scheduled watering the fetch/retry cycle starts, on days that
@@ -153,7 +199,7 @@ static constexpr uint32_t AUTOADJUSTMENT_WEATHER_RETRY_INTERVAL_MS = 1UL * 60UL 
 static constexpr uint32_t AUTOADJUSTMENT_RETRY_INTERVAL_MS = 5UL * 60UL * 1000UL;
 // On days with nothing scheduled, how often to check anyway — keeps the weather pipeline
 // (and its failure alerts) exercised daily instead of going silent for however long the
-// schedule stays empty, and lets a rain-skip decision land ahead of tomorrow's first watering
+// schedule stays empty, and lets the forecast-rain term land ahead of tomorrow's first watering
 // rather than waiting for that day's own 5-minute pre-watering window.
 static constexpr int64_t AUTOADJUSTMENT_OFFDAY_CHECK_INTERVAL_S = 24LL * 3600;
 
@@ -175,7 +221,7 @@ static constexpr const char* OPEN_METEO_BASE_URL = "https://api.open-meteo.com/v
 // ERA5 reanalysis - the source of the correction formula's *historical* inputs (avg daily max
 // temperature, rainfall). Unlike the forecast endpoint's past_days series (the weather model's own
 // output for those hours, never revised), ERA5 assimilates real observations after the fact. The
-// forecast endpoint above is still used for the forward-looking rain-skip window.
+// forecast endpoint above is still used for the forward-looking forecast-rain window.
 static constexpr const char* OPEN_METEO_ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive";
 static constexpr const char* WEATHERAPI_FORECAST_URL = "https://api.weatherapi.com/v1/forecast.json";
 static constexpr const char* WEATHERAPI_HISTORY_URL = "https://api.weatherapi.com/v1/history.json";

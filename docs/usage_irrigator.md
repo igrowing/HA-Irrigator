@@ -384,8 +384,7 @@ SETTINGS
   Adjust: 100 %
   Upper limit: 200 %
   Lower limit: 40 %
-  Skip rain prob: 70 %
-  Skip rain amt: 4 mm
+  Fcst rain prob: 70 %
   Alert pump UC: on
   Alert pump OC: on
   Alert valve UC: on
@@ -400,7 +399,7 @@ SETTINGS
   off, watering is manual/on-demand, and there's nothing for the daily **Adjust** recalculation to
   apply to.
 - **Auto-adjust**: the master on/off switch for the whole weather-based auto-adjustment feature
-  (both the daily percentage recalculation and the rain-skip check, below) — click to flip it.
+  (the daily percentage recalculation, below) — click to flip it.
   Turning it off freezes **Adjust** at whatever it's currently set to (a plain manual value) until
   turned back on; it's also available as `switch.irrigator_auto_adjustment` in Home Assistant,
   topmost in the **Auto-adjustment Weather Data** card.
@@ -412,9 +411,9 @@ SETTINGS
   within (defaults 200% / 40%). If the computed percentage would fall below **Lower limit**, the
   day's watering is skipped entirely (0%) rather than clamped up to it; above **Upper limit**, it's
   capped at that value.
-- **Skip rain prob** / **Skip rain amt**: the two thresholds that decide whether today's watering
-  is skipped outright because of rain in the forecast (defaults 70% / 4mm) — see **Step 1** below
-  for exactly how they're combined.
+- **Fcst rain prob**: the probability at or above which the rain in the forecast is counted as if
+  it had already fallen (default 70%) — see **Step 1** below. (The name is historical; a rainy
+  forecast reduces the watering rather than cancelling it.)
 - **Alert pump UC** / **Alert pump OC** / **Alert valve UC** / **Alert valve OC**: on/off switches
   (click to flip, no extra confirmation) for the four over/under-current alerts — see **How to
   control over-current and under-current alerts**, near the end of this document, for what these
@@ -445,6 +444,7 @@ INFO
   City: Springfield
   Loc: 42.35,-71.06
   Wtr upd:30-07 06:15
+  Volume: 12.345 m3
   FW: v.1.4.0
   BACK
 ```
@@ -458,6 +458,10 @@ INFO
 - **Wtr upd**: the date/time auto-adjustment last successfully fetched a forecast and applied it.
   Stays blank until the first successful cycle, and resets after every restart (this isn't saved —
   a restart simply re-runs today's cycle rather than remembering it already happened).
+- **Volume**: the flow meter's accumulated total, in cubic meters (`1.000 m3` = 1000 L), with the
+  meter calibration multiplier already applied — the same figure as **Flow Total** in Home Assistant.
+  Shows `N/A` while the meter isn't connected, isn't answering, or its latest reading was rejected
+  as implausible (including for the first seconds after boot, before the first reading arrives).
 - **FW**: the firmware version currently installed.
 
 ## Resetting to factory defaults
@@ -479,49 +483,56 @@ This requires physical access to the device, on purpose — it can't be triggere
 
 Everything in this section only happens while **Auto-adjust** (Settings, above) is on — turn it off
 and the device just keeps using **Adjust** exactly as you last set it, with no daily recalculation
-and no rain-skip check.
+and no forecast-rain counting.
 
 Once the device has resolved its location (see **City** / **Loc** in Info, above), it checks
-the weather once a day — a few hours before your first scheduled watering — and either skips the
-day's watering entirely, or nudges the **Adjust** percentage up or down for that day. Two checks
-happen, always in this order, and the first one decides whether the second one runs at all.
+the weather once a day — a few hours before your first scheduled watering — and nudges the
+**Adjust** percentage up or down for that day (down to 0% when it has been, or is about to be,
+wet enough). Two steps happen, always in this order, and both feed one calculation.
 
-### Step 1 — Is today's watering skipped because of rain?
+The result of auto-adjustment work is shown on the chart below:
+![Chart](./irrigation_chart.png)
 
-The device looks at the rain **forecast for the next 12 hours** — the only forward-looking check
-in the whole feature; everything in Step 2 below looks backward instead. Watering is skipped for
-the next 24 hours only if **both** are true at once, against the **Skip rain prob** / **Skip rain
-amt** thresholds from Settings (above; defaults shown here):
-- rain probability is **at or above Skip rain prob** (default 70%), **and**
-- the forecast rain amount is **strictly above Skip rain amt** (default 4mm — exactly 4mm doesn't count)
+Rain reduces the waterin time/amount. The amount of rain in last 5 days has the same impact as forecasted amount of rain with probability higher than 70%.
 
-If either condition isn't met, nothing is skipped — Step 2 (below) runs as normal. Note the two
-thresholds work differently on purpose: probability counts *at* the threshold, amount only counts
-*above* it — the table below uses the factory-default values (70% / 4mm) to illustrate.
+You can adjust the probability of rain to be taken into account and the lower threshold to skip watering - default 40%.
 
-| Rain probability (next 12h) | Rain amount (next 12h) | Watering skipped today? |
+### Step 1 — Does the forecast rain count as already fallen?
+
+The device looks at the rain **forecast for the next 12 hours** — the only forward-looking input
+in the whole feature; the temperature and past rain in Step 2 below look backward. If the highest
+rain probability in that window is **at or above Fcst rain prob** from Settings (above; default
+70%), the whole forecast rain amount is added to the rain that fell in the past 5 days, as if it
+had already fallen. Below that probability the forecast is ignored and only the past 5 days' rain
+counts. There is no minimum amount: the more rain is forecast, the more it counts.
+
+| Rain probability (next 12h) | Rain amount (next 12h) | Added to the past rain? |
 |---|---|---|
 | 50% | 10mm | No — probability under 70% |
-| 70% | 4mm | No — probability qualifies, but exactly 4mm doesn't count |
-| 70% | 4.1mm | **Yes** |
-| 71% | 4mm | No — probability well over, but amount still exactly 4mm |
-| 80% | 5mm | **Yes** |
-| 100% | 0mm | No — certain but no actual rain amount forecast |
+| 69% | 6mm | No — just under 70% |
+| 70% | 6mm | **Yes, +6mm** — 70% is enough |
+| 70% | 1mm | **Yes, +1mm** |
+| 100% | 0mm | Counts, but adds nothing — no rain amount forecast |
 | 30% | 20mm | No — probability too low despite the heavy rain amount |
 
-Lowering either threshold from Settings makes the device skip more readily (e.g. dropping **Skip
-rain amt** to 2mm would make the 70%/4mm row above trigger a skip too); raising them makes it more
-tolerant of rain in the forecast.
+Example: 3mm fell over the past 5 days and 6mm are forecast at 70%. The forecast qualifies, so
+Step 2 is calculated as if **9mm** had fallen — at a mild 23°C that is 72% instead of the 91% the
+past 3mm alone would give. A heavy enough forecast pushes the result under **Lower limit**, which
+is what cancels the day's watering; a moderate one only shortens it.
 
-### Step 2 — If not skipped: how much to adjust
+Lowering **Fcst rain prob** from Settings makes the device count the forecast more readily;
+raising it makes the device more tolerant of rain in the forecast.
 
-If Step 1 didn't skip the day, the device recalculates **Adjust** (the watering percentage)
-automatically, based on the **last 5 days**' actual weather — never the forecast:
+### Step 2 — How much to adjust
+
+The device recalculates **Adjust** (the watering percentage) automatically, based on the
+**last 5 days**' actual weather, plus the forecast rain if Step 1 counted it:
 - the **average of the past 5 days' daily *maximum* temperatures** — hotter than 23°C increases
   the percentage, cooler decreases it. Note this is the average daily *peak*, not an all-day average:
   a day that runs 16°C overnight and 28°C at noon counts as 28°C here, so 23°C is a mild day,
   not a warm one;
-- the **total rainfall over the past 5 days** — more recent rain decreases the percentage.
+- the **total rainfall over the past 5 days** (plus the qualifying forecast rain from Step 1) —
+  more rain decreases the percentage.
 
 Both come from Open-Meteo's ERA5 reanalysis archive, which is fitted to real observations after the
 fact (weather stations, radar, satellite) rather than being a forecast model's own guess about what
@@ -672,7 +683,7 @@ then turn to the row you want:
 
 ```
 SETTINGS
-  Skip rain amt: 4 mm
+  Fcst rain prob: 70 %
 > Alert pump UC: on
   Alert pump OC: on
   Alert valve UC: on
@@ -684,3 +695,34 @@ SETTINGS
 separate confirmation step. The change is saved immediately and survives a restart. These four
 rows are also editable from Home Assistant, in the same "Current-Sensor Calibration" card as the
 **Calibrate CS** button — see [usage_homeassistant.md](usage_homeassistant.md).
+
+## Water Flow Sensing
+
+A TUF-2000M ultrasonic clamp-on flow meter, wired to the device over Modbus RTU/RS-485 — see
+[hardware/readme.md](../hardware/readme.md)'s **Water flow sensing** section for the physical
+wiring and converter. Nothing here needs cutting into a pipe: the meter clamps around the outside
+of it. The meter's own onboard relay, not this device, is what actually closes a shut-off valve if
+you've wired one up as a hardware failsafe — this feature is for visibility and warnings, not
+safety-critical shutoff.
+
+There's nothing to press on the device itself for this feature — like current-fault alerting (just
+above), it runs entirely in the background over MQTT, with no rotary-menu screen or on-device
+display of its own. Lifetime consumption per zone, and each completed run's own
+water use are all visible from Home Assistant instead — see
+[usage_homeassistant.md](usage_homeassistant.md)'s **Water Flow Sensing** section for exactly
+where, and its **Settings** section for the two things you can configure (whether the anomaly check
+below runs, and the flow rate it checks against) — both edited from HA, not the device's own menu.
+
+**What the alert means**: while a zone is watering, the device compares the live flow rate against
+the expected rate you've configured and warns you if it's noticeably higher or lower than normal:
+
+- **Flow high** — a stuck-open valve elsewhere on the line, a burst pipe, or a valve letting through
+  more than it should.
+- **Flow low** — a clogged emitter/nozzle, a partially closed valve, or a valve that didn't fully
+  open.
+
+Same behavior as the current-sensor faults above: each publishes an `/alert` the moment it trips,
+gated to once per zone per day, and — if you've paired the device with Home Assistant — gets
+forwarded to WhatsApp and the logbook automatically. The check only runs once you've set an
+**Expected Flow Rate** above `0` in Home Assistant; leave it at `0` (the default) if you don't want
+this check at all.

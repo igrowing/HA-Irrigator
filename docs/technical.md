@@ -19,6 +19,7 @@ firmware architecture, and how to build, flash, and test it. For end-user setup 
 | SSD1309 OLED (128x64)     | I2C, addr 0x3C          |                                                      |
 | 24VAC current sense       | GPIO 32 (ADC)           | Valve current — no fixed mA range; see **True-RMS current sampling** under **MQTT**, below |
 | 230VAC current sense      | GPIO 33 (ADC)           | Pump current — no fixed mA range; see **True-RMS current sampling** under **MQTT**, below |
+| Flow meter (Modbus RTU/RS-485) | TX=GPIO2, RX=GPIO36 | To a Waveshare TTL-to-RS485 (C) isolated converter (automatic DE/RE, no extra GPIO) — see [hardware/readme.md](../hardware/readme.md)'s **Water flow sensing** section for wiring, and **Water flow sensing (TUF-2000M)** under **MQTT**, below |
 
 All of the above lives exclusively in `include/board_config.h` — it's the **only** file in the
 project allowed to hardcode a GPIO number, I2C address, or similar board-specific constant. If
@@ -155,21 +156,23 @@ device's actual prefix in every example below.
 
 |  Command topic | Command msg | Response topic | Response msg | Comment |
 |--|--|--|--|--|
-| `/cmd/state` | "" | `/state` | `{"datetime":"2026-07-12T06:00:00",`<br>`"zone":3,"name":"Back Lawn",`<br>`"on":true,"pump":true,`<br>`"reason":"manual","scheduled":true,"remaining_min":12}` | On every start/stop of a valve or pump, and on demand via `cmd/state` (reason is one of manual/schedule/mqtt/abort; zone:0 means pump-only; scheduled reflects whether the schedule engine is currently active/paused; remaining_min is minutes left in the current run, 0 when off). Also fires the instant the valve closes even while the pump is still in its graceful-shutdown tail (`on:false,pump:true`), so `remaining_min`/`on` track the requested duration, not the pump's extra runtime. |
+| `/cmd/state` | "" | `/state` | `{"datetime":"2026-07-12T06:00:00",`<br>`"zone":3,"name":"Back Lawn",`<br>`"on":true,"pump":true,`<br>`"reason":"manual","scheduled":true,"remaining_min":12,"volume":0.00}` | On every start/stop of a valve or pump, and on demand via `cmd/state` (reason is one of manual/schedule/mqtt/abort; zone:0 means pump-only; scheduled reflects whether the schedule engine is currently active/paused; remaining_min is minutes left in the current run, 0 when off; volume is the just-completed run's total liters, but only in the specific message where `on` transitions to `false` for that run — 0 in every other message, see `FlowRunVolumeTracker` under **Water flow sensing (TUF-2000M)** below). Also fires the instant the valve closes even while the pump is still in its graceful-shutdown tail (`on:false,pump:true`), so `remaining_min`/`on` track the requested duration, not the pump's extra runtime. |
 | `/cmd/queue` | "" | `/queue` | list of waiting waterings from the queue | On every push and pull from watering queue or by `cmd/queue` request. |
 | `/cmd/run` | `{"zone":3,"duration":15}` |  |  | **No special response** Response will be either adding to the queue or alert. Starts zone 3 for 15 min (or queues it if something's already running). `zone:0` = pump only. A **disabled** zone (`zone_names.<n>.enabled: false` in `settings.json`) is rejected outright with an `/alert` — `{"message":"Zone 3 (Back Lawn) is disabled. Enable it in settings first."}` — it's never silently ignored, and it never reaches the watering queue at all (see `enqueueOrStart()` in `src/main.ino`). |
 | `/cmd/stop` | empty, or `all`  |  |  | **No special response** Response will be either adding to the queue or alert. Stops the current run — closes the valve immediately, but a zone run's pump still gets its normal graceful-shutdown tail rather than cutting immediately (a pump-only run has no such tail). Plain/empty payload also pops and starts the next queued item, if any; `all` also empties the queue. |
 | `/cmd/scheduled` | bool | `/scheduled` | bool | Turn the schedule on/off, write the schedule state in settings.json if changed, report back true/false. |
-| `/cmd/auto_adjustment` | bool | `/auto_adjustment` | bool | Master on/off for weather-based auto-adjustment (both the daily percentage recalculation and the rain-skip check) — persisted to `settings.json`'s `auto_adjustment_enabled`, reported back true/false. |
+| `/cmd/auto_adjustment` | bool | `/auto_adjustment` | bool | Master on/off for weather-based auto-adjustment (the daily percentage recalculation, including the forecast-rain term) — persisted to `settings.json`'s `auto_adjustment_enabled`, reported back true/false. |
 | `/cmd/watering_percentage` | integer | `/watering_percentage` | integer | Sets the schedule-wide watering multiplier (0–300%; `0` from the auto-adjustment pipeline means "skip today's cycle entirely", not "water at 0%" — see **Weather-based irrigation auto-adjustment** below). **Retained message** — see **Wi-Fi/MQTT connection resilience** below for why. |
 | `/cmd/skip_rain_until` | `"2026-07-12T06:00:00"` |  `/skip_rain_until` | `"2026-07-12T06:00:00"` | Suppresses **scheduled** runs until this UTC timestamp (manual/MQTT runs are never affected — this only gates the schedule engine). |
 |  |  | `/online` |  boolean (LWT on ungraceful disconnect, or explicitly before a deliberate restart). | **Retained message**. Matches Home Assistant's default MQTT `availability_topic` convention. |
-| `/cmd/status` | "" | `/status`  | JSON: `datetime`, `firmware_version`, `boot_reason`, `ip`, `uptime_s`, `rssi_db`, `wifi_quality` (verbal, `miserable`/`poor`/`fair`/`good`/`excellent`), `free_heap_bytes`, `free_storage_bytes`, `mqtt_buffer_bytes`, `cpu_temp_c`, `coredump_available` (read together with `boot_reason` — see [coredump.md](coredump.md)), `publish_failures`, `publish_retried`, `publish_offline`, `mqtt_forced_reconnects` (cumulative since boot — see **Wi-Fi/MQTT connection resilience** below), and the weather auto-adjustment block: `auto_adjustment_enabled`, `location_known`, `city` (only once known), `weather_adjust_status` (`disabled`/`no_location`/`no_clock`/`done_today`/`waiting_for_window`/`no_schedule_waiting_recheck`/`fetch_in_progress`/`waiting_retry` — why the daily cycle has or hasn't run), `watering_percentage` (what the schedule is running at right now; `0` = today's cycle is skipped) and `last_weather_update` (omitted until this session's first successful fetch). No `outputs`/current section — which zone/pump is on is `/state`'s job (fired on every start/stop, and on `cmd/state`), and current readings only have a meaningful number outside `cmd/calibrate`'s response as a comparison against a calibrated base; see **True-RMS current sampling** below. | ~15s after boot and on request.  |
-| `/cmd/weather` | "" | `/status`, `/watering_percentage`, `/skip_rain_until`, `/alert` | Manual test trigger for the whole weather auto-adjustment pipeline: runs the fetch + rain-skip check + percentage recalculation right now, bypassing the schedule-today / lead-time / retry-pacing gates. When the fetch finishes it always reports back with a `/status` (success or failure), and on success always republishes `/watering_percentage` — even when the value is unchanged, unlike the automatic daily cycle, which only publishes on change — or publishes `/skip_rain_until` if the forecast triggered a rain skip. On failure it also sends the `{"weather":"failed",...}` `/alert` regardless of the once-a-day cap. Rejected with an `/alert` if a fetch is already running, location isn't known yet or the clock isn't synced. | Test-only; the daily cycle needs no command. |
+| `/cmd/status` | "" | `/status`, `/flow` | JSON: `datetime`, `firmware_version`, `boot_reason`, `ip`, `uptime_s`, `rssi_db`, `wifi_quality` (verbal, `miserable`/`poor`/`fair`/`good`/`excellent`), `free_heap_bytes`, `free_storage_bytes`, `mqtt_buffer_bytes`, `cpu_temp_c`, `coredump_available` (read together with `boot_reason` — see [coredump.md](coredump.md)), `publish_failures`, `publish_retried`, `publish_offline`, `mqtt_forced_reconnects` (cumulative since boot — see **Wi-Fi/MQTT connection resilience** below), and the weather auto-adjustment block: `auto_adjustment_enabled`, `location_known`, `city` (only once known), `weather_adjust_status` (`disabled`/`no_location`/`no_clock`/`done_today`/`waiting_for_window`/`no_schedule_waiting_recheck`/`fetch_in_progress`/`waiting_retry` — why the daily cycle has or hasn't run), `watering_percentage` (what the schedule is running at right now; `0` = today's cycle is skipped) and `last_weather_update` (omitted until this session's first successful fetch). No `outputs`/current section — which zone/pump is on is `/state`'s job (fired on every start/stop, and on `cmd/state`), and current readings only have a meaningful number outside `cmd/calibrate`'s response as a comparison against a calibrated base; see **True-RMS current sampling** below. | ~15s after boot and on request.  |
+| `/cmd/weather` | "" | `/status`, `/watering_percentage`, `/skip_rain_until`, `/alert` | Manual test trigger for the whole weather auto-adjustment pipeline: runs the fetch + percentage recalculation (forecast rain included) right now, bypassing the schedule-today / lead-time / retry-pacing gates. When the fetch finishes it always reports back with a `/status` (success or failure), and on success always republishes `/watering_percentage` — even when the value is unchanged, unlike the automatic daily cycle, which only publishes on change. On failure it also sends the `{"weather":"failed",...}` `/alert` regardless of the once-a-day cap. Rejected with an `/alert` if a fetch is already running, location isn't known yet or the clock isn't synced. | Test-only; the daily cycle needs no command. |
 |  |  | `/alert` | see **Error reporting** below | Fire-and-forget notices: current out of expected range, watering queue full, OTA result, and any command/topic error. Not retained, not queued for delivery guarantees. Every alert carries a `datetime` field — JSON alerts get it spliced in alongside their other keys, plain-text alerts are wrapped as `{"datetime":"...","message":"..."}`. |
+|  |  | `/flow` | JSON: `total_liters` (the meter's lifetime totalizer, calibrated), `zone` (whichever zone/pump is currently running, 0 = idle), one `zone_<n>` field (liters, since boot) per **enabled** zone, and `other` (flow while every valve is closed). | TUF-2000M total plus the ESP32's own per-zone consumption counters (the live flow rate is deliberately not published — firmware-side for anomaly alerting, `cmd/meter` for debugging) — see **Water flow sensing (TUF-2000M)** below for the publish-cadence rule (not every Modbus poll goes out). Also republished on every `/cmd/status` (when a valid reading exists), so HA relearns the total after its own restart. Not retained. |
 | `/cmd/restart` | "" |  |  | **No special response** Publishes `false` to `online`, then restarts. |
 | `/cmd/ota` | FW `.bin` URL | `/ota_started` then `/ota_completed` | `"true"`, then `"2026-07-12T06:00:00"` |  `/ota_started` fires the instant the command is accepted (before the HTTP GET), separately from success/failure - `cmd/#` is only delivered at QoS 0, so a caller can't tell "broker accepted my publish" from "device actually received it" without a distinct receipt signal (see [ota.md](ota.md)'s retry logic, built on exactly this). Downloads and flashes the URL, restarts on success. Blocking by design — see [agents.md](../agents.md) for why. See [ota.md](ota.md) for the higher-level tooling built on top of this. |
 | `/cmd/calibrate` | "" | `/calibrate` (one message per sensor) | JSON: `sensor` (`"valve"`/`"pump"`), `base_level`, `sample_count`, `burst_samples_mv` (the most recent burst's raw ADC readings, for spotting saturation). | Requires an active watering run (valve open — see **True-RMS current sampling** below); rejected with `/alert` otherwise. |
+| `/cmd/meter` | "" | `/meter` | JSON: `flow_rate_lpm`, `total_m3` (manual regs 115/116, float m³), `signal_strength_up`/`signal_strength_down` (manual regs 93/94), `quality` (manual reg 92 low byte, 0–99), `autogain_step` (manual reg 92 high byte), `sound_speed_ms` (manual regs 7/8), `reading_age_s`, `last_modbus_error` (numeric `Modbus::Error`, `0` = none since boot), `last_modbus_error_text` and `last_failure` (why the last rejected poll was rejected, or `none`; also covers non-Modbus rejections — see **Reply validation** below). | Flow-meter diagnostics, answered from the latest valid poll (no extra Modbus transaction). Before any valid poll exists the reading fields are replaced by `"error":"no valid reading yet"`; the two error fields are always present. The error is sticky — a later good poll doesn't clear it. See **Water flow sensing (TUF-2000M)** below. |
 | `/cmd/download/<filename>` | "" | `/download/<filename>` | String | Reads that file from flash and publishes it. |
 | `/cmd/coredump` | "" | `/coredump` | JSON: `coredump` (`"present"`/`"none"`), `size_bytes`, `task`, `panic_reason`, `pc`, `exc_cause`, `fault_addr`, `elf_sha256`, `bt_corrupted`, `backtrace` (array of `"0x...."` strings). | Summary of the crash dump the panic handler stored in flash, without transferring the image. Also published unprompted ~15s after boot when a dump is present, alongside `/status`. Decode the addresses against the exact `firmware.elf` named by `elf_sha256` — see [coredump.md](coredump.md). |
 | `/cmd/download/coredump` | "" | `/download/coredump` (a header, then N chunks, then a trailer) | `{"coredump":"begin","size":…,"chunks":N,"chunk_bytes":3072,"encoding":"base64","summary":{…}}`, then `{"seq":i,"data":"<base64>"}` for i=1..N, then `{"coredump":"end","chunks":N,"size":…,"crc32":"0x…"}` | Not a file on SPIFFS — the raw ELF image out of the `coredump` partition, up to 64KB, so it streams as base64 chunks one per `loop()` iteration rather than in one message. All QoS 0: a dropped chunk shows as a gap in `seq`, a corrupted one fails the trailer's CRC32; either way just re-request it. `scripts/coredump.py` does the whole round-trip and decode. |
@@ -388,8 +391,7 @@ again since there's no Wi-Fi config left to load.
     "auto_adjustment_enabled": true,
     "upper_limit": 200,
     "lower_limit": 40,
-    "rain_skip_probability_percent": 70,
-    "rain_skip_amount_mm": 4,
+    "rain_forecast_probability_percent": 70,
     "weatherapi_key": ""
   }
 }
@@ -559,15 +561,118 @@ replaces, it doesn't drive the status LED's alert pattern. The HA package (see
 WhatsApp + logbook" automation) forwards every fault alert (identified by the `fault` key) to
 `notify.greenapi` and the logbook.
 
+### Water flow sensing (TUF-2000M)
+
+An ultrasonic clamp-on flow meter (TUF-2000M) on Modbus RTU/RS-485 — see
+[hardware/readme.md](../hardware/readme.md)'s **Water flow sensing** section for the wiring/converter
+and the failsafe reasoning (the meter's own onboard relay, not this firmware, is what actually closes
+a shut-off valve; polling here is for HA visibility/logging only). the external [`igrowing/tuf2000`](https://registry.platformio.org/libraries/igrowing/tuf2000)
+library (`<Tuf2000.h>`, PlatformIO registry) is the driver, built on the [eModbus](https://github.com/eModbus/eModbus) library rather than a
+blocking one — its `ModbusClientRTU` runs its own FreeRTOS worker task internally and delivers
+results via callback, so unlike **True-RMS current sampling** above, no extra task needed to be
+created for this feature.
+
+**Register map** (function code 03, holding registers — per chapter 7 of the TUF-2000M manual in
+`docs/`). Two bring-up findings apply to every register: the Modbus protocol address is the manual's
+register number **minus one** (the manual's own example reads REG0001 with start address 0x0000), and
+every 32-bit REAL4 value arrives **low word first** ("lower byte first" in the manual). Decoding
+and the poll-sequencing state machine live in the library (unit-tested there). Four requests per poll, manual register numbers:
+
+| Manual regs | Content | Used for |
+|--|--|--|
+| 1–2 | flow rate, REAL4, m³/h | `cmd/meter` |
+| 7–8 | fluid sound speed, REAL4, m/s | `cmd/meter` |
+| 92–94 | quality (low byte 0–99, high byte autogain step), upstream/downstream strength (0–4095 ≈ M90's 0–99.9) | `cmd/meter` |
+| 115–116 | positive totalizer, REAL4, always m³ | the totalizer every consumer uses |
+
+The totalizer is deliberately the REAL4 in regs 115–116 rather than the manual's integer + fraction
+pair (regs 9–12, which additionally needs the unit and multiplier codes from regs 1438–1439 scaled in
+by hand): both were read side by side at bench bring-up and agreed to 7 digits, and the float form is
+independent of the meter's M32/M33 menus. Flow rate and totalizer are multiplied by
+`METER_CALIBRATION_MULTIPLIER` (`board_config.h`, currently 1.4 — this meter's calibration is off and
+can't be fixed on the unit) inside the driver, so every published/derived figure is already corrected;
+sound speed and signal values are raw. All four requests are polled together every
+`FLOW_METER_POLL_INTERVAL_MS` as separate Modbus requests per poll cycle (never overlapped with the next poll's — see the driver's class comment for
+why: the reference project above found "the modbus stuff just didn't give back consistent data for
+two sequential queries").
+
+**MQTT publish cadence** is independent of the Modbus poll cadence above — every poll's result is a
+candidate for `/flow`, but not every one is published (`updateFlowPublishCadence()` in `main.ino`,
+backed by `irrigator::domain::FlowPublishGate`):
+- While a zone or pump is active: once a minute.
+- While idle: threshold-triggered rather than timer-driven — once accumulated idle-time volume has
+  grown past 1 liter since the last idle publish, capped to never fire more than once a minute even
+  if that threshold keeps getting crossed faster. A real leak surfaces promptly; a quiet pipe
+  generates no idle MQTT traffic at all.
+
+**Reply validation.** A poll is rejected as a whole (`Reading::valid == false`, nothing from it reaches
+the totals or the payloads) not only on a Modbus error or timeout but whenever a reply cannot be
+trusted. Each rejection carries a reason (`Reading::failure`, `tuf2000::Tuf2000Failure` in the library):
+
+| Reason (`/alert` `reason`, `cmd/meter` `last_failure`) | Trigger |
+|--|--|
+| `modbus_error_or_timeout` | wire-level error, timeout, or the request could not even be enqueued |
+| `bad_reply_length` | the reply's byte count is not exactly 2 per word requested, or the message is not that long (`replyLengthMatches()` in the library) — without this a truncated reply reads back as zeros and looks like a valid zero flow |
+| `non_finite_value` | a REAL4 in the reply decodes to NaN or ±infinity, or overflows to infinity once the 1.4 calibration is applied |
+| `totalizer_jump_too_large` | the totalizer went negative, or forward by more than `FLOW_METER_MAX_TOTALIZER_JUMP_M3` (10 m³) since the last accepted poll (`TotalizerJumpGuard`) — a garbage-but-finite value would otherwise be credited to a zone's lifetime total. A *decrease* is accepted (a totalizer reset on the meter) and consumers already only count positive deltas |
+
+Only the first reason of a poll is kept. `cmd/meter` also carries the sticky `last_failure`, next to
+`last_modbus_error`, because most of these are not Modbus errors. **Recovery limit:** a rejected
+poll does not move the guard's baseline, so if more than 10 m³ genuinely flowed while the bus was
+down, every later poll is rejected as `totalizer_jump_too_large` until the ESP32 restarts (the
+baseline lives in RAM only). The `/alert` says so once a day.
+
+**A failed poll** (any of the above — `Reading::valid == false`)
+publishes `/alert` with `{"flow_meter":"failed","reason":"<reason from the table>"}`, gated to once
+per calendar day the same way the current-sensor faults are (`consumeDailyAlertGate()` in
+`main.ino`). Deliberately not a `{"fault":...}` payload — there's no zone/level/base to report for a
+communication failure, so it doesn't match (and isn't forwarded to WhatsApp by)
+`irrigator_automations.yaml`'s fault-forwarding automation; it's the same category as
+`reportWeatherFailure()`'s `{"geolocation"/"weather":"failed",...}` alerts. This alerts on the link
+itself going quiet, which is a different, lower-level thing than the anomaly detection (flow rate
+out of an expected band while watering) planned as a later stage — not implemented yet.
+
+**Per-run and lifetime volume** are tracked by `irrigator::domain::FlowConsumptionTracker.h/.cpp`'s
+two pure classes (pulled out of `main.ino` for the same `pio test -e native` reason as
+`FlowPublishGate`):
+- `FlowRunVolumeTracker` captures the totalizer reading at the moment a run starts
+  (`startIrrigation()`) and computes+clears it exactly once — the completed run's own liters — at
+  the moment that run's watering actually ends (`reportValveClosed()` for a zone+pump run,
+  `reportStop()` for a pump-only one). This is `/state`'s `volume` field: `0` while a zone/pump is
+  running or fully idle, the real number only in the one `/state` message where `on` transitions to
+  `false` for that run.
+- `FlowLifetimeCounters` maintains a never-reset (RAM-only) liters counter per zone plus one for
+  "other" (flow while every valve is closed — a hose bib spliced into the line, a leak — not a
+  second whole-house meter; a pump-only run or the post-valve-close pump-graceful-shutdown tail
+  falls into neither bucket and is discarded, see the class comment), fed by the totalizer delta on
+  every valid poll and attributed by `irrigation.snapshot(nowMs)` at that moment. Published on
+  `/flow` alongside the meter's own readings (one `zone_<n>` field, in liters, per **enabled** zone
+  plus `other`), so they follow the same cadence rule: once a minute while active,
+  threshold-triggered while idle, so a quiet pipe doesn't republish unchanged zeroes. Feeds the HA
+  "Water Consumption" dashboard group's `total_increasing` sensors, whose long-term statistics
+  tolerate this counter resetting to 0 on a device reboot without miscounting it as negative
+  consumption.
+
+`settings.json`'s `FlowMeter` group (`Settings::flowMeterEnabled`/`expectedFlowRateLpm`) holds the
+anomaly check's on/off switch and its expected-flow-rate threshold (0 = not configured, no check) —
+see [usage_homeassistant.md](usage_homeassistant.md)'s **Water Flow Sensing** section for how it's
+edited. **The anomaly check itself (comparing live flow rate against this threshold while watering
+and publishing `flow_high`/`flow_low` faults) is not implemented in firmware yet** — the settings
+surface above is built ahead of it deliberately, so wiring the check up later is a `main.ino`-only
+change with no further settings/HA/doc rework. The end-user docs already describe that alert as if
+it exists (matching the settings/threshold that already do) — keep that in mind if you're
+implementing it: it needs to actually match what's already documented there, not the other way
+around.
+
 ## Weather-based irrigation auto-adjustment
 
 Pure calculation lives in `src/domain/AutoAdjustment.h`/`.cpp` and `src/domain/WeatherSummary.h`/
 `.cpp` (both unit-tested, see **Testing** below); the HTTP/JSON fetching lives in
 `src/network/WeatherService.h`/`.cpp` (not unit-testable — it's a live HTTP client, verified by
-flashing); orchestration (retry pacing, the daily trigger window, rain-skip vs. percentage
+flashing); orchestration (retry pacing, the daily trigger window, the percentage
 decision) lives in `src/main.ino`'s `tryGeolocateIfDue()`/`runAutoAdjustmentIfDue()`.
 
-The feature has exactly one forward-looking input (the rain-skip forecast, Step 1) and two
+The feature has exactly one forward-looking input (the forecast rain, Step 1) and two
 backward-looking inputs (the adjustment formula's temperature and rainfall, Step 2) — it's easy to
 assume both steps use the forecast, so `network::WeatherFetchResult`'s field names spell out the
 direction explicitly: `avgPastTempC`/`rainPastDaysMm` (historical) vs.
@@ -583,7 +688,7 @@ direction explicitly: `avgPastTempC`/`rainPastDaysMm` (historical) vs.
    saving".
 2. **Weather**, primary — [Open-Meteo](https://open-meteo.com) (no API key), as **two sequential
    HTTPS requests**, one per direction, to two different endpoints:
-   - **Forward (rain-skip, Step 1)** — `/v1/forecast?hourly=precipitation_probability,precipitation
+   - **Forward (forecast rain, Step 1)** — `/v1/forecast?hourly=precipitation_probability,precipitation
      &past_days=5&forecast_days=2&timezone=UTC`. An ArduinoJson `DeserializationOption::Filter` keeps
      only those two hourly arrays (the raw payload also carries `hourly_units`, `elevation`,
      `generationtime_ms`, etc., which would otherwise inflate the parsed `JsonDocument`). Passing
@@ -617,7 +722,7 @@ direction explicitly: `avgPastTempC`/`rainPastDaysMm` (historical) vs.
    attempt**, which falls through to WeatherAPI below — deliberately not "use the forecast series as
    a stand-in", for the mixing reason above.
 3. **Weather, fallback** — [WeatherAPI.com](https://www.weatherapi.com) (`forecast.json` for the
-   forward rain-skip window, + 5×`history.json` — one call per past day, since that endpoint only
+   forward forecast-rain window, + 5×`history.json` — one call per past day, since that endpoint only
    ever returns a single day — for the historical temperature/rainfall), used only when
    Open-Meteo's request fails outright (bad HTTP status or JSON parse error). Each `history.json`
    response's `day.maxtemp_c`/`day.totalprecip_mm` are averaged/summed across the 5 calls —
@@ -647,9 +752,9 @@ worth having even with adjustment disabled.
 
 `runAutoAdjustmentIfDue()` (called every `loop()` iteration, cheap to no-op) picks its gate from `autoAdjustScheduleGateReason()` depending on whether *today* has an active schedule entry:
 - **Watering scheduled today**: opens a window `AUTOADJUSTMENT_LEAD_TIME_MINUTES` (5) before the day's *earliest* start — or immediately, if the device boots after that window has already opened. Once open, it retries every `AUTOADJUSTMENT_WEATHER_RETRY_INTERVAL_MS` (1 minute), so a failed/slow fetch still gets a few attempts before that first watering fires.
-- **Nothing scheduled today**: instead waits for `AUTOADJUSTMENT_OFFDAY_CHECK_INTERVAL_S` (24h) to pass since the last successful check (or checks immediately if there's never been one). This keeps the weather pipeline — and its failure alerts — exercised daily even through a stretch with an empty schedule, and lets a rain-skip decision land ahead of tomorrow's first watering instead of waiting for that day's own 5-minute window.
+- **Nothing scheduled today**: instead waits for `AUTOADJUSTMENT_OFFDAY_CHECK_INTERVAL_S` (24h) to pass since the last successful check (or checks immediately if there's never been one). This keeps the weather pipeline — and its failure alerts — exercised daily even through a stretch with an empty schedule, and lets the forecast-rain term land ahead of tomorrow's first watering instead of waiting for that day's own 5-minute window.
 
-Either path stops retrying once a forecast is successfully applied for that calendar date, tracked by `main.ino`'s `lastWeatherUpdateDate`. Retries are otherwise **deliberately uncapped** — a forecast that only arrives after the first watering has already run at the last-known percentage still helps later same-day waterings, or the rain-skip decision, so retrying past that point is worth it rather than giving up.
+Either path stops retrying once a forecast is successfully applied for that calendar date, tracked by `main.ino`'s `lastWeatherUpdateDate`. Retries are otherwise **deliberately uncapped** — a forecast that only arrives after the first watering has already run at the last-known percentage still helps later same-day waterings, so retrying past that point is worth it rather than giving up.
 
 `lastWeatherUpdateDate` is a plain in-RAM global, **not** a `settings.json` field — a power cycle resets it to empty, so the device re-attempts today's cycle on the next boot (immediately, or once the lead-time window opens) rather than remembering it already ran before the reboot. This is deliberate: the auto-adjustment window is designed to tolerate re-running, so there's no reason to persist "already done today" across a restart, and doing so would mean writing to flash daily for no benefit.
 
@@ -691,9 +796,9 @@ Daily (past 5 days feed Step 2; today/tomorrow are ignored by the formula):
 
 Next-12h hourly window (06:00→17:00 UTC today, nowIndex=126), feeds Step 1: every hour came back precipitation_probability=0%, precipitation=0mm. So max prob = 0%, summed rain = 0mm.
 
-**Step 1 — Rain-skip check**
+**Step 1 — Forecast rain**
 
-`shouldSkipForRain`(prob>=70%, amount>4mm) (board_config.h:121-122, or from `settings.json`): 0% >= 70% → false. No skip.
+`effectiveRainMm`(prob>=70%) (`board_config.h`, or from `settings.json`): 0% >= 70% → false. The forecast is not counted; rain fed to Step 2 is the 68.9mm of past rain alone.
 
 **Step 2 — Correction formula**
 
@@ -791,14 +896,21 @@ so far. See `src/domain/AutoAdjustment.cpp` and its unit tests for the exact beh
 threshold.
 
 Separately — and using the *forecast*, not the history above — if the next 12 hours show rain
-probability **at or over** `rain_skip_probability_percent` (default 70) **and** rain amount **over**
-`rain_skip_amount_mm` (default 4), the day's percentage calculation is skipped entirely and
-`rainSkip.setSkipUntil()` is called for 24 hours instead — reusing the same `RainSkip` gate
-`cmd/skip_rain_until` already writes to (see **MQTT**, above), so manual/MQTT `cmd/run` remain
-unaffected either way. The two thresholds are intentionally asymmetric: the probability check is
-`>=`, the amount check is `>` (see `domain::shouldSkipForRain()`, which takes both thresholds as
-parameters rather than reading fixed constants — they're user-configurable settings, like
-`upper_limit`/`lower_limit`, not compiled-in defaults).
+probability **at or over** `rain_forecast_probability_percent` (default 70), the whole forecast amount is
+**added to `rainPastDaysMm`** as if it had already fallen (`domain::effectiveRainMm()`), and the
+formula above runs on that total. Example:
+3mm past + 6mm forecast at 70% is calculated as 9mm (72% at base temperature, vs. 91% for the 3mm
+alone). There is no separate skip: a heavy enough forecast drives the result under `lower_limit`,
+which yields 0% by the ordinary rule. (Until 2026-09 a qualifying forecast instead cancelled the
+day's watering outright via a 24 h `RainSkip`, gated by a second `rain_skip_amount_mm` threshold —
+since retired, because the formula already scales with the amount. The probability setting was
+renamed from `rain_skip_probability_percent` to `rain_forecast_probability_percent` at the same time;
+both parseSettings() and mergeSettings() still accept the old key, so an existing unit keeps its
+value. A `rain_skip_amount_mm` still present in an old `settings.json` is ignored and dropped on
+the next save.) `cmd/skip_rain_until` remains as a manual/HA gate on **scheduled** runs (see
+**MQTT**, above); manual/MQTT `cmd/run` are unaffected either way. The probability check is `>=`, and the
+threshold is passed to `effectiveRainMm()` as a parameter rather than read from a fixed constant —
+it's a user-configurable setting, like `upper_limit`/`lower_limit`, not a compiled-in default.
 
 ### Known limitations
 

@@ -53,12 +53,66 @@ The schedule-active toggle and watering-percentage number are live MQTT entities
 - **Current-Sensor Calibration** — read-only **Valve Base Level** / **Pump Base Level** (from the last settings.json download), four **Alert Pump Under-current** / **Alert Pump Over-current** / **Alert Valve Under-current** / **Alert Valve Over-current** toggles, an **Irrigator Calibrate** button that captures fresh baselines (needs an active watering run — valve open, not just the pump alone — or the device rejects it), and the live **Last Calibration Response**. The base levels are device-owned — there's no HA control that edits them directly, only the button that triggers a fresh capture on the device; there's no local `input_number` for either value, editing them any other way isn't possible by design. See [technical.md](technical.md)'s **cmd/calibrate** section for what the base level means and how over/undercurrent alerting uses it.
   - The four alert toggles (default **on**) each independently enable/disable one of pump-over-current / pump-under-current / valve-over-current / valve-under-current alerting — same four switches as the device's own rotary Settings menu, right above **Calibrate CS** there too (see [usage_irrigator.md](usage_irrigator.md)'s **How to control over-current and under-current alerts**). Flipping one republishes the full `settings.json`, same as any other Settings-tab field. A toggle only has an effect once its sensor has actually been calibrated (a `0` base level means "never calibrated" — the underlying check is skipped regardless of the toggle).
   - Every alert that trips (`sensor.irrigator_last_alert`, or `.../alert` directly) is forwarded automatically to WhatsApp (`notify.greenapi`) and the Logbook by the "Irrigator - forward current-fault alerts to WhatsApp + logbook" automation in `../homeassistant/packages/irrigator_automations.yaml` — no dashboard action needed to receive them. That automation assumes a `notify.greenapi` service already exists in your Home Assistant (the [GreenAPI](https://green-api.com) WhatsApp integration, or any other notify target you rename it to) — if it doesn't, the automation's `notify.greenapi` step fails silently in the log without blocking the `logbook.log` step alongside it.
-- **Auto-adjustment** — the master on/off switch for the whole weather-based feature (both the  daily percentage recalculation and the rain-skip check), topmost in the **Auto-adjustment  Weather Data** card. Turning it off freezes watering at whatever **Watering Percentage** is  currently set to — same as if the feature didn't exist — until turned back on. Mirrors the  device's own rotary UI, where it's the second item in the Settings menu (right after Schedule Active, since auto-adjustment only makes sense while the schedule itself is active).
+- **Auto-adjustment** — the master on/off switch for the whole weather-based feature (the daily percentage recalculation, including the forecast-rain term), topmost in the **Auto-adjustment  Weather Data** card. Turning it off freezes watering at whatever **Watering Percentage** is  currently set to — same as if the feature didn't exist — until turned back on. Mirrors the  device's own rotary UI, where it's the second item in the Settings menu (right after Schedule Active, since auto-adjustment only makes sense while the schedule itself is active).
 - **Auto-adjustment Upper Limit** / **Lower Limit** — the range the daily weather-based adjustment  is allowed to move **Watering Percentage** within (defaults 200% / 40%). If the computed value  would fall below **Lower Limit**, that day's watering is skipped entirely (0%) instead of being  clamped up to it. The **Upper Limit** is intended to save an excessive bill on watering, trading off a bit the health of the plants.
-- **Rain-Skip Probability Threshold** / **Amount Threshold** — the two thresholds deciding whether a day's watering is skipped entirely because of rain in the forecast (defaults 70% / 4mm): probability counts *at or above* its threshold, amount only counts *strictly above* its threshold. See [usage_irrigator.md](usage_irrigator.md)'s **Step 1** for the worked examples.
+- **Forecast Rain Probability Threshold** — the probability at or above which the rain in the forecast is counted, in full, as already fallen when the day's watering is calculated (default 70%). See [usage_irrigator.md](usage_irrigator.md)'s **Step 1** for the worked examples.
 - **City** / **Coordinates** — read-only, whatever the device auto-detected from its IP address the  first time it came online with no saved location (there's no way to correct these from HA if the  IP-based lookup is inaccurate for your network — see [technical.md](technical.md)'s **Known limitations**). There's no HA equivalent of the device's own "Last update" field — that date lives in the  device's RAM only, never written to `settings.json`, so it's visible on the device's own rotary  UI Settings menu but not in Home Assistant.
 - **Backup from the Irrigator Device** button (`button.irrigator_refresh_from_device`) calls `script.irrigator_backup_from_device` to force-request `/status` plus both `settings.json` and `schedule.json` on demand, regardless of virgin status — useful if you suspect drift or want to double-check after a manual device-side change. It also now writes both files to `/config/irrigator_backups/` on the HA host (a timestamped copy plus a `_latest.json` HA itself reads back from) — see **Backing up and restoring settings/schedule** below.
 - **Restore to the Irrigator Device** button (`button.restore_to_the_irrigator_device`) uploads the files the button above last wrote back to the device, verbatim — see the same section below.
+
+## Water Flow Sensing
+
+The **Water Flow** card (Garden tab) shows the TUF-2000M flow meter's own running
+total (`sensor.irrigator_flow_total`, L — the meter's lifetime totalizer, not a per-zone breakdown).
+The live flow rate is deliberately not sent to Home Assistant; publish `cmd/meter` to see it. The **Water Consumption** card group
+right below it splits that same lifetime volume per zone (`sensor.irrigator_zone_N_water_total`,
+disabled zones' cards hidden the same way the Status section hides them) plus **Other**
+(`sensor.irrigator_other_water_total` — flow measured while every valve is closed, e.g. a hose bib
+spliced into the irrigation line or a leak; not a second whole-house meter), each shown as a rolling
+24-hour total with a **History** button opening HA's native history dialog. All of these reset to 0
+on a device reboot (RAM-only counters, like most of this project's runtime state) — HA's own
+long-term statistics smooth over that reset rather than miscounting it as negative consumption.
+
+Each completed run's own water use shows up as the `volume` attribute on
+`sensor.irrigator_watering_state` (liters) the instant that run's `/state` message reports
+`on: false` — `0` the rest of the time (while a zone/pump is running, or fully idle), so read it
+right as a run ends rather than looking it up later; there's no dedicated dashboard card for it yet.
+
+### Settings
+
+The **Flow-Meter Anomaly Check** card (next to **Current-Sensor Calibration**) has:
+
+- **Enabled** — master on/off for the anomaly check specifically (see below). Doesn't affect the
+  Water Flow / Water Consumption telemetry above, which keeps reporting regardless of this toggle.
+- **Expected Flow Rate** (L/min) — the steady-state rate the anomaly check compares live readings
+  against. `0` (the default) means "not configured" — the check doesn't run until you set a real
+  value here, e.g. the `flow_rate_lpm` that `cmd/meter` reports during a normal run.
+
+Both fields republish the full `settings.json`, same as every other Settings-tab field (see **How
+the download/sync model works** below).
+
+### Flow anomaly alerts
+
+While a zone is watering, the device compares the live flow rate against **Expected Flow Rate** and
+warns you if it's noticeably higher or lower than normal:
+
+- **Flow high** — a stuck-open valve elsewhere on the line, a burst pipe, or a valve letting through
+  more than it should.
+- **Flow low** — a clogged emitter/nozzle, a partially closed valve, or a valve that didn't fully
+  open.
+
+Like the current-sensor faults, each of these trips at most once per zone per calendar day, and is
+forwarded automatically to WhatsApp and the Logbook by the same "Irrigator - forward current-fault
+alerts to WhatsApp + logbook" automation (it matches on any `/alert` payload with a `fault` key
+defined, and `flow_high`/`flow_low` use that same shape) — see **Settings** above for the
+notify-service caveat. See [usage_irrigator.md](usage_irrigator.md)'s **Water Flow Sensing** section
+for what these mean physically.
+
+A Modbus communication failure (the flow meter not answering at all — a loose RS-485 connection, a
+disconnected cable, a wedged transceiver) is a separate, lower-level alert
+(`{"flow_meter":"failed",...}`, no `fault` key) that reaches `sensor.irrigator_last_alert` but is
+**not** forwarded to WhatsApp — see [technical.md](technical.md)'s **Water flow sensing (TUF-2000M)**
+section.
 
 ## How the download/sync model works
 
@@ -105,6 +159,9 @@ The garage's Wi-Fi is flaky enough that the device drops off `.../online` often,
 - `input_select.irrigator_schedule_sort_by` - display-only sort order for the "Device Schedule" table.
 - `button.irrigator_refresh_from_device` ("Backup from the Irrigator Device"), `button.restore_to_the_irrigator_device` ("Restore to the Irrigator Device" - entity_id derived from its `name:`, not from `unique_id: irrigator_restore_from_backup`), `button.irrigator_save_schedule_record`, `button.irrigator_delete_schedule_record`, `button.irrigator_stop_all` - manual triggers for the corresponding scripts.
 - `sensor.irrigator_status`, `sensor.irrigator_watering_state`, `sensor.irrigator_last_alert`, `sensor.irrigator_queue`, `sensor.irrigator_schedule`, `binary_sensor.irrigator_online` - read-only device telemetry.
+- `sensor.irrigator_flow_total` (L, the meter's own lifetime totalizer) - TUF-2000M flow-meter telemetry on the "Water Flow" card, published once/minute while watering and threshold-triggered while idle (see **Water flow sensing (TUF-2000M)** in [technical.md](technical.md)).
+- `sensor.irrigator_zone_1_water_total`..`_11_water_total`, `sensor.irrigator_other_water_total` - lifetime (since-boot) liters per zone plus "other", on the "Water Consumption" card group - see **Water Flow Sensing** above.
+- `input_boolean.irrigator_flow_meter_enabled`, `input_number.irrigator_expected_flow_rate_lpm` - the flow anomaly check's on/off toggle and threshold, on the "Flow-Meter Anomaly Check" card - see **Water Flow Sensing** above.
 
 ## Troubleshooting
 

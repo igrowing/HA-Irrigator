@@ -137,6 +137,160 @@ mqtt:
       device: *irrigator_device
       availability: *irrigator_availability
 
+    # TUF-2000M flow-meter telemetry (see docs/technical.md's "Water flow sensing (TUF-2000M)"
+    # section). The live flow rate is deliberately not published to HA (firmware-only, for anomaly
+    # alerting; see cmd/meter for debugging) - publish cadence is once/minute while watering, threshold-triggered while idle, not
+    # every Modbus poll. Also republished on every cmd/status (HA sends one on start, on device
+    # reconnect and hourly), so HA relearns the total after its own restart even when idle.
+    # Every sensor pulls the field it needs from the same /flow payload (total_liters, zone and
+    # the per-zone counters below) via value_template; none of them sets json_attributes_topic,
+    # so HA doesn't store the whole payload as attributes on each state change.
+
+    # total_liters is the meter's own lifetime totalizer, not a per-run figure — see the
+    # irrigator_zone_N_water_total / irrigator_other_water_total sensors below for the per-zone
+    # breakdown, and sensor.irrigator_watering_state's `volume` attribute for a completed run's own
+    # total (see docs/technical.md's "Water flow sensing (TUF-2000M)" section).
+    - name: "Flow Total"
+      unique_id: irrigator_flow_total
+      icon: mdi:water
+      state_topic: "irrigatorF4/flow"
+      value_template: "{{ value_json.total_liters }}"
+      unit_of_measurement: "L"
+      state_class: total_increasing
+      device: *irrigator_device
+      availability: *irrigator_availability
+
+    # Lifetime (since-boot) water consumption per zone plus "other" (flow measured while every
+    # valve is closed - a hose bib spliced into the irrigation line, a leak - not a second
+    # whole-house meter). Published on `/flow` (same message and cadence as Flow Total above), one
+    # `zone_<n>` field per ENABLED zone only - value_json.get(..., 0) covers a zone that's currently disabled (its key is simply
+    # absent from the payload) so the sensor reads 0 rather than "unknown".
+    # `device_class: water` + `state_class: total_increasing` is what makes HA's recorder keep
+    # long-term statistics for these - the "Water Consumption" dashboard group (garden_tab.yaml)
+    # reads a rolling 24h window off those statistics, which survive a device reboot resetting this
+    # RAM-only counter back to 0 (total_increasing tolerates a lower reading as a meter reset,
+    # rather than miscounting it as negative consumption).
+    - name: "Zone 1 Water Total"
+      unique_id: irrigator_zone_1_water_total
+      icon: mdi:water
+      state_topic: "irrigatorF4/flow"
+      value_template: "{{ value_json.get('zone_1', 0) }}"
+      unit_of_measurement: "L"
+      device_class: water
+      state_class: total_increasing
+      device: *irrigator_device
+      availability: *irrigator_availability
+    - name: "Zone 2 Water Total"
+      unique_id: irrigator_zone_2_water_total
+      icon: mdi:water
+      state_topic: "irrigatorF4/flow"
+      value_template: "{{ value_json.get('zone_2', 0) }}"
+      unit_of_measurement: "L"
+      device_class: water
+      state_class: total_increasing
+      device: *irrigator_device
+      availability: *irrigator_availability
+    - name: "Zone 3 Water Total"
+      unique_id: irrigator_zone_3_water_total
+      icon: mdi:water
+      state_topic: "irrigatorF4/flow"
+      value_template: "{{ value_json.get('zone_3', 0) }}"
+      unit_of_measurement: "L"
+      device_class: water
+      state_class: total_increasing
+      device: *irrigator_device
+      availability: *irrigator_availability
+    - name: "Zone 4 Water Total"
+      unique_id: irrigator_zone_4_water_total
+      icon: mdi:water
+      state_topic: "irrigatorF4/flow"
+      value_template: "{{ value_json.get('zone_4', 0) }}"
+      unit_of_measurement: "L"
+      device_class: water
+      state_class: total_increasing
+      device: *irrigator_device
+      availability: *irrigator_availability
+    - name: "Zone 5 Water Total"
+      unique_id: irrigator_zone_5_water_total
+      icon: mdi:water
+      state_topic: "irrigatorF4/flow"
+      value_template: "{{ value_json.get('zone_5', 0) }}"
+      unit_of_measurement: "L"
+      device_class: water
+      state_class: total_increasing
+      device: *irrigator_device
+      availability: *irrigator_availability
+    - name: "Zone 6 Water Total"
+      unique_id: irrigator_zone_6_water_total
+      icon: mdi:water
+      state_topic: "irrigatorF4/flow"
+      value_template: "{{ value_json.get('zone_6', 0) }}"
+      unit_of_measurement: "L"
+      device_class: water
+      state_class: total_increasing
+      device: *irrigator_device
+      availability: *irrigator_availability
+    - name: "Zone 7 Water Total"
+      unique_id: irrigator_zone_7_water_total
+      icon: mdi:water
+      state_topic: "irrigatorF4/flow"
+      value_template: "{{ value_json.get('zone_7', 0) }}"
+      unit_of_measurement: "L"
+      device_class: water
+      state_class: total_increasing
+      device: *irrigator_device
+      availability: *irrigator_availability
+    - name: "Zone 8 Water Total"
+      unique_id: irrigator_zone_8_water_total
+      icon: mdi:water
+      state_topic: "irrigatorF4/flow"
+      value_template: "{{ value_json.get('zone_8', 0) }}"
+      unit_of_measurement: "L"
+      device_class: water
+      state_class: total_increasing
+      device: *irrigator_device
+      availability: *irrigator_availability
+    - name: "Zone 9 Water Total"
+      unique_id: irrigator_zone_9_water_total
+      icon: mdi:water
+      state_topic: "irrigatorF4/flow"
+      value_template: "{{ value_json.get('zone_9', 0) }}"
+      unit_of_measurement: "L"
+      device_class: water
+      state_class: total_increasing
+      device: *irrigator_device
+      availability: *irrigator_availability
+    - name: "Zone 10 Water Total"
+      unique_id: irrigator_zone_10_water_total
+      icon: mdi:water
+      state_topic: "irrigatorF4/flow"
+      value_template: "{{ value_json.get('zone_10', 0) }}"
+      unit_of_measurement: "L"
+      device_class: water
+      state_class: total_increasing
+      device: *irrigator_device
+      availability: *irrigator_availability
+    - name: "Zone 11 Water Total"
+      unique_id: irrigator_zone_11_water_total
+      icon: mdi:water
+      state_topic: "irrigatorF4/flow"
+      value_template: "{{ value_json.get('zone_11', 0) }}"
+      unit_of_measurement: "L"
+      device_class: water
+      state_class: total_increasing
+      device: *irrigator_device
+      availability: *irrigator_availability
+    - name: "Other Water Total"
+      unique_id: irrigator_other_water_total
+      icon: mdi:water-alert-outline
+      state_topic: "irrigatorF4/flow"
+      value_template: "{{ value_json.get('other', 0) }}"
+      unit_of_measurement: "L"
+      device_class: water
+      state_class: total_increasing
+      device: *irrigator_device
+      availability: *irrigator_availability
+
     - name: "Queue"
       unique_id: irrigator_queue
       icon: mdi:format-list-numbered
@@ -189,7 +343,7 @@ mqtt:
       availability: *irrigator_availability
 
     # Read-only echo of the device's own /skip_rain_until topic (published by
-    # applyRainSkipDecision() / cmd/skip_rain_until in main.ino). Payload is a bare, naive UTC
+    # the cmd/skip_rain_until handler in main.ino). Payload is a bare, naive UTC
     # timestamp string ("2026-09-02T06:00:00", no zone suffix) - deliberately NOT given
     # device_class: timestamp here, since HA rejects a tz-naive value for that class; consumers
     # (sensor.irrigator_last_decision below) append "+00:00" before parsing, same as the
@@ -429,7 +583,7 @@ template:
             data: {topic: "irrigatorF4/cmd/scheduled", payload: "false"}
 
       # Master on/off for weather-based auto-adjustment (both the daily percentage recalculation
-      # and the rain-skip check) — same template-switch-over-echo-sensor pattern as "Irrigator
+      # and the forecast-rain term) — same template-switch-over-echo-sensor pattern as "Irrigator
       # Schedule Active" above, for the same reason: writes go through
       # script.irrigator_enqueue_or_publish so they queue for retry when offline, and it carries
       # no `availability:` so it's never greyed out.
@@ -790,6 +944,354 @@ template:
         attributes:
           records: "{{ trigger.payload_json }}"
 
+  # Per-zone "liters used by the last completed run", feeding the diamonds on the Garden tab's
+  # "Watering Timeline" chart. The device's /state message carries a run's total in `volume`
+  # exactly once, on the message where that zone's `on` goes false (see MqttService::publishState
+  # and FlowRunVolumeTracker) - so each sensor takes that value at the run's end and goes `unknown`
+  # when its zone starts again. The reset on start is what makes every run a distinct recorded
+  # state change, even two runs with an identical volume. Any other /state message leaves it as is.
+  # volume 0 (no meter reading for the run) is ignored rather than plotted as a bogus 0 L run.
+  - trigger:
+      - trigger: mqtt
+        topic: "irrigatorF4/state"
+    sensor:
+      - name: "Irrigator Zone 1 Run Volume"
+        unique_id: irrigator_zone_1_run_volume
+        icon: mdi:water-check
+        unit_of_measurement: "L"
+        device_class: water
+        state: >-
+          {% set p = trigger.payload_json %}
+          {% if p.zone | int(-1) == 1 and p.on %}unknown
+          {% elif p.zone | int(-1) == 1 and p.volume | float(0) > 0 %}{{ p.volume }}
+          {% else %}{{ this.state }}{% endif %}
+      - name: "Irrigator Zone 2 Run Volume"
+        unique_id: irrigator_zone_2_run_volume
+        icon: mdi:water-check
+        unit_of_measurement: "L"
+        device_class: water
+        state: >-
+          {% set p = trigger.payload_json %}
+          {% if p.zone | int(-1) == 2 and p.on %}unknown
+          {% elif p.zone | int(-1) == 2 and p.volume | float(0) > 0 %}{{ p.volume }}
+          {% else %}{{ this.state }}{% endif %}
+      - name: "Irrigator Zone 3 Run Volume"
+        unique_id: irrigator_zone_3_run_volume
+        icon: mdi:water-check
+        unit_of_measurement: "L"
+        device_class: water
+        state: >-
+          {% set p = trigger.payload_json %}
+          {% if p.zone | int(-1) == 3 and p.on %}unknown
+          {% elif p.zone | int(-1) == 3 and p.volume | float(0) > 0 %}{{ p.volume }}
+          {% else %}{{ this.state }}{% endif %}
+      - name: "Irrigator Zone 4 Run Volume"
+        unique_id: irrigator_zone_4_run_volume
+        icon: mdi:water-check
+        unit_of_measurement: "L"
+        device_class: water
+        state: >-
+          {% set p = trigger.payload_json %}
+          {% if p.zone | int(-1) == 4 and p.on %}unknown
+          {% elif p.zone | int(-1) == 4 and p.volume | float(0) > 0 %}{{ p.volume }}
+          {% else %}{{ this.state }}{% endif %}
+      - name: "Irrigator Zone 5 Run Volume"
+        unique_id: irrigator_zone_5_run_volume
+        icon: mdi:water-check
+        unit_of_measurement: "L"
+        device_class: water
+        state: >-
+          {% set p = trigger.payload_json %}
+          {% if p.zone | int(-1) == 5 and p.on %}unknown
+          {% elif p.zone | int(-1) == 5 and p.volume | float(0) > 0 %}{{ p.volume }}
+          {% else %}{{ this.state }}{% endif %}
+      - name: "Irrigator Zone 6 Run Volume"
+        unique_id: irrigator_zone_6_run_volume
+        icon: mdi:water-check
+        unit_of_measurement: "L"
+        device_class: water
+        state: >-
+          {% set p = trigger.payload_json %}
+          {% if p.zone | int(-1) == 6 and p.on %}unknown
+          {% elif p.zone | int(-1) == 6 and p.volume | float(0) > 0 %}{{ p.volume }}
+          {% else %}{{ this.state }}{% endif %}
+      - name: "Irrigator Zone 7 Run Volume"
+        unique_id: irrigator_zone_7_run_volume
+        icon: mdi:water-check
+        unit_of_measurement: "L"
+        device_class: water
+        state: >-
+          {% set p = trigger.payload_json %}
+          {% if p.zone | int(-1) == 7 and p.on %}unknown
+          {% elif p.zone | int(-1) == 7 and p.volume | float(0) > 0 %}{{ p.volume }}
+          {% else %}{{ this.state }}{% endif %}
+      - name: "Irrigator Zone 8 Run Volume"
+        unique_id: irrigator_zone_8_run_volume
+        icon: mdi:water-check
+        unit_of_measurement: "L"
+        device_class: water
+        state: >-
+          {% set p = trigger.payload_json %}
+          {% if p.zone | int(-1) == 8 and p.on %}unknown
+          {% elif p.zone | int(-1) == 8 and p.volume | float(0) > 0 %}{{ p.volume }}
+          {% else %}{{ this.state }}{% endif %}
+      - name: "Irrigator Zone 9 Run Volume"
+        unique_id: irrigator_zone_9_run_volume
+        icon: mdi:water-check
+        unit_of_measurement: "L"
+        device_class: water
+        state: >-
+          {% set p = trigger.payload_json %}
+          {% if p.zone | int(-1) == 9 and p.on %}unknown
+          {% elif p.zone | int(-1) == 9 and p.volume | float(0) > 0 %}{{ p.volume }}
+          {% else %}{{ this.state }}{% endif %}
+      - name: "Irrigator Zone 10 Run Volume"
+        unique_id: irrigator_zone_10_run_volume
+        icon: mdi:water-check
+        unit_of_measurement: "L"
+        device_class: water
+        state: >-
+          {% set p = trigger.payload_json %}
+          {% if p.zone | int(-1) == 10 and p.on %}unknown
+          {% elif p.zone | int(-1) == 10 and p.volume | float(0) > 0 %}{{ p.volume }}
+          {% else %}{{ this.state }}{% endif %}
+      - name: "Irrigator Zone 11 Run Volume"
+        unique_id: irrigator_zone_11_run_volume
+        icon: mdi:water-check
+        unit_of_measurement: "L"
+        device_class: water
+        state: >-
+          {% set p = trigger.payload_json %}
+          {% if p.zone | int(-1) == 11 and p.on %}unknown
+          {% elif p.zone | int(-1) == 11 and p.volume | float(0) > 0 %}{{ p.volume }}
+          {% else %}{{ this.state }}{% endif %}
+
+  # Persistent lifetime water per zone (+ "other"). The device's own per-zone counters
+  # (irrigator_zone_N_water_total) are RAM-only and restart at 0 on every device reboot, so they are
+  # really "since last boot". These accumulate the positive deltas of those counters in HA instead,
+  # which survive device reboots (a drop is treated as a counter reset) and HA restarts (trigger
+  # sensors restore their last state). Seeded from the counter's value the first time they run, so
+  # history from before they existed can't be recovered - they count from creation onward.
+  # An update where the previous value was unknown/unavailable adds nothing (no valid delta).
+  - trigger:
+      - trigger: state
+        entity_id: sensor.irrigator_zone_1_water_total
+      - trigger: state
+        entity_id: sensor.irrigator_zone_2_water_total
+      - trigger: state
+        entity_id: sensor.irrigator_zone_3_water_total
+      - trigger: state
+        entity_id: sensor.irrigator_zone_4_water_total
+      - trigger: state
+        entity_id: sensor.irrigator_zone_5_water_total
+      - trigger: state
+        entity_id: sensor.irrigator_zone_6_water_total
+      - trigger: state
+        entity_id: sensor.irrigator_zone_7_water_total
+      - trigger: state
+        entity_id: sensor.irrigator_zone_8_water_total
+      - trigger: state
+        entity_id: sensor.irrigator_zone_9_water_total
+      - trigger: state
+        entity_id: sensor.irrigator_zone_10_water_total
+      - trigger: state
+        entity_id: sensor.irrigator_zone_11_water_total
+      - trigger: state
+        entity_id: sensor.irrigator_other_water_total
+    sensor:
+      - name: "Irrigator Zone 1 Water Lifetime"
+        unique_id: irrigator_zone_1_water_lifetime
+        icon: mdi:water-plus
+        unit_of_measurement: "L"
+        device_class: water
+        state_class: total_increasing
+        state: >-
+          {% set cur = this.state | float(none) %}
+          {% set new = trigger.to_state.state | float(none) %}
+          {% set old = trigger.from_state.state | float(none) if trigger.from_state else none %}
+          {% if trigger.entity_id != 'sensor.irrigator_zone_1_water_total' %}{{ this.state }}
+          {% elif new is none %}{{ this.state }}
+          {% elif cur is none %}{{ new | round(2) }}
+          {% elif old is none %}{{ cur }}
+          {% elif new >= old %}{{ (cur + new - old) | round(2) }}
+          {% else %}{{ (cur + new) | round(2) }}{% endif %}
+      - name: "Irrigator Zone 2 Water Lifetime"
+        unique_id: irrigator_zone_2_water_lifetime
+        icon: mdi:water-plus
+        unit_of_measurement: "L"
+        device_class: water
+        state_class: total_increasing
+        state: >-
+          {% set cur = this.state | float(none) %}
+          {% set new = trigger.to_state.state | float(none) %}
+          {% set old = trigger.from_state.state | float(none) if trigger.from_state else none %}
+          {% if trigger.entity_id != 'sensor.irrigator_zone_2_water_total' %}{{ this.state }}
+          {% elif new is none %}{{ this.state }}
+          {% elif cur is none %}{{ new | round(2) }}
+          {% elif old is none %}{{ cur }}
+          {% elif new >= old %}{{ (cur + new - old) | round(2) }}
+          {% else %}{{ (cur + new) | round(2) }}{% endif %}
+      - name: "Irrigator Zone 3 Water Lifetime"
+        unique_id: irrigator_zone_3_water_lifetime
+        icon: mdi:water-plus
+        unit_of_measurement: "L"
+        device_class: water
+        state_class: total_increasing
+        state: >-
+          {% set cur = this.state | float(none) %}
+          {% set new = trigger.to_state.state | float(none) %}
+          {% set old = trigger.from_state.state | float(none) if trigger.from_state else none %}
+          {% if trigger.entity_id != 'sensor.irrigator_zone_3_water_total' %}{{ this.state }}
+          {% elif new is none %}{{ this.state }}
+          {% elif cur is none %}{{ new | round(2) }}
+          {% elif old is none %}{{ cur }}
+          {% elif new >= old %}{{ (cur + new - old) | round(2) }}
+          {% else %}{{ (cur + new) | round(2) }}{% endif %}
+      - name: "Irrigator Zone 4 Water Lifetime"
+        unique_id: irrigator_zone_4_water_lifetime
+        icon: mdi:water-plus
+        unit_of_measurement: "L"
+        device_class: water
+        state_class: total_increasing
+        state: >-
+          {% set cur = this.state | float(none) %}
+          {% set new = trigger.to_state.state | float(none) %}
+          {% set old = trigger.from_state.state | float(none) if trigger.from_state else none %}
+          {% if trigger.entity_id != 'sensor.irrigator_zone_4_water_total' %}{{ this.state }}
+          {% elif new is none %}{{ this.state }}
+          {% elif cur is none %}{{ new | round(2) }}
+          {% elif old is none %}{{ cur }}
+          {% elif new >= old %}{{ (cur + new - old) | round(2) }}
+          {% else %}{{ (cur + new) | round(2) }}{% endif %}
+      - name: "Irrigator Zone 5 Water Lifetime"
+        unique_id: irrigator_zone_5_water_lifetime
+        icon: mdi:water-plus
+        unit_of_measurement: "L"
+        device_class: water
+        state_class: total_increasing
+        state: >-
+          {% set cur = this.state | float(none) %}
+          {% set new = trigger.to_state.state | float(none) %}
+          {% set old = trigger.from_state.state | float(none) if trigger.from_state else none %}
+          {% if trigger.entity_id != 'sensor.irrigator_zone_5_water_total' %}{{ this.state }}
+          {% elif new is none %}{{ this.state }}
+          {% elif cur is none %}{{ new | round(2) }}
+          {% elif old is none %}{{ cur }}
+          {% elif new >= old %}{{ (cur + new - old) | round(2) }}
+          {% else %}{{ (cur + new) | round(2) }}{% endif %}
+      - name: "Irrigator Zone 6 Water Lifetime"
+        unique_id: irrigator_zone_6_water_lifetime
+        icon: mdi:water-plus
+        unit_of_measurement: "L"
+        device_class: water
+        state_class: total_increasing
+        state: >-
+          {% set cur = this.state | float(none) %}
+          {% set new = trigger.to_state.state | float(none) %}
+          {% set old = trigger.from_state.state | float(none) if trigger.from_state else none %}
+          {% if trigger.entity_id != 'sensor.irrigator_zone_6_water_total' %}{{ this.state }}
+          {% elif new is none %}{{ this.state }}
+          {% elif cur is none %}{{ new | round(2) }}
+          {% elif old is none %}{{ cur }}
+          {% elif new >= old %}{{ (cur + new - old) | round(2) }}
+          {% else %}{{ (cur + new) | round(2) }}{% endif %}
+      - name: "Irrigator Zone 7 Water Lifetime"
+        unique_id: irrigator_zone_7_water_lifetime
+        icon: mdi:water-plus
+        unit_of_measurement: "L"
+        device_class: water
+        state_class: total_increasing
+        state: >-
+          {% set cur = this.state | float(none) %}
+          {% set new = trigger.to_state.state | float(none) %}
+          {% set old = trigger.from_state.state | float(none) if trigger.from_state else none %}
+          {% if trigger.entity_id != 'sensor.irrigator_zone_7_water_total' %}{{ this.state }}
+          {% elif new is none %}{{ this.state }}
+          {% elif cur is none %}{{ new | round(2) }}
+          {% elif old is none %}{{ cur }}
+          {% elif new >= old %}{{ (cur + new - old) | round(2) }}
+          {% else %}{{ (cur + new) | round(2) }}{% endif %}
+      - name: "Irrigator Zone 8 Water Lifetime"
+        unique_id: irrigator_zone_8_water_lifetime
+        icon: mdi:water-plus
+        unit_of_measurement: "L"
+        device_class: water
+        state_class: total_increasing
+        state: >-
+          {% set cur = this.state | float(none) %}
+          {% set new = trigger.to_state.state | float(none) %}
+          {% set old = trigger.from_state.state | float(none) if trigger.from_state else none %}
+          {% if trigger.entity_id != 'sensor.irrigator_zone_8_water_total' %}{{ this.state }}
+          {% elif new is none %}{{ this.state }}
+          {% elif cur is none %}{{ new | round(2) }}
+          {% elif old is none %}{{ cur }}
+          {% elif new >= old %}{{ (cur + new - old) | round(2) }}
+          {% else %}{{ (cur + new) | round(2) }}{% endif %}
+      - name: "Irrigator Zone 9 Water Lifetime"
+        unique_id: irrigator_zone_9_water_lifetime
+        icon: mdi:water-plus
+        unit_of_measurement: "L"
+        device_class: water
+        state_class: total_increasing
+        state: >-
+          {% set cur = this.state | float(none) %}
+          {% set new = trigger.to_state.state | float(none) %}
+          {% set old = trigger.from_state.state | float(none) if trigger.from_state else none %}
+          {% if trigger.entity_id != 'sensor.irrigator_zone_9_water_total' %}{{ this.state }}
+          {% elif new is none %}{{ this.state }}
+          {% elif cur is none %}{{ new | round(2) }}
+          {% elif old is none %}{{ cur }}
+          {% elif new >= old %}{{ (cur + new - old) | round(2) }}
+          {% else %}{{ (cur + new) | round(2) }}{% endif %}
+      - name: "Irrigator Zone 10 Water Lifetime"
+        unique_id: irrigator_zone_10_water_lifetime
+        icon: mdi:water-plus
+        unit_of_measurement: "L"
+        device_class: water
+        state_class: total_increasing
+        state: >-
+          {% set cur = this.state | float(none) %}
+          {% set new = trigger.to_state.state | float(none) %}
+          {% set old = trigger.from_state.state | float(none) if trigger.from_state else none %}
+          {% if trigger.entity_id != 'sensor.irrigator_zone_10_water_total' %}{{ this.state }}
+          {% elif new is none %}{{ this.state }}
+          {% elif cur is none %}{{ new | round(2) }}
+          {% elif old is none %}{{ cur }}
+          {% elif new >= old %}{{ (cur + new - old) | round(2) }}
+          {% else %}{{ (cur + new) | round(2) }}{% endif %}
+      - name: "Irrigator Zone 11 Water Lifetime"
+        unique_id: irrigator_zone_11_water_lifetime
+        icon: mdi:water-plus
+        unit_of_measurement: "L"
+        device_class: water
+        state_class: total_increasing
+        state: >-
+          {% set cur = this.state | float(none) %}
+          {% set new = trigger.to_state.state | float(none) %}
+          {% set old = trigger.from_state.state | float(none) if trigger.from_state else none %}
+          {% if trigger.entity_id != 'sensor.irrigator_zone_11_water_total' %}{{ this.state }}
+          {% elif new is none %}{{ this.state }}
+          {% elif cur is none %}{{ new | round(2) }}
+          {% elif old is none %}{{ cur }}
+          {% elif new >= old %}{{ (cur + new - old) | round(2) }}
+          {% else %}{{ (cur + new) | round(2) }}{% endif %}
+      - name: "Irrigator Other Water Lifetime"
+        unique_id: irrigator_other_water_lifetime
+        icon: mdi:water-plus
+        unit_of_measurement: "L"
+        device_class: water
+        state_class: total_increasing
+        state: >-
+          {% set cur = this.state | float(none) %}
+          {% set new = trigger.to_state.state | float(none) %}
+          {% set old = trigger.from_state.state | float(none) if trigger.from_state else none %}
+          {% if trigger.entity_id != 'sensor.irrigator_other_water_total' %}{{ this.state }}
+          {% elif new is none %}{{ this.state }}
+          {% elif cur is none %}{{ new | round(2) }}
+          {% elif old is none %}{{ cur }}
+          {% elif new >= old %}{{ (cur + new - old) | round(2) }}
+          {% else %}{{ (cur + new) | round(2) }}{% endif %}
+
   # Weather-based auto-adjustment: read-only display of whatever
   # settings.json currently has - sourced straight from the same full-snapshot
   # sensor.irrigator_settings every other read-only field already uses, no new MQTT wiring needed.
@@ -923,6 +1425,125 @@ template:
           - action: script.irrigator_calibrate
 
 # -----------------------------------------------------------------------
+# Rolling 24h water consumption per zone (+ "other"), read by the "Water Consumption" table in
+# garden_tab.yaml. A markdown card can't query long-term statistics, so these statistics-platform
+# sensors compute the trailing-24h volume from the lifetime counters above.
+# sum_differences_nonnegative treats a drop (device reboot resetting the RAM-only counter) as a
+# reset instead of negative consumption. Caveat: the first sample inside the window only serves as
+# a baseline, so a run that started just before the window edge is under-counted by its first step.
+# -----------------------------------------------------------------------
+sensor:
+  - platform: statistics
+    name: "Irrigator Zone 1 Water 24h"
+    unique_id: irrigator_zone_1_water_24h
+    entity_id: sensor.irrigator_zone_1_water_total
+    state_characteristic: sum_differences_nonnegative
+    max_age:
+      hours: 24
+    sampling_size: 1000
+  - platform: statistics
+    name: "Irrigator Zone 2 Water 24h"
+    unique_id: irrigator_zone_2_water_24h
+    entity_id: sensor.irrigator_zone_2_water_total
+    state_characteristic: sum_differences_nonnegative
+    max_age:
+      hours: 24
+    sampling_size: 1000
+  - platform: statistics
+    name: "Irrigator Zone 3 Water 24h"
+    unique_id: irrigator_zone_3_water_24h
+    entity_id: sensor.irrigator_zone_3_water_total
+    state_characteristic: sum_differences_nonnegative
+    max_age:
+      hours: 24
+    sampling_size: 1000
+  - platform: statistics
+    name: "Irrigator Zone 4 Water 24h"
+    unique_id: irrigator_zone_4_water_24h
+    entity_id: sensor.irrigator_zone_4_water_total
+    state_characteristic: sum_differences_nonnegative
+    max_age:
+      hours: 24
+    sampling_size: 1000
+  - platform: statistics
+    name: "Irrigator Zone 5 Water 24h"
+    unique_id: irrigator_zone_5_water_24h
+    entity_id: sensor.irrigator_zone_5_water_total
+    state_characteristic: sum_differences_nonnegative
+    max_age:
+      hours: 24
+    sampling_size: 1000
+  - platform: statistics
+    name: "Irrigator Zone 6 Water 24h"
+    unique_id: irrigator_zone_6_water_24h
+    entity_id: sensor.irrigator_zone_6_water_total
+    state_characteristic: sum_differences_nonnegative
+    max_age:
+      hours: 24
+    sampling_size: 1000
+  - platform: statistics
+    name: "Irrigator Zone 7 Water 24h"
+    unique_id: irrigator_zone_7_water_24h
+    entity_id: sensor.irrigator_zone_7_water_total
+    state_characteristic: sum_differences_nonnegative
+    max_age:
+      hours: 24
+    sampling_size: 1000
+  - platform: statistics
+    name: "Irrigator Zone 8 Water 24h"
+    unique_id: irrigator_zone_8_water_24h
+    entity_id: sensor.irrigator_zone_8_water_total
+    state_characteristic: sum_differences_nonnegative
+    max_age:
+      hours: 24
+    sampling_size: 1000
+  - platform: statistics
+    name: "Irrigator Zone 9 Water 24h"
+    unique_id: irrigator_zone_9_water_24h
+    entity_id: sensor.irrigator_zone_9_water_total
+    state_characteristic: sum_differences_nonnegative
+    max_age:
+      hours: 24
+    sampling_size: 1000
+  - platform: statistics
+    name: "Irrigator Zone 10 Water 24h"
+    unique_id: irrigator_zone_10_water_24h
+    entity_id: sensor.irrigator_zone_10_water_total
+    state_characteristic: sum_differences_nonnegative
+    max_age:
+      hours: 24
+    sampling_size: 1000
+  - platform: statistics
+    name: "Irrigator Zone 11 Water 24h"
+    unique_id: irrigator_zone_11_water_24h
+    entity_id: sensor.irrigator_zone_11_water_total
+    state_characteristic: sum_differences_nonnegative
+    max_age:
+      hours: 24
+    sampling_size: 1000
+  - platform: statistics
+    name: "Irrigator Other Water 24h"
+    unique_id: irrigator_other_water_24h
+    entity_id: sensor.irrigator_other_water_total
+    state_characteristic: sum_differences_nonnegative
+    max_age:
+      hours: 24
+    sampling_size: 1000
+
+# -----------------------------------------------------------------------
+# Keep the per-minute countdown sensors (template block above) out of the recorder database: they
+# only change while a run is active, are derived from sensor.irrigator_watering_state (which is
+# recorded), and have no value as history. Excluding them skips both state rows and statistics.
+# Existing rows are purged with the recorder.purge_entities action (entity_globs below).
+# Do not also define `recorder:` in configuration.yaml - merge these keys there instead.
+# -----------------------------------------------------------------------
+recorder:
+  exclude:
+    entity_globs:
+      - sensor.irrigator_zone_*_remaining
+      - sensor.irrigator_pump_remaining
+
+# -----------------------------------------------------------------------
 # Manual-run duration sliders (1-120 min), one per pump/zone card.
 # -----------------------------------------------------------------------
 input_number:
@@ -1019,10 +1640,11 @@ input_number:
     unit_of_measurement: "%"
     initial: 40
 
-  # Step 1's rain-skip trigger thresholds - also user-configurable from HA (see
-  # domain::shouldSkipForRain). Probability is inclusive (>=), amount is not (>).
-  irrigator_rain_skip_probability:
-    name: "Rain-Skip Probability Threshold"
+  # Step 1's forecast-rain threshold - also user-configurable from HA (see
+  # domain::effectiveRainMm): a forecast at/over this probability (>=) is counted as
+  # already-fallen rain, in full, in the percentage formula.
+  irrigator_rain_forecast_probability:
+    name: "Forecast Rain Probability Threshold"
     icon: mdi:weather-pouring
     min: 0
     max: 100
@@ -1030,15 +1652,21 @@ input_number:
     mode: box
     unit_of_measurement: "%"
     initial: 70
-  irrigator_rain_skip_amount:
-    name: "Rain-Skip Amount Threshold"
-    icon: mdi:water-alert-outline
+
+  # Flow-meter anomaly-check threshold (settings.json's FlowMeter.expected_flow_rate_lpm) - the
+  # steady-state flow rate expected while a zone is watering, compared against live readings
+  # (±50%, flow_high/flow_low faults - see docs/technical.md's "Water flow sensing (TUF-2000M)"
+  # section). 0 = not configured, no check runs. A good starting value is the flow_rate_lpm
+  # that cmd/meter reports during a normal run.
+  irrigator_expected_flow_rate_lpm:
+    name: "Expected Flow Rate"
+    icon: mdi:water-pump
     min: 0
-    max: 50
+    max: 500
     step: 1
     mode: box
-    unit_of_measurement: "mm"
-    initial: 4
+    unit_of_measurement: "L/min"
+    initial: 0
 
   # Schedule editor panel field (Schedule tab) - see script.irrigator_schedule_save.
   irrigator_edit_duration_min:
@@ -1174,6 +1802,12 @@ input_boolean:
   irrigator_alert_pump_oc: {name: "Alert Pump Over-current", icon: mdi:alert-circle-outline, initial: true}
   irrigator_alert_valve_uc: {name: "Alert Valve Under-current", icon: mdi:alert-circle-outline, initial: true}
   irrigator_alert_valve_oc: {name: "Alert Valve Over-current", icon: mdi:alert-circle-outline, initial: true}
+
+  # Flow-meter feature master toggle (settings.json's FlowMeter.flow_meter_enabled) - gates the
+  # flow-rate anomaly check specifically (main.ino). Does NOT stop the underlying Modbus polling or
+  # the raw /flow telemetry/consumption sensors above, which run unconditionally. Default true,
+  # same as every other alert-style toggle here.
+  irrigator_flow_meter_enabled: {name: "Flow Meter Enabled", icon: mdi:water-pump, initial: true}
 
 # -----------------------------------------------------------------------
 # Backup/restore file plumbing for script.irrigator_backup_from_device /
@@ -1481,10 +2115,10 @@ script:
   # `unavailable` during a reconnect - the exact stale value that used to get uploaded and disable
   # the schedule before the firmware started ignoring it).
   #
-  # watering_percentage and the 4 Current_sensor.alert_* toggles are NOT device-owned in the same
-  # way - they're plain input_number/input_boolean helpers the user edits (see their comments in
-  # `input_number:`/`input_boolean:` above), read directly, and the firmware DOES apply them from
-  # an upload.
+  # watering_percentage, the 4 Current_sensor.alert_* toggles, and both FlowMeter fields are NOT
+  # device-owned in the same way - they're plain input_number/input_boolean helpers the user edits
+  # (see their comments in `input_number:`/`input_boolean:` above), read directly, and the firmware
+  # DOES apply them from an upload.
   irrigator_publish_settings:
     alias: "Irrigator: republish full settings.json"
     sequence:
@@ -1516,8 +2150,7 @@ script:
               'default_manual_duration': states('input_number.irrigator_default_manual_duration') | int(5),
               'upper_limit': states('input_number.irrigator_upper_limit') | int(200),
               'lower_limit': states('input_number.irrigator_lower_limit') | int(40),
-              'rain_skip_probability_percent': states('input_number.irrigator_rain_skip_probability') | int(70),
-              'rain_skip_amount_mm': states('input_number.irrigator_rain_skip_amount') | int(4),
+              'rain_forecast_probability_percent': states('input_number.irrigator_rain_forecast_probability') | int(70),
               'weatherapi_key': states('input_text.irrigator_weatherapi_key') | default('')
             } %}
             {% set location = {
@@ -1534,7 +2167,11 @@ script:
               'alert_valve_uc': is_state('input_boolean.irrigator_alert_valve_uc', 'on'),
               'alert_valve_oc': is_state('input_boolean.irrigator_alert_valve_oc', 'on')
             } %}
-            {% set base = {'Watering': watering, 'Location': location, 'Current_sensor': current_sensor} %}
+            {% set flow_meter = {
+              'flow_meter_enabled': is_state('input_boolean.irrigator_flow_meter_enabled', 'on'),
+              'expected_flow_rate_lpm': states('input_number.irrigator_expected_flow_rate_lpm') | int(0)
+            } %}
+            {% set base = {'Watering': watering, 'Location': location, 'Current_sensor': current_sensor, 'FlowMeter': flow_meter} %}
             {% set base_json = (base | tojson) %}
             {{ base_json[:-1] ~ ',"Zones":' ~ zn ~ '}' }}
 

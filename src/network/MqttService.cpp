@@ -321,23 +321,33 @@ void MqttService::publishState(uint8_t zone,
                                bool pump,
                                ::irrigator::domain::RunReason reason,
                                bool scheduled,
-                               uint16_t remainingMin) {
-    char payload[224];
+                               uint16_t remainingMin,
+                               float volumeLiters) {
+    char payload[256];
     snprintf(payload,
              sizeof(payload),
-             R"({"zone":%u,"name":"%s","on":%s,"pump":%s,"reason":"%s","scheduled":%s,"remaining_min":%u})",
+             R"({"zone":%u,"name":"%s","on":%s,"pump":%s,"reason":"%s","scheduled":%s,"remaining_min":%u,"volume":%.2f})",
              static_cast<unsigned>(zone),
              name == nullptr ? "" : name,
              on ? "true" : "false",
              pump ? "true" : "false",
              ::irrigator::domain::toString(reason),
              scheduled ? "true" : "false",
-             static_cast<unsigned>(remainingMin));
+             static_cast<unsigned>(remainingMin),
+             static_cast<double>(volumeLiters));
     publishRaw("/state", withDatetime(payload), false);
 }
 
 void MqttService::publishAlert(const String& jsonOrTextPayload) {
     publishRaw("/alert", withDatetime(jsonOrTextPayload), false);
+}
+
+void MqttService::publishFlow(const String& jsonPayload) {
+    publishRaw("/flow", withDatetime(jsonPayload), false);
+}
+
+void MqttService::publishMeter(const String& jsonPayload) {
+    publishRaw("/meter", withDatetime(jsonPayload), false);
 }
 
 void MqttService::publishSchedule(const String& jsonPayload) {

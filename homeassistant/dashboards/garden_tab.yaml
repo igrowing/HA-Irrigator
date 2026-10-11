@@ -303,6 +303,49 @@
               - entity: switch.irrigator_zone_8
               - entity: switch.irrigator_zone_9
               - entity: switch.irrigator_zone_10
+          - type: tile
+            entity: sensor.irrigator_flow_total
+            grid_options:
+              columns: full
+              rows: 1
+          # 24H = rolling trailing 24h (statistics sensors, irrigator.yaml); Total = persistent
+          # lifetime accumulators (*_water_lifetime, irrigator.yaml) - NOT the device's own counters,
+          # which restart at 0 on every device reboot. A sensor that isn't available (e.g. the
+          # statistics sensors before HA has been fully restarted) shows "n/a" rather than a
+          # misleading 0. Disabled zones are omitted; "Other" (flow measured while every valve is
+          # closed) is always listed. Same table style as Device Schedule above.
+          - type: markdown
+            title: Water Consumption
+            content: >-
+              {%- set zone_names = state_attr('sensor.irrigator_settings',
+              'Zones') or {} -%} {%- set ns = namespace(h24=0, tot=0, rows=[])
+              -%} {%- for n in range(1, 12) -%} {%- if
+              is_state('binary_sensor.irrigator_zone_' ~ n ~
+              '_enabled_sensor', 'on') -%} {%- set ns.rows = ns.rows + [{'z':
+              n, 'name': zone_names.get(n | string, {}).get('name', '(no
+              name)'), 'd': states('sensor.irrigator_zone_' ~ n ~
+              '_water_24h'), 't': states('sensor.irrigator_zone_' ~ n ~
+              '_water_lifetime')}] -%} {%- endif -%} {%- endfor -%} {%- set
+              ns.rows = ns.rows + [{'z': '-', 'name': 'Other', 'd':
+              states('sensor.irrigator_other_water_24h'), 't':
+              states('sensor.irrigator_other_water_lifetime')}] -%}
+
+              | Zone | Name | 24H (L) | Total (L) |
+
+              |---|---|---|---|
+
+              {%- for r in ns.rows %}
+
+              | {{ r.z }} | {{ r.name }} | {{ r.d | float | round(1) if r.d |
+              is_number else 'n/a' }} | {{ r.t | float | round(1) if r.t |
+              is_number else 'n/a' }} |
+
+              {%- if r.d | is_number %}{% set ns.h24 = ns.h24 + r.d | float
+              %}{% endif -%} {%- if r.t | is_number %}{% set ns.tot = ns.tot +
+              r.t | float %}{% endif -%} {%- endfor %}
+
+              | | **Total** | **{{ ns.h24 | round(1) }}** | **{{ ns.tot |
+              round(1) }}** |
       - type: grid
         cards:
           - type: heading
@@ -417,12 +460,7 @@
               - type: numeric-input
                 style: buttons
           - type: tile
-            entity: input_number.irrigator_rain_skip_probability
-            features:
-              - type: numeric-input
-                style: buttons
-          - type: tile
-            entity: input_number.irrigator_rain_skip_amount
+            entity: input_number.irrigator_rain_forecast_probability
             features:
               - type: numeric-input
                 style: buttons
@@ -439,60 +477,192 @@
                 name: Last update date/time
               - entity: sensor.irrigator_last_decision
                 name: Last decision
-          - type: entities
-            entities:
-              - entity: input_text.irrigator_zone_1_name
-              - entity: input_boolean.irrigator_zone_1_enabled
+          - type: grid
+            columns: 2
+            square: false
+            card_mod:
+              style: |
+                #root { grid-template-columns: 2fr 1fr !important; }
+            cards:
+              - type: entities
+                entities:
+                  - entity: input_text.irrigator_zone_1_name
+                    name: Zone 1
+              - type: custom:bubble-card
+                card_type: button
+                button_type: switch
+                show_state: true
+                entity: input_boolean.irrigator_zone_1_enabled
                 name: Enabled
-          - type: entities
-            entities:
-              - entity: input_text.irrigator_zone_2_name
-              - entity: input_boolean.irrigator_zone_2_enabled
+          - type: grid
+            columns: 2
+            square: false
+            card_mod:
+              style: |
+                #root { grid-template-columns: 2fr 1fr !important; }
+            cards:
+              - type: entities
+                entities:
+                  - entity: input_text.irrigator_zone_2_name
+                    name: Zone 2
+              - type: custom:bubble-card
+                card_type: button
+                button_type: switch
+                show_state: true
+                entity: input_boolean.irrigator_zone_2_enabled
                 name: Enabled
-          - type: entities
-            entities:
-              - entity: input_text.irrigator_zone_3_name
-              - entity: input_boolean.irrigator_zone_3_enabled
+          - type: grid
+            columns: 2
+            square: false
+            card_mod:
+              style: |
+                #root { grid-template-columns: 2fr 1fr !important; }
+            cards:
+              - type: entities
+                entities:
+                  - entity: input_text.irrigator_zone_3_name
+                    name: Zone 3
+              - type: custom:bubble-card
+                card_type: button
+                button_type: switch
+                show_state: true
+                entity: input_boolean.irrigator_zone_3_enabled
                 name: Enabled
-          - type: entities
-            entities:
-              - entity: input_text.irrigator_zone_4_name
-              - entity: input_boolean.irrigator_zone_4_enabled
+          - type: grid
+            columns: 2
+            square: false
+            card_mod:
+              style: |
+                #root { grid-template-columns: 2fr 1fr !important; }
+            cards:
+              - type: entities
+                entities:
+                  - entity: input_text.irrigator_zone_4_name
+                    name: Zone 4
+              - type: custom:bubble-card
+                card_type: button
+                button_type: switch
+                show_state: true
+                entity: input_boolean.irrigator_zone_4_enabled
                 name: Enabled
-          - type: entities
-            entities:
-              - entity: input_text.irrigator_zone_5_name
-              - entity: input_boolean.irrigator_zone_5_enabled
+          - type: grid
+            columns: 2
+            square: false
+            card_mod:
+              style: |
+                #root { grid-template-columns: 2fr 1fr !important; }
+            cards:
+              - type: entities
+                entities:
+                  - entity: input_text.irrigator_zone_5_name
+                    name: Zone 5
+              - type: custom:bubble-card
+                card_type: button
+                button_type: switch
+                show_state: true
+                entity: input_boolean.irrigator_zone_5_enabled
                 name: Enabled
-          - type: entities
-            entities:
-              - entity: input_text.irrigator_zone_6_name
-              - entity: input_boolean.irrigator_zone_6_enabled
+          - type: grid
+            columns: 2
+            square: false
+            card_mod:
+              style: |
+                #root { grid-template-columns: 2fr 1fr !important; }
+            cards:
+              - type: entities
+                entities:
+                  - entity: input_text.irrigator_zone_6_name
+                    name: Zone 6
+              - type: custom:bubble-card
+                card_type: button
+                button_type: switch
+                show_state: true
+                entity: input_boolean.irrigator_zone_6_enabled
                 name: Enabled
-          - type: entities
-            entities:
-              - entity: input_text.irrigator_zone_7_name
-              - entity: input_boolean.irrigator_zone_7_enabled
+          - type: grid
+            columns: 2
+            square: false
+            card_mod:
+              style: |
+                #root { grid-template-columns: 2fr 1fr !important; }
+            cards:
+              - type: entities
+                entities:
+                  - entity: input_text.irrigator_zone_7_name
+                    name: Zone 7
+              - type: custom:bubble-card
+                card_type: button
+                button_type: switch
+                show_state: true
+                entity: input_boolean.irrigator_zone_7_enabled
                 name: Enabled
-          - type: entities
-            entities:
-              - entity: input_text.irrigator_zone_8_name
-              - entity: input_boolean.irrigator_zone_8_enabled
+          - type: grid
+            columns: 2
+            square: false
+            card_mod:
+              style: |
+                #root { grid-template-columns: 2fr 1fr !important; }
+            cards:
+              - type: entities
+                entities:
+                  - entity: input_text.irrigator_zone_8_name
+                    name: Zone 8
+              - type: custom:bubble-card
+                card_type: button
+                button_type: switch
+                show_state: true
+                entity: input_boolean.irrigator_zone_8_enabled
                 name: Enabled
-          - type: entities
-            entities:
-              - entity: input_text.irrigator_zone_9_name
-              - entity: input_boolean.irrigator_zone_9_enabled
+          - type: grid
+            columns: 2
+            square: false
+            card_mod:
+              style: |
+                #root { grid-template-columns: 2fr 1fr !important; }
+            cards:
+              - type: entities
+                entities:
+                  - entity: input_text.irrigator_zone_9_name
+                    name: Zone 9
+              - type: custom:bubble-card
+                card_type: button
+                button_type: switch
+                show_state: true
+                entity: input_boolean.irrigator_zone_9_enabled
                 name: Enabled
-          - type: entities
-            entities:
-              - entity: input_text.irrigator_zone_10_name
-              - entity: input_boolean.irrigator_zone_10_enabled
+          - type: grid
+            columns: 2
+            square: false
+            card_mod:
+              style: |
+                #root { grid-template-columns: 2fr 1fr !important; }
+            cards:
+              - type: entities
+                entities:
+                  - entity: input_text.irrigator_zone_10_name
+                    name: Zone 10
+              - type: custom:bubble-card
+                card_type: button
+                button_type: switch
+                show_state: true
+                entity: input_boolean.irrigator_zone_10_enabled
                 name: Enabled
-          - type: entities
-            entities:
-              - entity: input_text.irrigator_zone_11_name
-              - entity: input_boolean.irrigator_zone_11_enabled
+          - type: grid
+            columns: 2
+            square: false
+            card_mod:
+              style: |
+                #root { grid-template-columns: 2fr 1fr !important; }
+            cards:
+              - type: entities
+                entities:
+                  - entity: input_text.irrigator_zone_11_name
+                    name: Zone 11
+              - type: custom:bubble-card
+                card_type: button
+                button_type: switch
+                show_state: true
+                entity: input_boolean.irrigator_zone_11_enabled
                 name: Enabled
           - type: entities
             title: Current-Sensor Calibration
@@ -522,6 +692,13 @@
               - entity: button.irrigator_calibrate
                 icon: mdi:abacus
                 name: Calibrate Current Sensors
+          - type: entities
+            title: Flow-Meter Anomaly Check
+            entities:
+              - entity: input_boolean.irrigator_flow_meter_enabled
+                name: Enabled
+              - entity: input_number.irrigator_expected_flow_rate_lpm
+                name: Expected Flow Rate (L/min)
           - type: tile
             entity: button.irrigator_refresh_from_device
             icon: mdi:cloud-download-outline

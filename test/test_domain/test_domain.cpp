@@ -8,6 +8,8 @@
 #include "../../src/domain/ConfigStore.h"
 #include "../../src/domain/DstRules.h"
 #include "../../src/domain/DurationAdjuster.h"
+#include "../../src/domain/FlowConsumptionTracker.h"
+#include "../../src/domain/FlowPublishGate.h"
 #include "../../src/domain/IrrigationStateMachine.h"
 #include "../../src/domain/RainSkip.h"
 #include "../../src/domain/Schedule.h"
@@ -102,7 +104,7 @@ void test_watering_percentage_edge_cases() {
 }
 
 // computeAutoCorrectedPercentage() reads the coefficients straight from board_config.h (currently
-// base 23C, 12.5 %/degC, 3.1 %/mm), so every expected value below is hard-coded against those
+// base 24C, 15 %/degC, 5 %/mm), so every expected value below is hard-coded against those
 // defaults on purpose: re-tuning them should fail these tests and force the arithmetic in the
 // comments to be redone, rather than silently re-baselining.
 void test_auto_adjustment_percentage_base_case_is_100() {
@@ -111,38 +113,38 @@ void test_auto_adjustment_percentage_base_case_is_100() {
 }
 
 void test_auto_adjustment_percentage_temp_below_base_decreases_it() {
-    // 100 + (20-23)*12.5 = 62.5 -> 63%
+    // 100 + (21-24)*15 = 55%
     TEST_ASSERT_EQUAL_INT16(
-        63, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 0.0f, 40, 200));
+        55, irrigator::domain::computeAutoCorrectedPercentage(21.0f, 0.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_temp_above_base_increases_it() {
-    // 100 + (26-23)*12.5 = 137.5 -> 138%
+    // 100 + (26-24)*15 = 130%
     TEST_ASSERT_EQUAL_INT16(
-        138, irrigator::domain::computeAutoCorrectedPercentage(26.0f, 0.0f, 40, 200));
+        130, irrigator::domain::computeAutoCorrectedPercentage(26.0f, 0.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_rain_on_base_temp_reduces_it() {
-    // 100 - 4mm*3.1 = 87.6 -> 88%
+    // 100 - 4mm*5 = 80%
     TEST_ASSERT_EQUAL_INT16(
-        88, irrigator::domain::computeAutoCorrectedPercentage(irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C, 4.0f, 40, 200));
+        80, irrigator::domain::computeAutoCorrectedPercentage(irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C, 4.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_rain_on_lower_temp_stops_it() {
-    // 100 + (19-23)*12.5 - 6mm*3.1 = 31.4%, below the 40% lower limit -> 0 (skip).
-    // The same 19C with no rain would still water (50%), so it is the rain that stops it.
+    // 100 + (21-24)*15 - 6mm*5 = 25%, below the 40% lower limit -> 0 (skip).
+    // The same 21C with no rain would still water (55%), so it is the rain that stops it.
     TEST_ASSERT_EQUAL_INT16(
-        0, irrigator::domain::computeAutoCorrectedPercentage(19.0f, 6.0f, 40, 200));
+        0, irrigator::domain::computeAutoCorrectedPercentage(21.0f, 6.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_clamps_to_upper_limit() {
-    // 100 + (80-23)*12.5 = 812.5%, over the 200% limit -> clamped to 200.
+    // 100 + (80-24)*15 = 940%, over the 200% limit -> clamped to 200.
     TEST_ASSERT_EQUAL_INT16(
         200, irrigator::domain::computeAutoCorrectedPercentage(80.0f, 0.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_below_lower_limit_sets_zero() {
-    // 100 + (13-23)*12.5 - 30mm*3.1 = -118%, below the 40% lower limit -> 0 (skip), not clamped to 40.
+    // 100 + (13-24)*15 - 30mm*5 = -215%, below the 40% lower limit -> 0 (skip), not clamped to 40.
     TEST_ASSERT_EQUAL_INT16(
         0, irrigator::domain::computeAutoCorrectedPercentage(13.0f, 30.0f, 40, 200));
 }
@@ -159,15 +161,14 @@ void test_auto_adjustment_percentage_uses_factory_default_coefficients() {
     // test exists to make loud.
     //
     // Window 2026-09-14..18: avg daily max 25.32C, 10.5mm rain over the 5 days.
-    // 100 + (25.32-23)*12.5 - 10.5*3.1 = 96.45 -> 96%. The original 20C/10 per degC pairing on the
-    // model series gave 117%.
+    // 100 + (25.32-24)*15 - 10.5*5 = 67.3 -> 67%.
     TEST_ASSERT_EQUAL_INT16(
-        96,
+        67,
         irrigator::domain::computeAutoCorrectedPercentage(
             25.32f, 10.5f, 40, 200));
     // Peak summer still has to reach the 200% cap - that saturation is deliberate (it is the water
     // budget, not a modelling artifact), and a recalibration that quietly lost it would under-water
-    // July. Window 2026-06-27..07-01: avg daily max 33.62C, 7.3mm (raw 210%).
+    // July. Window 2026-06-27..07-01: avg daily max 33.62C, 7.3mm (raw 207.8%).
     TEST_ASSERT_EQUAL_INT16(
         200,
         irrigator::domain::computeAutoCorrectedPercentage(
@@ -175,43 +176,66 @@ void test_auto_adjustment_percentage_uses_factory_default_coefficients() {
     // An ordinary July week (31.5C, 3mm) must sit at the cap too, not just an extreme one - the
     // first re-fit candidate (slope 16) landed at 191% here and would have quietly under-watered
     // the typical summer day while still passing the peak-day check above. Raw value here is
-    // 100 + (31.5-23)*12.5 - 2*3.1 = 200.05%: the margin over the cap is only 0.05 points, and at
-    // 3mm it would be 196.95% - so this case is the first to fail if the slope or rain term is nudged.
+    // 100 + (31.5-24)*15 - 2*5 = 202.5%: the margin over the cap is 2.5 points, and at
+    // 3mm it would be 197.5% - so this case is the first to fail if the slope or rain term is nudged.
     TEST_ASSERT_EQUAL_INT16(
         200,
         irrigator::domain::computeAutoCorrectedPercentage(
             31.5f, 2.0f, 40, 200));
 }
 
-void test_should_skip_for_rain_probability_inclusive_amount_exclusive() {
-    TEST_ASSERT_FALSE(irrigator::domain::shouldSkipForRain(69.9f, 10.0f, 70, 4));  // Probability under 70%.
-    TEST_ASSERT_TRUE(irrigator::domain::shouldSkipForRain(70.0f, 4.1f, 70, 4));    // Probability >=70% now counts.
-    TEST_ASSERT_FALSE(irrigator::domain::shouldSkipForRain(70.0f, 4.0f, 70, 4));   // Amount exactly 4.0mm still doesn't.
-    TEST_ASSERT_TRUE(irrigator::domain::shouldSkipForRain(100.0f, 4.1f, 70, 4));
+void test_effective_rain_counts_forecast_when_probability_at_or_over_threshold() {
+    // Under the probability threshold: the forecast is ignored, only past rain counts.
+    TEST_ASSERT_EQUAL_FLOAT(3.0f, irrigator::domain::effectiveRainMm(3.0f, 69.9f, 10.0f, 70));
+    // Probability >=70% (inclusive): the whole forecast amount is added to the past rain.
+    TEST_ASSERT_EQUAL_FLOAT(13.0f, irrigator::domain::effectiveRainMm(3.0f, 70.0f, 10.0f, 70));
+    TEST_ASSERT_EQUAL_FLOAT(13.0f, irrigator::domain::effectiveRainMm(3.0f, 100.0f, 10.0f, 70));
 }
 
-void test_should_skip_for_rain_uses_configured_thresholds() {
-    // Same inputs, different (lower) configured thresholds -> now triggers where it didn't above.
-    TEST_ASSERT_TRUE(irrigator::domain::shouldSkipForRain(50.0f, 2.5f, 50, 2));
-    TEST_ASSERT_FALSE(irrigator::domain::shouldSkipForRain(50.0f, 2.5f, 70, 4));
+void test_effective_rain_has_no_amount_threshold() {
+    // Small forecasts count in full too - no cliff at some minimum amount.
+    TEST_ASSERT_EQUAL_FLOAT(3.5f, irrigator::domain::effectiveRainMm(3.0f, 70.0f, 0.5f, 70));
+    // A certain forecast of no rain adds nothing.
+    TEST_ASSERT_EQUAL_FLOAT(3.0f, irrigator::domain::effectiveRainMm(3.0f, 100.0f, 0.0f, 70));
+}
+
+void test_effective_rain_uses_configured_threshold() {
+    // Same inputs, lower configured threshold -> the forecast now counts where it didn't.
+    TEST_ASSERT_EQUAL_FLOAT(2.5f, irrigator::domain::effectiveRainMm(0.0f, 50.0f, 2.5f, 50));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, irrigator::domain::effectiveRainMm(0.0f, 50.0f, 2.5f, 70));
+}
+
+// The example the feature is specified by: 3mm fell in the past days and 6mm are forecast at >=70%,
+// so the formula is run as if 9mm had fallen — the run is reduced, not cancelled outright.
+void test_effective_rain_forecast_is_added_to_past_rain_in_the_formula() {
+    const float rainMm = irrigator::domain::effectiveRainMm(3.0f, 70.0f, 6.0f, 70);
+    TEST_ASSERT_EQUAL_FLOAT(9.0f, rainMm);
+    // 100 - 9mm*5 = 55%, versus 100 - 3mm*5 = 85% had the forecast been ignored.
+    TEST_ASSERT_EQUAL_INT16(55, irrigator::domain::computeAutoCorrectedPercentage(
+                                    irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C, rainMm, 40, 200));
+    TEST_ASSERT_EQUAL_INT16(85, irrigator::domain::computeAutoCorrectedPercentage(
+                                    irrigator::board::AUTOADJUSTMENT_BASE_TEMP_C,
+                                    irrigator::domain::effectiveRainMm(3.0f, 69.0f, 6.0f, 70), 40, 200));
 }
 
 // The skip/clamp comparisons are both strict (`<` lower, `>` upper), so a percentage landing
-// exactly on a limit is a legal value, not a boundary that trips the special case. With base 23C and
-// 12.5 %/degree at 0mm the limits sit at 18.2C -> 40 and 31.0C -> 200. 31.0 is exact in float; 18.2f
-// is not (it is a hair above 18.2), which happens to land the raw value a hair above 40 and keep it.
+// exactly on a limit is a legal value, not a boundary that trips the special case. With base 24C and
+// 15 %/degree at 0mm the lower limit sits at 20.0C -> 40, exact in float.
 void test_auto_adjustment_percentage_exactly_on_lower_limit_is_kept_not_zeroed() {
     TEST_ASSERT_EQUAL_INT16(
-        40, irrigator::domain::computeAutoCorrectedPercentage(18.2f, 0.0f, 40, 200));
-    // A hair below is the skip case (38.75%), confirming 40 above really was the boundary and not a clamp.
+        40, irrigator::domain::computeAutoCorrectedPercentage(20.0f, 0.0f, 40, 200));
+    // A hair below is the skip case (38.5%), confirming 40 above really was the boundary and not a clamp.
     TEST_ASSERT_EQUAL_INT16(
-        0, irrigator::domain::computeAutoCorrectedPercentage(18.1f, 0.0f, 40, 200));
+        0, irrigator::domain::computeAutoCorrectedPercentage(19.9f, 0.0f, 40, 200));
 }
 
 void test_auto_adjustment_percentage_exactly_on_upper_limit_is_not_clamped_down() {
-    // 100 + (31-23)*12.5 = 200% exactly. (32C would be 212.5%, i.e. clamped rather than "on" the limit.)
+    // 100 + (32-24)*15 - 4mm*5 = 200% exactly (at 0mm the 200% point, 30.67C, is not exact in float,
+    // so rain is used to land on it). One degree more would be 215% and clamped rather than "on" it.
     TEST_ASSERT_EQUAL_INT16(
-        200, irrigator::domain::computeAutoCorrectedPercentage(31.0f, 0.0f, 40, 200));
+        200, irrigator::domain::computeAutoCorrectedPercentage(32.0f, 4.0f, 40, 200));
+    TEST_ASSERT_EQUAL_INT16(
+        200, irrigator::domain::computeAutoCorrectedPercentage(33.0f, 4.0f, 40, 200));
 }
 
 // A lower limit of 0 disables the skip branch entirely (nothing can be < 0 once the negative floor
@@ -981,10 +1005,15 @@ void test_validate_settings_rejects_each_out_of_range_field() {
     TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
 
     settings = baseline;
-    settings.rainSkipProbabilityPercent = 101;
+    settings.rainForecastProbabilityPercent = 101;
     TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+
     settings = baseline;
-    settings.rainSkipAmountMm = -1;
+    settings.expectedFlowRateLpm = 500;
+    TEST_ASSERT_TRUE(irrigator::domain::validateSettings(settings));  // 500 is the inclusive ceiling
+    settings.expectedFlowRateLpm = 501;
+    TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
+    settings.expectedFlowRateLpm = -1;
     TEST_ASSERT_FALSE(irrigator::domain::validateSettings(settings));
 }
 
@@ -1028,6 +1057,21 @@ void test_settings_store_round_trips() {
     TEST_ASSERT_FALSE(roundTripped.alertValveOc);
 }
 
+void test_settings_store_round_trips_flow_meter_fields() {
+    irrigator::domain::Settings settings = irrigator::domain::makeDefaultZones();
+    settings.flowMeterEnabled = false;
+    settings.expectedFlowRateLpm = 12;
+
+    char buffer[irrigator::board::SETTINGS_JSON_MAX_BYTES];
+    const size_t written = irrigator::domain::serializeSettings(settings, buffer, sizeof(buffer));
+    TEST_ASSERT_TRUE(written > 0);
+
+    irrigator::domain::Settings roundTripped;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(buffer, written, roundTripped));
+    TEST_ASSERT_FALSE(roundTripped.flowMeterEnabled);
+    TEST_ASSERT_EQUAL_INT16(12, roundTripped.expectedFlowRateLpm);
+}
+
 // The round-trip above pins the Watering group's scalars; this covers the three groups it doesn't
 // (Zones names + enabled, Location, and the Watering group's string field), which is what boot-time
 // persist-after-parse actually has to preserve when it rewrites settings.json in the nested shape.
@@ -1042,8 +1086,7 @@ void test_settings_store_round_trips_zones_location_and_api_key() {
     snprintf(settings.city, sizeof(settings.city), "%s", "Testville");
     snprintf(settings.weatherApiKey, sizeof(settings.weatherApiKey), "%s", "abc123deadbeef");
     settings.defaultManualDuration = 9;
-    settings.rainSkipProbabilityPercent = 55;
-    settings.rainSkipAmountMm = 7;
+    settings.rainForecastProbabilityPercent = 55;
 
     char buffer[irrigator::board::SETTINGS_JSON_MAX_BYTES];
     const size_t written = irrigator::domain::serializeSettings(settings, buffer, sizeof(buffer));
@@ -1062,8 +1105,40 @@ void test_settings_store_round_trips_zones_location_and_api_key() {
     TEST_ASSERT_EQUAL_STRING("Testville", roundTripped.city);
     TEST_ASSERT_EQUAL_STRING("abc123deadbeef", roundTripped.weatherApiKey);
     TEST_ASSERT_EQUAL_UINT8(9, roundTripped.defaultManualDuration);
-    TEST_ASSERT_EQUAL_INT16(55, roundTripped.rainSkipProbabilityPercent);
-    TEST_ASSERT_EQUAL_INT16(7, roundTripped.rainSkipAmountMm);
+    TEST_ASSERT_EQUAL_INT16(55, roundTripped.rainForecastProbabilityPercent);
+    // The retired amount threshold must not be written back out.
+    TEST_ASSERT_NULL(strstr(buffer, "rain_skip_amount_mm"));
+}
+
+// Devices flashed before the amount threshold was retired still have rain_skip_amount_mm in their
+// settings.json. It must be ignored, not rejected, so the rest of the file still loads.
+void test_parse_settings_ignores_retired_rain_skip_amount() {
+    const char json[] =
+        R"({"Watering":{"rain_forecast_probability_percent":60,"rain_skip_amount_mm":4}})";
+    irrigator::domain::Settings parsed;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(json, sizeof(json) - 1, parsed));
+    TEST_ASSERT_EQUAL_INT16(60, parsed.rainForecastProbabilityPercent);
+}
+
+// The setting was renamed from rain_skip_probability_percent; a stored file (or a not-yet-updated HA
+// upload) using the old key must keep its value rather than fall back to the default.
+void test_parse_settings_reads_legacy_rain_skip_probability_key() {
+    const char nested[] = R"({"Watering":{"rain_skip_probability_percent":55}})";
+    irrigator::domain::Settings parsed;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(nested, sizeof(nested) - 1, parsed));
+    TEST_ASSERT_EQUAL_INT16(55, parsed.rainForecastProbabilityPercent);
+
+    const char flat[] = R"({"rain_skip_probability_percent":45})";
+    irrigator::domain::Settings parsedFlat;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(flat, sizeof(flat) - 1, parsedFlat));
+    TEST_ASSERT_EQUAL_INT16(45, parsedFlat.rainForecastProbabilityPercent);
+
+    // The new key wins when both are present.
+    const char both[] =
+        R"({"Watering":{"rain_forecast_probability_percent":80,"rain_skip_probability_percent":55}})";
+    irrigator::domain::Settings parsedBoth;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(both, sizeof(both) - 1, parsedBoth));
+    TEST_ASSERT_EQUAL_INT16(80, parsedBoth.rainForecastProbabilityPercent);
 }
 
 // serializeJson() truncates against an undersized buffer and still reports a nonzero byte count
@@ -1110,6 +1185,17 @@ void test_settings_store_defaults_alert_toggles_to_true_when_missing() {
     TEST_ASSERT_TRUE(settings.alertPumpOc);
     TEST_ASSERT_TRUE(settings.alertValveUc);
     TEST_ASSERT_TRUE(settings.alertValveOc);
+}
+
+// FlowMeter is also new, with no pre-restructuring flat key to fall back to - a settings.json
+// missing it entirely must default to enabled/unconfigured (see Settings.h's field comments), the
+// same "don't silently disable/misconfigure a feature on upgrade" reasoning as the alert toggles.
+void test_settings_store_defaults_flow_meter_fields_when_missing() {
+    const char* json = R"({"Watering":{"watering_percentage":80}})";
+    irrigator::domain::Settings settings;
+    TEST_ASSERT_TRUE(irrigator::domain::parseSettings(json, strlen(json), settings));
+    TEST_ASSERT_TRUE(settings.flowMeterEnabled);
+    TEST_ASSERT_EQUAL_INT16(0, settings.expectedFlowRateLpm);
 }
 
 // A full pre-restructuring flat settings.json — one field from each of the four new groups —
@@ -1215,6 +1301,32 @@ void test_merge_settings_keeps_untouched_fields_and_updates_present_ones() {
     TEST_ASSERT_EQUAL_STRING("Trees", merged.zoneNames[2]);
 }
 
+// An HA package that predates the rename still publishes rain_skip_probability_percent; that upload
+// must keep tuning the threshold, and the new key must win when both are sent.
+void test_merge_settings_accepts_legacy_and_new_rain_probability_key() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    irrigator::domain::Settings merged;
+    char rejected[256];
+
+    const char* legacy = R"({"Watering":{"rain_skip_probability_percent":55}})";
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, legacy, strlen(legacy), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("", rejected);
+    TEST_ASSERT_EQUAL_INT16(55, merged.rainForecastProbabilityPercent);
+
+    const char* both =
+        R"({"Watering":{"rain_forecast_probability_percent":80,"rain_skip_probability_percent":55}})";
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, both, strlen(both), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_INT16(80, merged.rainForecastProbabilityPercent);
+
+    // An out-of-range legacy value is rejected under the new field name, not silently clamped.
+    const char* bad = R"({"Watering":{"rain_skip_probability_percent":101}})";
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, bad, strlen(bad), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_NOT_NULL(strstr(rejected, "Watering.rain_forecast_probability_percent"));
+}
+
 void test_merge_settings_rejects_bad_type_field_and_alerts_but_keeps_rest() {
     irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
     existing.wateringPercentage = 100;
@@ -1315,6 +1427,34 @@ void test_merge_settings_updates_current_sensor_alert_toggles() {
     TEST_ASSERT_TRUE(merged.alertPumpOc);
     TEST_ASSERT_TRUE(merged.alertValveUc);
     TEST_ASSERT_FALSE(merged.alertValveOc);
+}
+
+void test_merge_settings_updates_flow_meter_fields() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    TEST_ASSERT_TRUE(existing.flowMeterEnabled);
+    TEST_ASSERT_EQUAL_INT16(0, existing.expectedFlowRateLpm);
+
+    const char* json = R"({"FlowMeter":{"flow_meter_enabled":false,"expected_flow_rate_lpm":15}})";
+    irrigator::domain::Settings merged;
+    char rejected[256];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("", rejected);
+    TEST_ASSERT_FALSE(merged.flowMeterEnabled);
+    TEST_ASSERT_EQUAL_INT16(15, merged.expectedFlowRateLpm);
+}
+
+void test_merge_settings_rejects_out_of_range_expected_flow_rate() {
+    irrigator::domain::Settings existing = irrigator::domain::makeDefaultZones();
+    existing.expectedFlowRateLpm = 20;
+
+    const char* json = R"({"FlowMeter":{"expected_flow_rate_lpm":501}})";
+    irrigator::domain::Settings merged;
+    char rejected[256];
+    TEST_ASSERT_TRUE(irrigator::domain::mergeSettings(existing, json, strlen(json), merged, rejected,
+                                                      sizeof(rejected)));
+    TEST_ASSERT_EQUAL_STRING("FlowMeter.expected_flow_rate_lpm", rejected);
+    TEST_ASSERT_EQUAL_INT16(20, merged.expectedFlowRateLpm);  // kept existing's value, not clamped
 }
 
 // The Zones merge accepts the current {"name":..,"enabled":..} object form and the legacy
@@ -2183,38 +2323,35 @@ void test_ui_state_machine_settings_alert_toggles_sit_above_calibrate() {
     TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexCalibrate, ui.selectedIndex());
 }
 
-void test_ui_state_machine_settings_rain_skip_threshold_edit() {
+void test_ui_state_machine_settings_rain_forecast_threshold_edit() {
     irrigator::domain::UiStateMachine ui;
     irrigator::domain::UiStateMachine::Context ctx;
-    ctx.rainSkipProbabilityPercent = 70;
-    ctx.rainSkipAmountMm = 4;
+    ctx.rainForecastProbabilityPercent = 70;
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 0);
     ui.handleInput(irrigator::domain::UiInputEvent::LongClick, ctx, 100);  // -> MenuMain
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 200);  // Schedule -> Test all zones
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 250);  // Test all zones -> Settings
     ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 300);      // -> MenuSettings
 
-    for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexRainSkipProbability; ++i) {
+    for (uint8_t i = 0; i < irrigator::domain::UiStateMachine::kSettingsIndexRainForecastProbability; ++i) {
         ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 350 + i);
     }
-    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);  // enter rain-skip-probability edit
+    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 400);  // enter forecast-rain-probability edit
     TEST_ASSERT_TRUE(ui.editing());
     ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 450);
-    TEST_ASSERT_EQUAL_INT16(80, ui.pendingRainSkipProbability());
+    TEST_ASSERT_EQUAL_INT16(80, ui.pendingRainForecastProbability());
     const irrigator::domain::UiIntent probIntent =
         ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 500);
-    TEST_ASSERT_TRUE(probIntent.type == irrigator::domain::UiIntentType::SetRainSkipProbability);
+    TEST_ASSERT_TRUE(probIntent.type == irrigator::domain::UiIntentType::SetRainForecastProbability);
     TEST_ASSERT_EQUAL_INT16(80, probIntent.percentage);
     TEST_ASSERT_FALSE(ui.editing());
 
-    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 550);  // -> rain-skip amount
-    ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 600);      // enter rain-skip-amount edit
-    ui.handleInput(irrigator::domain::UiInputEvent::CounterClockwise, ctx, 650);
-    TEST_ASSERT_EQUAL_INT16(3, ui.pendingRainSkipAmount());  // Amount steps by 1, not 10.
-    const irrigator::domain::UiIntent amountIntent =
-        ui.handleInput(irrigator::domain::UiInputEvent::Click, ctx, 700);
-    TEST_ASSERT_TRUE(amountIntent.type == irrigator::domain::UiIntentType::SetRainSkipAmount);
-    TEST_ASSERT_EQUAL_INT16(3, amountIntent.percentage);
+    // The row right after the probability is now the first alert toggle - the retired amount row
+    // must not sit between them.
+    ui.handleInput(irrigator::domain::UiInputEvent::Clockwise, ctx, 550);
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexAlertPumpUc, ui.selectedIndex());
+    TEST_ASSERT_EQUAL_UINT16(irrigator::domain::UiStateMachine::kSettingsIndexRainForecastProbability + 1,
+                             ui.selectedIndex());
 }
 
 void test_ui_state_machine_settings_restart_confirm_flow() {
@@ -3215,6 +3352,189 @@ void test_wifi_quality_thresholds_and_bar_count() {
     TEST_ASSERT_EQUAL_UINT8(0, wifiQualityBarCount(WifiQuality::Miserable));
 }
 
+// --- FlowPublishGate -----------------------------------------------------------------------
+
+void test_flow_publish_gate_publishes_immediately_on_the_very_first_reading() {
+    irrigator::domain::FlowPublishGate gate;
+
+    // Idle, zero flow, first call ever - still publishes, so HA/an MQTT explorer sees something
+    // right away instead of waiting out the first cadence window.
+    TEST_ASSERT_TRUE(gate.shouldPublish(0, false, 0.0f));
+}
+
+void test_flow_publish_gate_active_state_uses_a_flat_once_per_minute_cadence() {
+    irrigator::domain::FlowPublishGate gate;
+    TEST_ASSERT_TRUE(gate.shouldPublish(0, true, 0.0f));  // Bootstrap publish.
+
+    // Well under a minute later: no publish, regardless of how much volume moved.
+    TEST_ASSERT_FALSE(gate.shouldPublish(1000, true, 500.0f));
+    TEST_ASSERT_FALSE(gate.shouldPublish(59999, true, 500.0f));
+    // Exactly at the minute boundary: publishes (>=, not >).
+    TEST_ASSERT_TRUE(gate.shouldPublish(60000, true, 500.0f));
+    // And the cadence restarts from that new publish, not the original one.
+    TEST_ASSERT_FALSE(gate.shouldPublish(60999, true, 500.0f));
+    TEST_ASSERT_TRUE(gate.shouldPublish(120000, true, 500.0f));
+}
+
+void test_flow_publish_gate_idle_state_never_publishes_below_threshold_no_matter_how_long() {
+    irrigator::domain::FlowPublishGate gate;
+    TEST_ASSERT_TRUE(gate.shouldPublish(0, false, 0.0f));  // Bootstrap, baseline = 0L.
+
+    // Under the 1L idle threshold, even long after the once-a-minute cap would otherwise allow a
+    // publish - a quiet pipe generates no idle MQTT traffic at all.
+    TEST_ASSERT_FALSE(gate.shouldPublish(60000, false, 0.5f));
+    TEST_ASSERT_FALSE(gate.shouldPublish(600000, false, 0.9f));  // 10 minutes in, still under 1L.
+}
+
+void test_flow_publish_gate_idle_state_needs_both_the_threshold_and_the_minute_cap() {
+    irrigator::domain::FlowPublishGate gate;
+    TEST_ASSERT_TRUE(gate.shouldPublish(0, false, 0.0f));  // Bootstrap, baseline = 0L, lastPublishMs = 0.
+
+    // Crossing the 1 liter mark just 20s after the bootstrap publish - the threshold IS met
+    // (1.5L accumulated), but the once-a-minute cap (measured from the last actual publish, at
+    // t=0) still holds it back...
+    TEST_ASSERT_FALSE(gate.shouldPublish(20000, false, 1.5f));
+    // ...and the accumulated volume isn't lost while it waits - a later reading with NO further
+    // flow at all (totalizer unchanged) still publishes once the cap expires, carrying the same
+    // 1.5L that was sitting there the whole time.
+    TEST_ASSERT_TRUE(gate.shouldPublish(65000, false, 1.5f));
+}
+
+void test_flow_publish_gate_idle_leak_over_one_liter_per_minute_publishes_every_minute() {
+    irrigator::domain::FlowPublishGate gate;
+    TEST_ASSERT_TRUE(gate.shouldPublish(0, false, 0.0f));  // Bootstrap, baseline = 0L.
+
+    // A steady idle leak of 2L/min: each minute crosses the 1L threshold well before the cap
+    // expires, so the cap (not the threshold) is what paces it to exactly once/minute - a real
+    // leak surfaces promptly without flooding MQTT.
+    TEST_ASSERT_FALSE(gate.shouldPublish(30000, false, 1.0f));   // +1L at 30s: threshold not yet crossed (needs > 1L).
+    TEST_ASSERT_TRUE(gate.shouldPublish(60000, false, 2.0f));    // +2L cumulative, minute elapsed: publishes.
+    TEST_ASSERT_FALSE(gate.shouldPublish(90000, false, 3.0f));   // Another +1L, but only 30s since last publish.
+    TEST_ASSERT_TRUE(gate.shouldPublish(120000, false, 4.0f));   // Minute's up again: publishes.
+}
+
+void test_flow_publish_gate_switching_from_active_to_idle_does_not_inherit_stale_accumulation() {
+    irrigator::domain::FlowPublishGate gate;
+    TEST_ASSERT_TRUE(gate.shouldPublish(0, true, 0.0f));  // Bootstrap while active.
+
+    // While active, the idle accumulator is reset on every call (active doesn't consult it), even
+    // though the run itself moves 5L - none of that should ever be attributed to idle leakage.
+    TEST_ASSERT_FALSE(gate.shouldPublish(30000, true, 5.0f));
+
+    // The run ends; idle resumes. If the run's own 5L had carried into the idle accumulator, this
+    // +0.4L reading would total 5.4L and wrongly cross the 1L threshold - it doesn't, because only
+    // the delta AFTER the active->idle switch (0.4L) is counted.
+    TEST_ASSERT_FALSE(gate.shouldPublish(61000, false, 5.4f));
+
+    // Confirms the accumulator really did start over at 0 (not 5.0, and not silently stuck): more
+    // idle flow keeps accumulating normally on top of that 0.4L and eventually crosses the 1L
+    // threshold on its own.
+    TEST_ASSERT_FALSE(gate.shouldPublish(90000, false, 5.5f));
+    TEST_ASSERT_TRUE(gate.shouldPublish(100000, false, 6.5f));
+}
+
+void test_flow_publish_gate_ignores_a_totalizer_that_moves_backwards() {
+    irrigator::domain::FlowPublishGate gate;
+    TEST_ASSERT_TRUE(gate.shouldPublish(0, false, 10.0f));  // Bootstrap, baseline = 10L.
+
+    // A totalizer reading lower than the previous one (shouldn't happen on real hardware, but
+    // defensively must not produce a negative delta that could cancel out real accumulated volume
+    // or otherwise misbehave).
+    TEST_ASSERT_FALSE(gate.shouldPublish(30000, false, 9.0f));
+    // Recovers to a +0.5L delta from the previous (lower) reading - still well under the 1L
+    // threshold, and nowhere near the original 10L baseline the backwards jump lost.
+    TEST_ASSERT_FALSE(gate.shouldPublish(60000, false, 9.5f));
+}
+
+// --- FlowConsumptionTracker: FlowLifetimeCounters ----------------------------------------------
+
+void test_flow_lifetime_counters_attributes_to_the_watering_zone() {
+    irrigator::domain::FlowLifetimeCounters counters;
+    counters.addDelta(/*activeZone=*/3, /*pumpOn=*/true, /*deltaLiters=*/2.5f);
+    TEST_ASSERT_EQUAL_FLOAT(2.5f, counters.zoneLiters(3));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.zoneLiters(1));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.otherLiters());
+
+    // Accumulates across calls rather than overwriting.
+    counters.addDelta(3, true, 1.5f);
+    TEST_ASSERT_EQUAL_FLOAT(4.0f, counters.zoneLiters(3));
+}
+
+void test_flow_lifetime_counters_attributes_fully_idle_flow_to_other() {
+    irrigator::domain::FlowLifetimeCounters counters;
+    counters.addDelta(/*activeZone=*/0, /*pumpOn=*/false, /*deltaLiters=*/0.3f);
+    TEST_ASSERT_EQUAL_FLOAT(0.3f, counters.otherLiters());
+    for (uint8_t zone = 1; zone <= irrigator::board::ZONE_COUNT; ++zone) {
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.zoneLiters(zone));
+    }
+}
+
+// A pump-only run (or the post-valve-close pump-graceful-shutdown tail) is neither a zone watering
+// nor "every valve closed" in the leak-detection sense - see the class comment for why this delta
+// is discarded rather than forced into one bucket or the other.
+void test_flow_lifetime_counters_discards_pump_only_delta() {
+    irrigator::domain::FlowLifetimeCounters counters;
+    counters.addDelta(/*activeZone=*/0, /*pumpOn=*/true, /*deltaLiters=*/5.0f);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.otherLiters());
+    for (uint8_t zone = 1; zone <= irrigator::board::ZONE_COUNT; ++zone) {
+        TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.zoneLiters(zone));
+    }
+}
+
+void test_flow_lifetime_counters_zones_are_independent_and_out_of_range_reads_zero() {
+    irrigator::domain::FlowLifetimeCounters counters;
+    counters.addDelta(1, true, 1.0f);
+    counters.addDelta(11, true, 2.0f);
+    TEST_ASSERT_EQUAL_FLOAT(1.0f, counters.zoneLiters(1));
+    TEST_ASSERT_EQUAL_FLOAT(2.0f, counters.zoneLiters(11));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.zoneLiters(2));
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.zoneLiters(0));   // out of range (below)
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, counters.zoneLiters(12));  // out of range (above ZONE_COUNT)
+}
+
+// --- FlowConsumptionTracker: FlowRunVolumeTracker ----------------------------------------------
+
+void test_flow_run_volume_tracker_computes_liters_between_begin_and_stop() {
+    irrigator::domain::FlowRunVolumeTracker tracker;
+    tracker.beginRun(/*totalizerM3=*/10.0f, /*haveTotalizer=*/true);
+    const float liters = tracker.takeVolumeLitersOnStop(/*totalizerM3=*/10.012f, /*haveTotalizer=*/true);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 12.0f, liters);  // 0.012 m3 * 1000 = 12 L
+}
+
+// A later stop event for the SAME logical run (reportStop() firing after reportValveClosed()
+// already reported it, once a zone+pump run's pump graceful-shutdown tail also ends) must read
+// back 0, not repeat the same number or drift further.
+void test_flow_run_volume_tracker_reports_zero_on_a_second_stop_for_the_same_run() {
+    irrigator::domain::FlowRunVolumeTracker tracker;
+    tracker.beginRun(10.0f, true);
+    const float first = tracker.takeVolumeLitersOnStop(10.005f, true);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 5.0f, first);
+    const float second = tracker.takeVolumeLitersOnStop(10.005f, true);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, second);
+}
+
+void test_flow_run_volume_tracker_reports_zero_without_a_matching_begin() {
+    irrigator::domain::FlowRunVolumeTracker tracker;
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, tracker.takeVolumeLitersOnStop(10.0f, true));
+}
+
+// beginRun(haveTotalizer=false) means no flow reading had landed yet when the run started (a cold
+// boot right before a run, or flow sensing unavailable) - takeVolumeLitersOnStop() must not
+// fabricate a delta against an uninitialized 0.0f baseline.
+void test_flow_run_volume_tracker_reports_zero_when_totalizer_was_never_known_at_start() {
+    irrigator::domain::FlowRunVolumeTracker tracker;
+    tracker.beginRun(0.0f, /*haveTotalizer=*/false);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, tracker.takeVolumeLitersOnStop(0.5f, true));
+}
+
+// Same defensive stance as FlowPublishGate: a totalizer that didn't move forward (or even ticked
+// backwards) reports 0 liters, never a negative volume.
+void test_flow_run_volume_tracker_never_reports_a_negative_volume() {
+    irrigator::domain::FlowRunVolumeTracker tracker;
+    tracker.beginRun(10.0f, true);
+    TEST_ASSERT_EQUAL_FLOAT(0.0f, tracker.takeVolumeLitersOnStop(9.999f, true));
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -3238,8 +3558,10 @@ int main(int argc, char** argv) {
     RUN_TEST(test_auto_adjustment_percentage_exactly_on_lower_limit_is_kept_not_zeroed);
     RUN_TEST(test_auto_adjustment_percentage_exactly_on_upper_limit_is_not_clamped_down);
     RUN_TEST(test_auto_adjustment_percentage_zero_lower_limit_floors_at_zero);
-    RUN_TEST(test_should_skip_for_rain_probability_inclusive_amount_exclusive);
-    RUN_TEST(test_should_skip_for_rain_uses_configured_thresholds);
+    RUN_TEST(test_effective_rain_counts_forecast_when_probability_at_or_over_threshold);
+    RUN_TEST(test_effective_rain_has_no_amount_threshold);
+    RUN_TEST(test_effective_rain_uses_configured_threshold);
+    RUN_TEST(test_effective_rain_forecast_is_added_to_past_rain_in_the_formula);
     RUN_TEST(test_open_meteo_now_index_is_days_back_times_24_plus_hour);
     RUN_TEST(test_open_meteo_now_index_at_midnight);
     RUN_TEST(test_open_meteo_now_index_with_no_past_days_is_just_the_hour);
@@ -3291,6 +3613,8 @@ int main(int argc, char** argv) {
     RUN_TEST(test_settings_store_rejects_out_of_range_percentage);
     RUN_TEST(test_settings_store_round_trips);
     RUN_TEST(test_settings_store_round_trips_zones_location_and_api_key);
+    RUN_TEST(test_parse_settings_ignores_retired_rain_skip_amount);
+    RUN_TEST(test_parse_settings_reads_legacy_rain_skip_probability_key);
     RUN_TEST(test_serialize_into_undersized_buffer_produces_output_that_does_not_parse_back);
     RUN_TEST(test_settings_store_defaults_auto_adjustment_enabled_to_true_when_missing);
     RUN_TEST(test_settings_store_defaults_alert_toggles_to_true_when_missing);
@@ -3300,6 +3624,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_merge_config_rejects_out_of_range_field_but_keeps_rest);
     RUN_TEST(test_merge_config_rejects_malformed_json_outright);
     RUN_TEST(test_merge_settings_keeps_untouched_fields_and_updates_present_ones);
+    RUN_TEST(test_merge_settings_accepts_legacy_and_new_rain_probability_key);
     RUN_TEST(test_merge_settings_rejects_bad_type_field_and_alerts_but_keeps_rest);
     RUN_TEST(test_merge_settings_rejects_out_of_range_numeric_field);
     RUN_TEST(test_merge_settings_updates_single_zone_without_disturbing_others);
@@ -3350,7 +3675,7 @@ int main(int argc, char** argv) {
     RUN_TEST(test_ui_state_machine_settings_schedule_active_toggle_is_first_item);
     RUN_TEST(test_ui_state_machine_settings_auto_adjustment_toggle_is_second_item);
     RUN_TEST(test_ui_state_machine_settings_alert_toggles_sit_above_calibrate);
-    RUN_TEST(test_ui_state_machine_settings_rain_skip_threshold_edit);
+    RUN_TEST(test_ui_state_machine_settings_rain_forecast_threshold_edit);
     RUN_TEST(test_ui_state_machine_settings_restart_confirm_flow);
     RUN_TEST(test_ui_state_machine_settings_calibrate_confirm_flow);
     RUN_TEST(test_ui_state_machine_calibrate_result_shows_outcome_and_ok_returns_to_normal);
@@ -3389,5 +3714,25 @@ int main(int argc, char** argv) {
     RUN_TEST(test_dst_rules_matches_known_2024_eu_transitions);
     RUN_TEST(test_standard_offset_from_geolocation_is_season_independent);
     RUN_TEST(test_standard_offset_from_geolocation_truncates_and_clamps);
+    RUN_TEST(test_flow_publish_gate_publishes_immediately_on_the_very_first_reading);
+    RUN_TEST(test_flow_publish_gate_active_state_uses_a_flat_once_per_minute_cadence);
+    RUN_TEST(test_flow_publish_gate_idle_state_never_publishes_below_threshold_no_matter_how_long);
+    RUN_TEST(test_flow_publish_gate_idle_state_needs_both_the_threshold_and_the_minute_cap);
+    RUN_TEST(test_flow_publish_gate_idle_leak_over_one_liter_per_minute_publishes_every_minute);
+    RUN_TEST(test_flow_publish_gate_switching_from_active_to_idle_does_not_inherit_stale_accumulation);
+    RUN_TEST(test_flow_publish_gate_ignores_a_totalizer_that_moves_backwards);
+    RUN_TEST(test_settings_store_defaults_flow_meter_fields_when_missing);
+    RUN_TEST(test_settings_store_round_trips_flow_meter_fields);
+    RUN_TEST(test_merge_settings_updates_flow_meter_fields);
+    RUN_TEST(test_merge_settings_rejects_out_of_range_expected_flow_rate);
+    RUN_TEST(test_flow_lifetime_counters_attributes_to_the_watering_zone);
+    RUN_TEST(test_flow_lifetime_counters_attributes_fully_idle_flow_to_other);
+    RUN_TEST(test_flow_lifetime_counters_discards_pump_only_delta);
+    RUN_TEST(test_flow_lifetime_counters_zones_are_independent_and_out_of_range_reads_zero);
+    RUN_TEST(test_flow_run_volume_tracker_computes_liters_between_begin_and_stop);
+    RUN_TEST(test_flow_run_volume_tracker_reports_zero_on_a_second_stop_for_the_same_run);
+    RUN_TEST(test_flow_run_volume_tracker_reports_zero_without_a_matching_begin);
+    RUN_TEST(test_flow_run_volume_tracker_reports_zero_when_totalizer_was_never_known_at_start);
+    RUN_TEST(test_flow_run_volume_tracker_never_reports_a_negative_volume);
     return UNITY_END();
 }

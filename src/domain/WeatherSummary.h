@@ -30,7 +30,7 @@ bool summarizePastRainfall(JsonArrayConst dailyRainSumMm,
                            size_t pastWeatherDays,
                            float& outRainPastDaysMm);
 
-// Rain-skip forecast window (Step 1) — always forward-looking, independent of the historical
+// Forecast-rain window (Step 1) — always forward-looking, independent of the historical
 // window above: max rain probability and total rain amount over
 // [nowIndex, nowIndex+forecastWindowHours). Returns false if either array is too short to cover
 // the requested window.
@@ -41,7 +41,7 @@ bool summarizeForecastRainWindow(JsonArrayConst hourlyRainProbabilityPercent,
                                  float& outMaxRainProbabilityPercent,
                                  float& outRainAmountNextWindowMm);
 
-// WeatherAPI.com fallback's rain-skip window: flattens forecastDays[].hour[] (each hour carrying
+// WeatherAPI.com fallback's forecast-rain window: flattens forecastDays[].hour[] (each hour carrying
 // time_epoch/chance_of_rain/precip_mm) and maxes/sums the first windowHours entries at or after
 // nowEpochUtc — WeatherAPI, unlike Open-Meteo, doesn't guarantee a fixed array index for "now".
 // Returns false if fewer than windowHours qualifying entries are found. outQualifyingHours is

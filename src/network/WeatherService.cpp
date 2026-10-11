@@ -71,7 +71,7 @@ WeatherFetchResult WeatherService::fetchOpenMeteoForecastWindow(float latitude,
                                                                 int64_t nowEpochUtc) {
     WeatherFetchResult result;
 
-    // Hourly only: this call exists solely for the forward rain-skip window. The formula's
+    // Hourly only: this call exists solely for the forward forecast-rain window. The formula's
     // historical inputs come from the ERA5 archive (fetchOpenMeteoArchivePast), not from this
     // endpoint's past_days daily series. past_days stays 5 purely because the hourly-array "now"
     // index arithmetic (domain::openMeteoNowIndex) is built around it.
@@ -305,7 +305,7 @@ bool WeatherService::fetchOpenMeteoArchivePast(float latitude,
 WeatherFetchResult WeatherService::fetchForecastOpenMeteo(float latitude,
                                                           float longitude,
                                                           int64_t nowEpochUtc) {
-    // Forecast first: it carries the rain-skip decision, and there's no point spending a second
+    // Forecast first: it carries the forecast rain, and there's no point spending a second
     // TLS handshake on history when it already failed. The two fetches are separate calls so each
     // one's WiFiClientSecure (~40-60KB of mbedTLS state) is fully released before the next starts.
     WeatherFetchResult result = fetchOpenMeteoForecastWindow(latitude, longitude, nowEpochUtc);
@@ -407,7 +407,7 @@ WeatherFetchResult WeatherService::fetchForecastWeatherApi(float latitude,
             latitude,
             longitude);
 
-    // Forecast call: only used for the next-12h rain-skip window now — temperature and rainfall
+    // Forecast call: only used for the next-12h forecast-rain window now — temperature and rainfall
     // for the adjustment formula both come from history.json below instead (matching Open-Meteo's
     // historical-vs-forecast split).
     JsonDocument forecastFilter;

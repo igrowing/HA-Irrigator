@@ -36,7 +36,7 @@ struct Settings {
     bool alertValveOc = true;
 
     // Weather-based auto-adjustment. Master on/off switch for the whole feature (both the
-    // percentage recalculation and the rain-skip check) — defaults true so upgrading an existing
+    // percentage recalculation, including the forecast-rain term) — defaults true so upgrading an existing
     // settings.json (missing this field) preserves today's behavior instead of silently disabling
     // a feature that was already running. Geolocation resolution (tryGeolocateIfDue in main.ino)
     // is intentionally NOT gated by this: it's cheap, one-time, and its result (city/coordinates)
@@ -56,26 +56,46 @@ struct Settings {
     // reboot.
     int16_t upperLimitPercent = board::AUTOADJUSTMENT_DEFAULT_UPPER_LIMIT_PERCENT;
     int16_t lowerLimitPercent = board::AUTOADJUSTMENT_DEFAULT_LOWER_LIMIT_PERCENT;
-    // Step 1's rain-skip trigger thresholds (see domain::shouldSkipForRain) — whole percent/mm,
-    // matching the rotary UI's existing integer-only editing convention (no field in this project
-    // is rotary-edited as a float today).
-    int16_t rainSkipProbabilityPercent = board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_PROBABILITY_PERCENT;
-    int16_t rainSkipAmountMm = board::AUTOADJUSTMENT_DEFAULT_RAIN_SKIP_AMOUNT_MM;
+    // Step 1's forecast-rain threshold (see domain::effectiveRainMm): the forecast counts as fallen
+    // rain only at/over this probability — whole percent, matching the rotary UI's existing
+    // integer-only editing convention (no field in this project is rotary-edited as a float today).
+    int16_t rainForecastProbabilityPercent = board::AUTOADJUSTMENT_DEFAULT_RAIN_FORECAST_PROBABILITY_PERCENT;
     // WeatherAPI.com key, used only as the Phase 4 fallback when Open-Meteo (no key required)
     // fails. Note: sensor.irrigator_settings in the HA package mirrors the whole settings.json
     // payload as attributes (see homeassistant/packages/irrigator.yaml), so this key is visible
     // there too — not selectively excludable without reworking that sensor.
     char weatherApiKey[48] = {};
+
+    // TUF-2000M flow-meter feature (the tuf2000 library, board_config.h's FLOW_METER_*
+    // constants) — settings.json's FlowMeter group. Default true, same rationale as
+    // autoAdjustmentEnabled: upgrading an existing settings.json shouldn't silently disable a
+    // feature that was already running. Scoped specifically to the flow-rate anomaly check
+    // (main.ino) — it does NOT gate the underlying Modbus polling or the raw /flow telemetry,
+    // which have run unconditionally since this feature's earlier stages and aren't changing now.
+    bool flowMeterEnabled = true;
+    // Expected steady-state flow rate while a zone is watering, in liters/minute — the "base" the
+    // anomaly check compares live readings against (±50%, flow_high/flow_low faults). Unlike the
+    // current sensor's valveCurrentBaseLevel, there's no ESP32-side calibration step to capture
+    // this automatically (the TUF-2000M is a self-calibrated ultrasonic meter with no zero-offset
+    // of its own either) — the user sets it directly, e.g. from a value already seen on
+    // the flow_rate_lpm cmd/meter reports during a normal run. 0 means "not configured": no check runs.
+    // A single value for the whole device rather than per-zone, the same simplification the
+    // current sensor's shared valveCurrentBaseLevel already makes — only one zone ever waters at a
+    // time — though unlike current draw, flow rate can genuinely differ a lot between a drip zone
+    // and a sprinkler zone; a system with drastically different per-zone flow rates would need a
+    // per-zone threshold, which this does not provide.
+    int16_t expectedFlowRateLpm = 0;
 };
 
 Settings makeDefaultZones();
 bool validateSettings(const Settings& settings);
 
-// settings.json is nested into four top-level groups — Zones (per-zone name/enabled, keyed "1".."N",
+// settings.json is nested into five top-level groups — Zones (per-zone name/enabled, keyed "1".."N",
 // same shape as before), Location (location_known/latitude/longitude/city), Current_sensor
-// (valve/pump_current_base_level, alertPumpUc/Oc/ValveUc/Oc), Watering (everything else: watering
+// (valve/pump_current_base_level, alertPumpUc/Oc/ValveUc/Oc), FlowMeter
+// (flow_meter_enabled/expected_flow_rate_lpm), Watering (everything else: watering
 // percentage, schedule_active, default_manual_duration, auto_adjustment_enabled, upper/lower limit,
-// rain_skip_probability_percent/rain_skip_amount_mm, weatherapi_key). parseSettings() additionally
+// rain_forecast_probability_percent, weatherapi_key). parseSettings() additionally
 // falls back to each field's old flat top-level key when its new nested key is absent, so a
 // pre-restructuring settings.json still loads its real values instead of resetting to defaults —
 // see main.ino's boot-time load, which persists once right after a successful parse to rewrite the

@@ -6,8 +6,7 @@
     "auto_adjustment_enabled": true,
     "upper_limit": 200,
     "lower_limit": 40,
-    "rain_skip_probability_percent": 70,
-    "rain_skip_amount_mm": 4,
+    "rain_forecast_probability_percent": 70,
     "weatherapi_key": "your_api_key_here"
   },
   "Location": {

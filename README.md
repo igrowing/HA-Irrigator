@@ -63,7 +63,11 @@ HA-Irrigator fixes the traditional shortcomings of industrial watering control s
   entirely when meaningful rain is forecast, and otherwise nudges the watering percentage up in
   hot weather / down after recent rain — all within a configurable lower/upper bound. See
   [docs/usage_irrigator.md](docs/usage_irrigator.md) and [docs/technical.md](docs/technical.md).
-- Name your zones. Numbers are nice, but words work better for people.
+  The result of auto-adjustment work is shown on the chart below:
+![Chart](docs/irrigation_chart.png)
+    * Rain reduces the waterin time/amount. The amount of rain in last 5 days has the same impact as forecasted amount of rain with probability higher than 70%.
+    * You can adjust the probability of rain to be taken into account and the lower threshold to skip watering - default 40%.
+- **Name your zones**. Numbers are nice, but words work better for people.
 - Configurable time for testing of all zones.
 
 
